@@ -35,7 +35,7 @@ jobs:
       run: cd /tmp && sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && ls /usr/src && sudo tar xjf /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz2
 
     - name: Configure Kernel config file
-      run: ls /usr/src/linux-5.4.0/  && cp /boot/config-5.4.0-62-generic /usr/src/linux-source-5.4.0/.config
+      run: ls /usr/src/linux-source-5.4.0/  && cp /boot/config-5.4.0-62-generic /usr/src/linux-source-5.4.0/.config
 
     - name: Compile Kernel
       run: cd /usr/src/linux-source-5.4.0/ && ls && make -j $(nproc)
