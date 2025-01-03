@@ -26,9 +26,9 @@ jobs:
       # Install Deps
       run: sudo apt install -y linux-image-$(uname -r) linux-modules-$(uname -r) linux-modules-extra-$(uname -r)
     - name: Install Deps 2
-      run: sudo apt install -y git libtool libtool-bin libyaml-dev ed libreadline-dev dpatch libsnmp-dev mpi-default-dev module-assistant quilt libncurses5-dev libncurses-dev bison flex gnupg libelf-dev gcc libssl-dev bc bzip2 build-essential udev kmod cpio libfuse-dev libattr1-dev libblkid-dev uuid-dev devscripts fakeroot kernel-wedge libudev-dev libpython3-dev swig gettext texinfo debhelper dh-exec update-notifier-common sg3-utils attr mpi-default-bin selinux-utils 
+      run: sudo apt install -y git libtool libtool-bin libyaml-dev ed libreadline-dev libsnmp-dev mpi-default-dev module-assistant quilt libncurses5-dev libncurses-dev bison flex gnupg libelf-dev gcc libssl-dev bc bzip2 build-essential udev kmod cpio libfuse-dev libattr1-dev libblkid-dev uuid-dev devscripts fakeroot kernel-wedge libudev-dev libpython3-dev swig gettext texinfo debhelper dh-exec update-notifier-common sg3-utils attr mpi-default-bin selinux-utils 
       # python python2 python2-minimal python2.7 libpython2-stdlib libsgutils2-2 libpython2.7-stdlib python2.7-minimal libpython2.7-minimal
-
+      # dpatch
     - name: Download Kernel Source
       run: apt source linux-image-unsigned-$(uname -r)
 
