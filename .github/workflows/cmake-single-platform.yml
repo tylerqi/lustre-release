@@ -22,8 +22,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-   - name: Env Detect
-     run: sudo apt search kernel && exit 1
+    - name: Env Detect
+      run: sudo apt search kernel && exit 1
     - name: Install Deps
       # Install Deps
       run: sudo apt install -y linux-image-$(uname -r) linux-modules-$(uname -r) linux-modules-extra-$(uname -r)
