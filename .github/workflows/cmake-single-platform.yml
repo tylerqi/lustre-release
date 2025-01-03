@@ -30,7 +30,9 @@ jobs:
       # python python2 python2-minimal python2.7 libpython2-stdlib libsgutils2-2 libpython2.7-stdlib python2.7-minimal libpython2.7-minimal
       # dpatch
     - name: Download Kernel Source
-      run: sudo wget http://ports.ubuntu.com/pool/main/l/linux/linux-source-5.4.0_5.4.0-62.70_all.deb &&  sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && sudo tar xjf /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz
+      run: sudo wget http://ports.ubuntu.com/pool/main/l/linux/linux-source-5.4.0_5.4.0-62.70_all.deb &&  
+    - name: Install Kernel Source
+      run: sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && sudo tar xjf /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz
 
       # $ sudo wget http://ports.ubuntu.com/pool/main/l/linux/linux-source-5.4.0_5.4.0-62.70_all.deb
       # $ sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb
