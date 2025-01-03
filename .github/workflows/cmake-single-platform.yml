@@ -32,7 +32,7 @@ jobs:
       # python python2 python2-minimal python2.7 libpython2-stdlib libsgutils2-2 libpython2.7-stdlib python2.7-minimal libpython2.7-minimal
       # dpatch
     - name: Install Kernel Source
-      run: sudo apt install -y kernel-devel-$(uname -r) && apt source linux-image-unsigned-$(uname -r)
+      run: sudo apt install -y kernel-devel-$(uname -r) kernel-source && ls /usr/src/$(uname -r)
      #- name: Install Kernel Source
      # run: cd /tmp && sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && ls /usr/src && sudo bzip2 -d /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz2
 
