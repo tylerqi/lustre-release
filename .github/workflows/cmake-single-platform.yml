@@ -34,6 +34,11 @@ jobs:
     - name: Install Kernel Source
       run: cd /tmp && sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && ls /usr/src && sudo tar xjf /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz2
 
+    - name: Configure Kernel config file
+      run: ls /usr/src/linux-5.4.0/  && cp /boot/config-5.4.0-62-generic /usr/src/linux-5.4.0/.config
+
+    - name: Compile Kernel
+      run: cd /usr/src/linux-5.4.0/ && make -j $(nproc)
       # $ sudo wget http://ports.ubuntu.com/pool/main/l/linux/linux-source-5.4.0_5.4.0-62.70_all.deb
       # $ sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb
       # $ sudo tar xjf /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz2
