@@ -32,7 +32,7 @@ jobs:
     - name: Download Kernel Source
       run: cd /tmp && sudo wget http://ports.ubuntu.com/pool/main/l/linux/linux-source-5.4.0_5.4.0-62.70_all.deb
     - name: Install Kernel Source
-      run: cd /tmp && sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && ls /usr/src && sudo tar xjf /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz2
+      run: cd /tmp && sudo dpkg -i linux-source-5.4.0_5.4.0-62.70_all.deb && ls /usr/src && sudo bzip2 -d /usr/src/linux-source-5.4.0/linux-source-5.4.0.tar.bz2
 
     - name: Configure Kernel config file
       run: ls /usr/src/linux-source-5.4.0/  && cp /boot/config-5.4.0-62-generic /usr/src/linux-source-5.4.0/.config
