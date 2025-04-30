@@ -222,6 +222,19 @@ struct pcc_attach_context {
 	__u32			 pccx_attach_id;
 };
 
+/* Remote PCC cache information */
+struct pcc_remote_info {
+	struct lu_fid fid;        /* FID of the cached file */
+	__u32 client_id;          /* ID of the client with the cache */
+	__u32 archive_id;         /* Archive ID for HSM */
+	__u64 data_version;       /* Data version for consistency */
+	char nid[LNET_NIDSTR_SIZE]; /* Network ID of the caching client */
+};
+
+/* PCC remote cache state flags */
+#define PCC_REMOTE_CACHED    0x0001  /* File is cached on another client */
+#define PCC_REMOTE_RESTORING 0x0002  /* HSM restore is in progress */
+
 enum pcc_io_type {
 	/* read system call */
 	PIT_READ = 1,
