@@ -2513,13 +2513,38 @@ static ssize_t pcc_file_read_remote_cached(struct kiocb *iocb,
 	loff_t pos = iocb->ki_pos;
 	size_t count = iov_iter_count(iter);
 	void *buffer = NULL;
-	ssize_t result;
+	ssize_t result = -EIO;
 	int rc;
+	struct pcc_remote_info remote_info;
 
 	ENTRY;
 
 	CDEBUG(D_CACHE, "Reading "DFID" from remote cache, pos: %lld, count: %zu\n",
 	       PFID(ll_inode2fid(inode)), pos, count);
+
+	/* Verify remote cache information is still valid */
+	rc = pcc_detect_remote_cache(inode, &remote_info);
+	if (rc) {
+		CDEBUG(D_CACHE, "Remote cache information is no longer valid for "DFID": rc = %d\n",
+		       PFID(ll_inode2fid(inode)), rc);
+		/* Clear the remote cached flag so we don't try again */
+		pcc_inode_lock(inode);
+		lli->lli_pcc_state &= ~PCC_STATE_FL_REMOTE_CACHED;
+		pcc_inode_unlock(inode);
+		RETURN(rc);
+	}
+
+	/* Establish LNet connection to remote client */
+	rc = pcc_establish_lnet_connection(&remote_info);
+	if (rc) {
+		CDEBUG(D_CACHE, "Failed to establish LNet connection to %s: rc = %d\n",
+		       remote_info.nid, rc);
+		/* Clear the remote cached flag so we don't try again */
+		pcc_inode_lock(inode);
+		lli->lli_pcc_state &= ~PCC_STATE_FL_REMOTE_CACHED;
+		pcc_inode_unlock(inode);
+		RETURN(rc);
+	}
 
 	/* Allocate a temporary buffer for the data */
 	OBD_ALLOC_LARGE(buffer, count);
@@ -2539,6 +2564,18 @@ static ssize_t pcc_file_read_remote_cached(struct kiocb *iocb,
 	{
 		/* Simulate a successful read from remote cache */
 		/* In a real implementation, this would be replaced with actual LNet code */
+		
+		/* Simulate LNet failures for testing error handling */
+		if (CFS_FAIL_CHECK(OBD_FAIL_LLITE_PCC_LNET_ERROR)) {
+			CERROR("Simulated LNet error during remote cache read\n");
+			GOTO(out_free, result = -EIO);
+		}
+		
+		if (CFS_FAIL_CHECK(OBD_FAIL_LLITE_PCC_REMOTE_UNAVAILABLE)) {
+			CERROR("Simulated remote client unavailable error\n");
+			GOTO(out_free, result = -EHOSTUNREACH);
+		}
+		
 		memset(buffer, 0xAB, count); /* Fill with a pattern for testing */
 		result = count;
 		
@@ -2553,7 +2590,25 @@ static ssize_t pcc_file_read_remote_cached(struct kiocb *iocb,
 		}
 	}
 
+out_free:
 	OBD_FREE_LARGE(buffer, count);
+	
+	/* If we failed to read from remote cache, trigger HSM restore */
+	if (result < 0) {
+		CDEBUG(D_CACHE, "Failed to read from remote cache, triggering HSM restore: rc = %d\n",
+		       (int)result);
+		/* Clear the remote cached flag so we don't try again */
+		pcc_inode_lock(inode);
+		lli->lli_pcc_state &= ~PCC_STATE_FL_REMOTE_CACHED;
+		pcc_inode_unlock(inode);
+		
+		/* Trigger HSM restore with high priority since direct read failed */
+		rc = ll_layout_restore_async(inode, 0, OBD_OBJECT_EOF, 
+					    HRF_RESTORE_HIGH_PRIORITY);
+		if (rc)
+			CDEBUG(D_CACHE, "Failed to trigger HSM restore: rc = %d\n", rc);
+	}
+	
 	RETURN(result);
 }
 
@@ -2565,6 +2620,7 @@ ssize_t pcc_file_read_iter(struct kiocb *iocb,
 	struct ll_inode_info *lli = ll_i2info(inode);
 	struct pcc_file *pccf = ll_file2pccf(file);
 	ssize_t result;
+	int rc;
 
 	ENTRY;
 	file->f_ra.ra_pages = 0;
@@ -2583,12 +2639,31 @@ ssize_t pcc_file_read_iter(struct kiocb *iocb,
 
 	/* Check if the file is remotely cached */
 	if (pcc_is_remote_cached(inode)) {
-		CDEBUG(D_CACHE, "Using direct client-to-client transfer for "DFID"\n",
+		CDEBUG(D_CACHE, "Attempting direct client-to-client transfer for "DFID"\n",
 		       PFID(ll_inode2fid(inode)));
+		
+		/* Try to read from remote cache */
 		result = pcc_file_read_remote_cached(iocb, iter);
-		goto out;
+		
+		/* If remote read succeeded, return the result */
+		if (result >= 0) {
+			CDEBUG(D_CACHE, "Direct client-to-client transfer succeeded for "DFID"\n",
+			       PFID(ll_inode2fid(inode)));
+			goto out;
+		}
+		
+		/* If remote read failed, log the error and fall back to standard path */
+		CDEBUG(D_CACHE, "Direct client-to-client transfer failed for "DFID": rc = %d, "
+		       "falling back to standard I/O path\n",
+		       PFID(ll_inode2fid(inode)), (int)result);
+		
+		/* 
+		 * Note: We don't need to clear the remote cached flag here because
+		 * pcc_file_read_remote_cached already did that on error.
+		 */
 	}
 
+	/* Standard I/O path */
 	iocb->ki_filp = pccf->pccf_file;
 	/* generic_file_aio_read does not support ext4-dax,
 	 * __pcc_file_read_iter uses ->aio_read hook directly
