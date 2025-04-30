@@ -242,6 +242,7 @@ struct pcc_remote_info {
 
 /* HSM restore flags */
 #define HRF_RESTORE_HIGH_PRIORITY 0x0001 /* High priority restore */
+#define HRF_RESTORE_ASYNC         0x0002 /* Asynchronous restore */
 
 /* PCC failure simulation flags */
 #define OBD_FAIL_LLITE_PCC_LNET_ERROR 0x1601 /* Simulate LNet connection error */

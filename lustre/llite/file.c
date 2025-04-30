@@ -7016,8 +7016,23 @@ int ll_layout_write_intent(struct inode *inode, enum layout_intent_opc opc,
 	RETURN(rc);
 }
 
-/* This function send a restore request to the MDT */
-int ll_layout_restore(struct inode *inode, loff_t offset, __u64 length)
+/**
+ * Unified function for HSM restore requests.
+ *
+ * This function handles both synchronous and asynchronous HSM restore
+ * requests. It allows specifying additional flags for policy-based restore.
+ *
+ * \param[in] inode   The inode to restore
+ * \param[in] offset  The offset in the file to start restoring from
+ * \param[in] length  The length of the extent to restore
+ * \param[in] flags   Additional flags for the restore operation
+ * \param[in] async   If true, the restore is asynchronous and doesn't block
+ *
+ * \retval 0      Success
+ * \retval -ve    Error code
+ */
+static int ll_layout_restore_internal(struct inode *inode, loff_t offset, 
+                                      __u64 length, __u64 flags, bool async)
 {
 	struct ll_inode_info *lli = ll_i2info(inode);
 	struct hsm_user_request *hur;
@@ -7032,21 +7047,34 @@ int ll_layout_restore(struct inode *inode, loff_t offset, __u64 length)
 
 	hur->hur_request.hr_action = HUA_RESTORE;
 	hur->hur_request.hr_archive_id = 0;
-	hur->hur_request.hr_flags = 0;
+	hur->hur_request.hr_flags = flags;
 	memcpy(&hur->hur_user_item[0].hui_fid, &ll_i2info(inode)->lli_fid,
 	       sizeof(hur->hur_user_item[0].hui_fid));
 	hur->hur_user_item[0].hui_extent.offset = offset;
 	hur->hur_user_item[0].hui_extent.length = length;
 	hur->hur_request.hr_itemcount = 1;
-	rc = mutex_lock_interruptible(&lli->lli_layout_mutex);
-	if (rc)
-		GOTO(out_free, rc);
+	
+	if (!async) {
+		rc = mutex_lock_interruptible(&lli->lli_layout_mutex);
+		if (rc)
+			GOTO(out_free, rc);
+	}
+	
 	rc = obd_iocontrol(LL_IOC_HSM_REQUEST, ll_i2sbi(inode)->ll_md_exp,
 			   len, hur, NULL);
-	mutex_unlock(&lli->lli_layout_mutex);
+	
+	if (!async)
+		mutex_unlock(&lli->lli_layout_mutex);
+	
 out_free:
 	OBD_FREE(hur, len);
 	RETURN(rc);
+}
+
+/* This function send a restore request to the MDT */
+int ll_layout_restore(struct inode *inode, loff_t offset, __u64 length)
+{
+	return ll_layout_restore_internal(inode, offset, length, 0, false);
 }
 
 /**
@@ -7067,32 +7095,7 @@ out_free:
 int ll_layout_restore_async(struct inode *inode, loff_t offset, __u64 length,
 			   __u64 flags)
 {
-	struct hsm_user_request *hur;
-	int len, rc;
-
-	ENTRY;
-	len = sizeof(struct hsm_user_request) +
-	      sizeof(struct hsm_user_item);
-	OBD_ALLOC(hur, len);
-	if (hur == NULL)
-		RETURN(-ENOMEM);
-
-	hur->hur_request.hr_action = HUA_RESTORE;
-	hur->hur_request.hr_archive_id = 0;
-	/* Set the flags to make the restore non-blocking */
-	hur->hur_request.hr_flags = flags;
-	memcpy(&hur->hur_user_item[0].hui_fid, &ll_i2info(inode)->lli_fid,
-	       sizeof(hur->hur_user_item[0].hui_fid));
-	hur->hur_user_item[0].hui_extent.offset = offset;
-	hur->hur_user_item[0].hui_extent.length = length;
-	hur->hur_request.hr_itemcount = 1;
-	
-	/* For async operations, we don't need to hold the layout mutex */
-	rc = obd_iocontrol(LL_IOC_HSM_REQUEST, ll_i2sbi(inode)->ll_md_exp,
-			  len, hur, NULL);
-	
-	OBD_FREE(hur, len);
-	RETURN(rc);
+	return ll_layout_restore_internal(inode, offset, length, flags, true);
 }
 
 /**

@@ -4600,7 +4600,7 @@ int pcc_trigger_async_hsm_restore(struct inode *inode)
 	if (lli->lli_flags & LLIF_DATA_MODIFIED)
 		policy_flags |= HRF_RESTORE_HIGH_PRIORITY;
 	
-	/* Use the new async restore function */
+	/* Use the unified restore function with async flag */
 	rc = ll_layout_restore_async(inode, 0, OBD_OBJECT_EOF, policy_flags);
 	
 	if (rc)
