@@ -7067,7 +7067,6 @@ out_free:
 int ll_layout_restore_async(struct inode *inode, loff_t offset, __u64 length,
 			   __u64 flags)
 {
-	struct ll_inode_info *lli = ll_i2info(inode);
 	struct hsm_user_request *hur;
 	int len, rc;
 
@@ -7080,8 +7079,8 @@ int ll_layout_restore_async(struct inode *inode, loff_t offset, __u64 length,
 
 	hur->hur_request.hr_action = HUA_RESTORE;
 	hur->hur_request.hr_archive_id = 0;
-	/* Set the async flag to make the restore non-blocking */
-	hur->hur_request.hr_flags = HRF_RESTORE_ASYNC | flags;
+	/* Set the flags to make the restore non-blocking */
+	hur->hur_request.hr_flags = flags;
 	memcpy(&hur->hur_user_item[0].hui_fid, &ll_i2info(inode)->lli_fid,
 	       sizeof(hur->hur_user_item[0].hui_fid));
 	hur->hur_user_item[0].hui_extent.offset = offset;
@@ -7093,5 +7092,36 @@ int ll_layout_restore_async(struct inode *inode, loff_t offset, __u64 length,
 			  len, hur, NULL);
 	
 	OBD_FREE(hur, len);
+	RETURN(rc);
+}
+
+/**
+ * Get the HSM state for an inode.
+ *
+ * This function retrieves the current HSM state for an inode,
+ * including archive ID, flags, and extent information.
+ *
+ * \param[in]  inode   The inode to query
+ * \param[out] hus     The HSM user state structure to fill
+ *
+ * \retval 0      Success
+ * \retval -ve    Error code
+ */
+int ll_hsm_state_get(struct inode *inode, struct hsm_user_state *hus)
+{
+	struct ll_sb_info *sbi = ll_i2sbi(inode);
+	struct md_op_data *op_data;
+	int rc;
+
+	ENTRY;
+	op_data = ll_prep_md_op_data(NULL, inode, NULL, NULL, 0, 0,
+				     LUSTRE_OPC_ANY, NULL);
+	if (IS_ERR(op_data))
+		RETURN(PTR_ERR(op_data));
+
+	rc = obd_iocontrol(LL_IOC_HSM_STATE_GET, sbi->ll_md_exp,
+			   sizeof(*op_data), op_data, (void *)hus);
+
+	ll_finish_md_op_data(op_data);
 	RETURN(rc);
 }

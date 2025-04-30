@@ -2617,10 +2617,8 @@ ssize_t pcc_file_read_iter(struct kiocb *iocb,
 {
 	struct file *file = iocb->ki_filp;
 	struct inode *inode = file_inode(file);
-	struct ll_inode_info *lli = ll_i2info(inode);
 	struct pcc_file *pccf = ll_file2pccf(file);
 	ssize_t result;
-	int rc;
 
 	ENTRY;
 	file->f_ra.ra_pages = 0;
@@ -4438,7 +4436,6 @@ out_unlock:
  */
 int pcc_detect_remote_cache(struct inode *inode, struct pcc_remote_info *remote_info)
 {
-	struct ll_inode_info *lli = ll_i2info(inode);
 	struct hsm_user_state *hus = NULL;
 	int len;
 	int rc;
@@ -4495,7 +4492,7 @@ int pcc_detect_remote_cache(struct inode *inode, struct pcc_remote_info *remote_
 		if (imp && imp->imp_connection) {
 			/* Use the MDT's NID as a placeholder */
 			snprintf(remote_info->nid, LNET_NIDSTR_SIZE, "%s",
-				 libcfs_nid2str(imp->imp_connection->c_peer.nid));
+				 libcfs_nidstr(&imp->imp_connection->c_peer.nid));
 			CDEBUG(D_CACHE, "Using MDT NID %s as placeholder for client with cache\n",
 			       remote_info->nid);
 			rc = 0;

@@ -1387,6 +1387,10 @@ extern int ll_have_md_lock(struct obd_export *exp, struct inode *inode,
 extern enum ldlm_mode ll_take_md_lock(struct inode *inode, __u64 bits,
 				      struct lustre_handle *lockh, __u64 flags,
 				      enum ldlm_mode mode);
+extern int ll_layout_restore(struct inode *inode, loff_t offset, __u64 length);
+extern int ll_layout_restore_async(struct inode *inode, loff_t offset, __u64 length,
+				  __u64 flags);
+extern int ll_hsm_state_get(struct inode *inode, struct hsm_user_state *hus);
 
 int ll_file_open(struct inode *inode, struct file *file);
 int ll_file_release(struct inode *inode, struct file *file);

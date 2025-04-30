@@ -38,6 +38,7 @@
 #include <linux/types.h>
 #include <linux/seq_file.h>
 #include <uapi/linux/lustre/lustre_user.h>
+#include <uapi/linux/lnet/nidstr.h>
 
 extern struct kmem_cache *pcc_inode_slab;
 
@@ -235,6 +236,16 @@ struct pcc_remote_info {
 #define PCC_REMOTE_CACHED    0x0001  /* File is cached on another client */
 #define PCC_REMOTE_RESTORING 0x0002  /* HSM restore is in progress */
 #define PCC_REMOTE_RDMA_READY 0x0004 /* RDMA connection established */
+
+/* PCC state flags for remote cache */
+#define PCC_STATE_FL_REMOTE_CACHED 0x0100 /* File is cached on another client */
+
+/* HSM restore flags */
+#define HRF_RESTORE_HIGH_PRIORITY 0x0001 /* High priority restore */
+
+/* PCC failure simulation flags */
+#define OBD_FAIL_LLITE_PCC_LNET_ERROR 0x1601 /* Simulate LNet connection error */
+#define OBD_FAIL_LLITE_PCC_REMOTE_UNAVAILABLE 0x1602 /* Simulate remote client unavailable */
 
 enum pcc_io_type {
 	/* read system call */
