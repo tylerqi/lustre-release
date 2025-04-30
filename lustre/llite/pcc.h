@@ -354,6 +354,8 @@ int pcc_establish_lnet_connection(struct pcc_remote_info *remote_info);
 int pcc_mark_remote_cached(struct inode *inode, struct pcc_remote_info *remote_info);
 int pcc_trigger_async_hsm_restore(struct inode *inode);
 bool pcc_is_remote_cached(struct inode *inode);
+ssize_t pcc_file_read_remote_cached(struct kiocb *iocb, struct iov_iter *iter);
+int ll_query_remote_client_nid(struct inode *inode, char *nid, size_t nid_size);
 
 static inline struct file *pcc_vma_file(struct vm_area_struct *vma)
 {

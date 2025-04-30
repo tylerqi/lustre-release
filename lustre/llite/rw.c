@@ -60,6 +60,11 @@
 
 static void ll_ra_stats_inc_sbi(struct ll_sb_info *sbi, enum ra_stat which);
 
+/* Forward declarations for PCC remote cache functions */
+extern bool pcc_is_remote_cached(struct inode *inode);
+extern ssize_t pcc_file_read_remote_cached(struct kiocb *iocb, struct iov_iter *iter);
+extern int pcc_trigger_async_hsm_restore(struct inode *inode);
+
 /*
  * Get readahead pages from the filesystem readahead pool of the client for a
  * thread.
@@ -1948,8 +1953,52 @@ int ll_readpage(struct file *file, struct page *vmpage)
 	struct vvp_io *vio;
 	int result;
 	int flags;
+	struct kiocb kiocb;
+	struct iov_iter iter;
 
 	ENTRY;
+
+	/* Check if file is cached on another client with PCC write cache */
+	if (pcc_is_remote_cached(inode)) {
+		unsigned int pos = vmpage->index << PAGE_SHIFT;
+		unsigned int count = PAGE_SIZE;
+		unsigned char *kaddr;
+		
+		CDEBUG(D_CACHE, "Found remote cached file "DFID", attempting direct read\n",
+		       PFID(ll_inode2fid(inode)));
+
+		/* Initialize kernel I/O control block for direct read */
+		init_sync_kiocb(&kiocb, file);
+		kiocb.ki_pos = pos;
+		
+		/* Map the page to prepare for direct data transfer */
+		kaddr = kmap(vmpage);
+		iov_iter_init(&iter, READ, (struct iovec*)&(struct kvec){.iov_base = kaddr, .iov_len = count}, 1, count);
+
+		/* Attempt direct read from remote client cache */
+		result = pcc_file_read_remote_cached(&kiocb, &iter);
+		
+		/* If direct read succeeds, mark page as up-to-date and unlock */
+		if (result >= 0) {
+			/* Mark page as up-to-date */
+			SetPageUptodate(vmpage);
+			
+			/* Trigger asynchronous HSM restore in background */
+			pcc_trigger_async_hsm_restore(inode);
+			
+			CDEBUG(D_CACHE, "Direct client-to-client read successful for "DFID"\n",
+			       PFID(ll_inode2fid(inode)));
+			
+			kunmap(vmpage);
+			unlock_page(vmpage);
+			RETURN(0);
+		}
+		
+		/* If direct read fails, fall back to normal read path */
+		kunmap(vmpage);
+		CDEBUG(D_CACHE, "Direct client-to-client read failed, falling back to normal read for "DFID"\n",
+		       PFID(ll_inode2fid(inode)));
+	}
 
 	if (CFS_FAIL_PRECHECK(OBD_FAIL_LLITE_READPAGE_PAUSE)) {
 		unlock_page(vmpage);
