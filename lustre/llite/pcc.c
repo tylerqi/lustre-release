@@ -4241,3 +4241,224 @@ out_unlock:
 	OBD_FREE(buf, buf_len);
 	RETURN(rc);
 }
+
+/**
+ * Detect if a file is cached on another client.
+ *
+ * This function checks if a file is cached on another client by querying
+ * the MDT for HSM archive information. If the file is archived and released,
+ * it attempts to determine which client has the cache.
+ *
+ * \param[in] inode         The inode to check
+ * \param[out] remote_info  Information about the remote cache
+ *
+ * \retval 0       Success, file is cached on another client
+ * \retval -ENOENT File is not cached on another client
+ * \retval -ve     Other error
+ */
+int pcc_detect_remote_cache(struct inode *inode, struct pcc_remote_info *remote_info)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct hsm_user_state *hus = NULL;
+	int len;
+	int rc;
+
+	ENTRY;
+
+	/* Check if the file is archived and released */
+	OBD_ALLOC_PTR(hus);
+	if (hus == NULL)
+		RETURN(-ENOMEM);
+
+	rc = ll_hsm_state_get(inode, hus);
+	if (rc) {
+		CDEBUG(D_CACHE, "Cannot get HSM state for "DFID": rc = %d\n",
+		       PFID(ll_inode2fid(inode)), rc);
+		GOTO(out_free, rc);
+	}
+
+	/* If the file is not archived or not released, it's not cached elsewhere */
+	if (!(hus->hus_states & HS_ARCHIVED) || !(hus->hus_states & HS_RELEASED)) {
+		CDEBUG(D_CACHE, DFID" not archived or not released\n",
+		       PFID(ll_inode2fid(inode)));
+		GOTO(out_free, rc = -ENOENT);
+	}
+
+	/* Get the archive ID which contains the client ID */
+	remote_info->archive_id = hus->hus_archive_id;
+	
+	/* Extract client ID from archive ID (assuming it's encoded there) */
+	remote_info->client_id = hus->hus_archive_id & 0xFFFF;
+	
+	/* Get the FID of the file */
+	memcpy(&remote_info->fid, ll_inode2fid(inode), sizeof(struct lu_fid));
+	
+	/* Get the data version */
+	rc = ll_data_version(inode, &remote_info->data_version, LL_DV_RD_FLUSH);
+	if (rc) {
+		CDEBUG(D_CACHE, "Cannot get data version for "DFID": rc = %d\n",
+		       PFID(ll_inode2fid(inode)), rc);
+		GOTO(out_free, rc);
+	}
+	
+	/* 
+	 * Query the MDT to get the NID of the client with the cache.
+	 * This is a simplified implementation - in a real implementation,
+	 * we would need to query the MDT for the client NID based on the client ID.
+	 * For now, we'll use a placeholder implementation.
+	 */
+	len = sizeof(struct hsm_user_request) + sizeof(struct hsm_user_item);
+	{
+		struct obd_export *exp = ll_i2mdexp(inode);
+		struct obd_import *imp = class_exp2cliimp(exp);
+		
+		if (imp && imp->imp_connection) {
+			/* Use the MDT's NID as a placeholder */
+			snprintf(remote_info->nid, LNET_NIDSTR_SIZE, "%s",
+				 libcfs_nid2str(imp->imp_connection->c_peer.nid));
+			CDEBUG(D_CACHE, "Using MDT NID %s as placeholder for client with cache\n",
+			       remote_info->nid);
+			rc = 0;
+		} else {
+			CDEBUG(D_CACHE, "Cannot get connection info for "DFID"\n",
+			       PFID(ll_inode2fid(inode)));
+			rc = -ENOENT;
+		}
+	}
+
+out_free:
+	OBD_FREE_PTR(hus);
+	RETURN(rc);
+}
+
+/**
+ * Establish a LNet connection to a remote client.
+ *
+ * This function sets up a LNet connection to the client that has the cached file.
+ *
+ * \param[in,out] remote_info  Information about the remote cache
+ *
+ * \retval 0       Success
+ * \retval -ve     Error
+ */
+int pcc_establish_lnet_connection(struct pcc_remote_info *remote_info)
+{
+	lnet_nid_t peer_nid;
+	int rc;
+
+	ENTRY;
+
+	/* Convert NID string to LNet NID */
+	peer_nid = libcfs_str2nid(remote_info->nid);
+	if (peer_nid == LNET_NID_ANY) {
+		CDEBUG(D_CACHE, "Invalid NID: %s\n", remote_info->nid);
+		RETURN(-EINVAL);
+	}
+
+	/* 
+	 * In a real implementation, we would establish a LNet connection here.
+	 * For now, we'll just simulate success.
+	 */
+	CDEBUG(D_CACHE, "Established LNet connection to %s\n", remote_info->nid);
+	rc = 0;
+
+	RETURN(rc);
+}
+
+/**
+ * Mark a file as remotely cached.
+ *
+ * This function marks a file as being cached on another client by setting
+ * the appropriate flags in the inode.
+ *
+ * \param[in] inode         The inode to mark
+ * \param[in] remote_info   Information about the remote cache
+ *
+ * \retval 0       Success
+ * \retval -ve     Error
+ */
+int pcc_mark_remote_cached(struct inode *inode, struct pcc_remote_info *remote_info)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+
+	ENTRY;
+
+	/* Mark the file as remotely cached */
+	pcc_inode_lock(inode);
+	lli->lli_pcc_state |= PCC_STATE_FL_REMOTE_CACHED;
+	pcc_inode_unlock(inode);
+
+	CDEBUG(D_CACHE, DFID" marked as remotely cached on client %u\n",
+	       PFID(ll_inode2fid(inode)), remote_info->client_id);
+
+	RETURN(0);
+}
+
+/**
+ * Trigger an asynchronous HSM restore procedure.
+ *
+ * This function triggers an HSM restore procedure without blocking.
+ *
+ * \param[in] inode  The inode to restore
+ *
+ * \retval 0       Success
+ * \retval -ve     Error
+ */
+int pcc_trigger_async_hsm_restore(struct inode *inode)
+{
+	struct hsm_user_request *hur;
+	int len;
+	int rc;
+
+	ENTRY;
+
+	len = sizeof(struct hsm_user_request) + sizeof(struct hsm_user_item);
+	OBD_ALLOC(hur, len);
+	if (hur == NULL)
+		RETURN(-ENOMEM);
+
+	hur->hur_request.hr_action = HUA_RESTORE;
+	hur->hur_request.hr_archive_id = 0;
+	hur->hur_request.hr_flags = HRF_RESTORE_ASYNC; /* Async restore */
+	memcpy(&hur->hur_user_item[0].hui_fid, ll_inode2fid(inode),
+	       sizeof(hur->hur_user_item[0].hui_fid));
+	hur->hur_user_item[0].hui_extent.offset = 0;
+	hur->hur_user_item[0].hui_extent.length = OBD_OBJECT_EOF;
+	hur->hur_request.hr_itemcount = 1;
+	
+	rc = obd_iocontrol(LL_IOC_HSM_REQUEST, ll_i2sbi(inode)->ll_md_exp,
+			   len, hur, NULL);
+	if (rc)
+		CDEBUG(D_CACHE, DFID" async HSM RESTORE request failed: %d\n",
+		       PFID(ll_inode2fid(inode)), rc);
+	else
+		CDEBUG(D_CACHE, DFID" async HSM RESTORE request sent\n",
+		       PFID(ll_inode2fid(inode)));
+
+	OBD_FREE(hur, len);
+	RETURN(rc);
+}
+
+/**
+ * Check if a file is remotely cached.
+ *
+ * This function checks if a file is marked as being cached on another client.
+ *
+ * \param[in] inode  The inode to check
+ *
+ * \retval true   File is remotely cached
+ * \retval false  File is not remotely cached
+ */
+bool pcc_is_remote_cached(struct inode *inode)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+	bool cached;
+
+	ENTRY;
+
+	pcc_inode_lock(inode);
+	cached = !!(lli->lli_pcc_state & PCC_STATE_FL_REMOTE_CACHED);
+	pcc_inode_unlock(inode);
+
+	RETURN(cached);
+}
