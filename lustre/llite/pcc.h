@@ -234,6 +234,7 @@ struct pcc_remote_info {
 /* PCC remote cache state flags */
 #define PCC_REMOTE_CACHED    0x0001  /* File is cached on another client */
 #define PCC_REMOTE_RESTORING 0x0002  /* HSM restore is in progress */
+#define PCC_REMOTE_RDMA_READY 0x0004 /* RDMA connection established */
 
 enum pcc_io_type {
 	/* read system call */
@@ -334,6 +335,13 @@ void pcc_dataset_free(struct kref *kref);
 void pcc_dataset_put(struct pcc_dataset *dataset);
 void pcc_inode_free(struct inode *inode);
 void pcc_layout_invalidate(struct inode *inode);
+
+/* Remote cache detection and direct transfer functions */
+int pcc_detect_remote_cache(struct inode *inode, struct pcc_remote_info *remote_info);
+int pcc_establish_lnet_connection(struct pcc_remote_info *remote_info);
+int pcc_mark_remote_cached(struct inode *inode, struct pcc_remote_info *remote_info);
+int pcc_trigger_async_hsm_restore(struct inode *inode);
+bool pcc_is_remote_cached(struct inode *inode);
 
 static inline struct file *pcc_vma_file(struct vm_area_struct *vma)
 {
