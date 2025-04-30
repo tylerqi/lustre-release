@@ -4503,44 +4503,41 @@ int pcc_mark_remote_cached(struct inode *inode, struct pcc_remote_info *remote_i
  * Trigger an asynchronous HSM restore procedure.
  *
  * This function triggers an HSM restore procedure without blocking.
+ * It supports policy-based restore through additional flags.
  *
  * \param[in] inode  The inode to restore
+ * \param[in] flags  Additional flags for the restore operation
  *
  * \retval 0       Success
  * \retval -ve     Error
  */
 int pcc_trigger_async_hsm_restore(struct inode *inode)
 {
-	struct hsm_user_request *hur;
-	int len;
+	struct ll_inode_info *lli = ll_i2info(inode);
 	int rc;
+	__u64 policy_flags = 0;
 
 	ENTRY;
 
-	len = sizeof(struct hsm_user_request) + sizeof(struct hsm_user_item);
-	OBD_ALLOC(hur, len);
-	if (hur == NULL)
-		RETURN(-ENOMEM);
-
-	hur->hur_request.hr_action = HUA_RESTORE;
-	hur->hur_request.hr_archive_id = 0;
-	hur->hur_request.hr_flags = HRF_RESTORE_ASYNC; /* Async restore */
-	memcpy(&hur->hur_user_item[0].hui_fid, ll_inode2fid(inode),
-	       sizeof(hur->hur_user_item[0].hui_fid));
-	hur->hur_user_item[0].hui_extent.offset = 0;
-	hur->hur_user_item[0].hui_extent.length = OBD_OBJECT_EOF;
-	hur->hur_request.hr_itemcount = 1;
+	/* 
+	 * Set policy flags based on file characteristics.
+	 * This is a simplified policy implementation - in a real implementation,
+	 * we would have more sophisticated policies based on file size, access
+	 * patterns, etc.
+	 */
+	if (lli->lli_flags & LLIF_DATA_MODIFIED)
+		policy_flags |= HRF_RESTORE_HIGH_PRIORITY;
 	
-	rc = obd_iocontrol(LL_IOC_HSM_REQUEST, ll_i2sbi(inode)->ll_md_exp,
-			   len, hur, NULL);
+	/* Use the new async restore function */
+	rc = ll_layout_restore_async(inode, 0, OBD_OBJECT_EOF, policy_flags);
+	
 	if (rc)
 		CDEBUG(D_CACHE, DFID" async HSM RESTORE request failed: %d\n",
 		       PFID(ll_inode2fid(inode)), rc);
 	else
-		CDEBUG(D_CACHE, DFID" async HSM RESTORE request sent\n",
-		       PFID(ll_inode2fid(inode)));
+		CDEBUG(D_CACHE, DFID" async HSM RESTORE request sent with policy flags 0x%llx\n",
+		       PFID(ll_inode2fid(inode)), policy_flags);
 
-	OBD_FREE(hur, len);
 	RETURN(rc);
 }
 

@@ -7048,3 +7048,50 @@ out_free:
 	OBD_FREE(hur, len);
 	RETURN(rc);
 }
+
+/**
+ * Send an asynchronous restore request to the MDT.
+ *
+ * This function sends an asynchronous restore request to the MDT,
+ * allowing the client to continue with other operations while the
+ * restore is in progress.
+ *
+ * \param[in] inode   The inode to restore
+ * \param[in] offset  The offset in the file to start restoring from
+ * \param[in] length  The length of the extent to restore
+ * \param[in] flags   Additional flags for the restore operation
+ *
+ * \retval 0      Success
+ * \retval -ve    Error code
+ */
+int ll_layout_restore_async(struct inode *inode, loff_t offset, __u64 length,
+			   __u64 flags)
+{
+	struct ll_inode_info *lli = ll_i2info(inode);
+	struct hsm_user_request *hur;
+	int len, rc;
+
+	ENTRY;
+	len = sizeof(struct hsm_user_request) +
+	      sizeof(struct hsm_user_item);
+	OBD_ALLOC(hur, len);
+	if (hur == NULL)
+		RETURN(-ENOMEM);
+
+	hur->hur_request.hr_action = HUA_RESTORE;
+	hur->hur_request.hr_archive_id = 0;
+	/* Set the async flag to make the restore non-blocking */
+	hur->hur_request.hr_flags = HRF_RESTORE_ASYNC | flags;
+	memcpy(&hur->hur_user_item[0].hui_fid, &ll_i2info(inode)->lli_fid,
+	       sizeof(hur->hur_user_item[0].hui_fid));
+	hur->hur_user_item[0].hui_extent.offset = offset;
+	hur->hur_user_item[0].hui_extent.length = length;
+	hur->hur_request.hr_itemcount = 1;
+	
+	/* For async operations, we don't need to hold the layout mutex */
+	rc = obd_iocontrol(LL_IOC_HSM_REQUEST, ll_i2sbi(inode)->ll_md_exp,
+			  len, hur, NULL);
+	
+	OBD_FREE(hur, len);
+	RETURN(rc);
+}
