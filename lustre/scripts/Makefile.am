@@ -1,24 +1,4 @@
-#
-# GPL HEADER START
-#
-# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License version 2 only,
-# as published by the Free Software Foundation.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-# General Public License version 2 for more details (a copy is included
-# in the LICENSE file that accompanied this code).
-#
-# You should have received a copy of the GNU General Public License
-# version 2 along with this program; If not, see
-# http://www.gnu.org/licenses/gpl-2.0.html
-#
-# GPL HEADER END
-#
+# SPDX-License-Identifier: GPL-2.0-only
 
 #
 # Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
@@ -55,7 +35,8 @@ endif
 endif
 
 if UTILS
-sbin_SCRIPTS += ldev lustre_routes_config lustre_routes_conversion
+sbin_SCRIPTS += ldev lustre_routes_config lustre_routes_conversion \
+		lnet_legacy2yaml
 bin_SCRIPTS   = lfs_migrate
 
 if SERVER
@@ -96,7 +77,8 @@ EXTRA_DIST = lustre_rmmod ldev lc_mon lhbadm \
 	     zfsobj2fid ko2iblnd-probe ksocklnd-config statechange-lustre.sh \
 	     vdev_attach-lustre.sh vdev_remove-lustre.sh vdev_clear-lustre.sh \
 	     bash-completion/lustre bash-completion/lctl bash-completion/lfs \
-	     remove_changelog remove_updatelog lsvcgss_sysd lnet-sysctl-config
+	     remove_changelog remove_updatelog lsvcgss_sysd lnet-sysctl-config \
+	     lnet_legacy2yaml
 
 CLEANFILES = $(genscripts)
 

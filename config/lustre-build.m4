@@ -159,7 +159,14 @@ AC_ARG_ENABLE([modules],
 			[bison package is required to build kernel modules])])
 	AS_CASE([$target_os], [linux*], [
 			# Ensure SUBARCH is defined
-			SUBARCH=$(echo $target_cpu | sed -e 's/powerpc.*/powerpc/' -e 's/ppc.*/powerpc/' -e 's/x86_64/x86/' -e 's/i.86/x86/' -e 's/k1om/x86/' -e 's/aarch64.*/arm64/' -e 's/armv7.*/arm/')
+			case $target_cpu in
+				x86_64|i[3-6]86|k1om) SUBARCH=x86;;
+				aarch64*)             SUBARCH=arm64;;
+				armv7*)               SUBARCH=arm;;
+				powerpc*|ppc*)        SUBARCH=powerpc;;
+				riscv64*)             SUBARCH=riscv;;
+				*)                    SUBARCH=$target_cpu;;
+			esac
 			LB_PROG_LINUX
 			AS_IF([test "x$enable_server" != xno],
 				[LB_EXT4_SOURCE_PATH])
@@ -173,7 +180,14 @@ AC_DEFUN([LB_KABI_CHECKS], [
 	AS_CASE([$target_os],
 		[linux*], [
 			# Ensure SUBARCH is defined
-			SUBARCH=$(echo $target_cpu | sed -e 's/powerpc.*/powerpc/' -e 's/ppc.*/powerpc/' -e 's/x86_64/x86/' -e 's/i.86/x86/' -e 's/k1om/x86/' -e 's/aarch64.*/arm64/' -e 's/armv7.*/arm/')
+			case $target_cpu in
+				x86_64|i[3-6]86|k1om) SUBARCH=x86;;
+				aarch64*)             SUBARCH=arm64;;
+				armv7*)               SUBARCH=arm;;
+				powerpc*|ppc*)        SUBARCH=powerpc;;
+				riscv64*)             SUBARCH=riscv;;
+				*)                    SUBARCH=$target_cpu;;
+			esac
 
 			# Run serial tests
 			LIBCFS_PROG_LINUX
@@ -184,18 +198,26 @@ AC_DEFUN([LB_KABI_CHECKS], [
 
 			# Run 'early' checks. The results of these are used in
 			# other configure tests:
-			LIBCFS_SRC_LOCKDEP_IS_HELD
-			LIBCFS_SRC_HAVE_WAIT_BIT_HEADER
 			LIBCFS_SRC_LINUX_BLK_INTEGRITY_HEADER
+			LIBCFS_SRC_LINUX_BIO_INTEGRITY_HEADER
 			LIBCFS_SRC_HAVE_MMAP_LOCK
+			LC_SRC_HAVE_INVALIDATE_LOCK
+			LC_SRC_HAVE_WB_STAT_MOD
+			LC_SRC_STRUCT_LSM_CONTEXT_EARLY
+			LC_SRC_GRAB_CACHE_PAGE_WRITE_BEGIN_WITH_FLAGS
+			LC_SRC_HAVE_LOCKS_LOCK_FILE_WAIT_IN_FILELOCK
 
 			LB2_LINUX_TEST_COMPILE_ALL([early],
 				[for available lustre kapi interfaces])
 
-			LIBCFS_LOCKDEP_IS_HELD
-			LIBCFS_HAVE_WAIT_BIT_HEADER
 			LIBCFS_LINUX_BLK_INTEGRITY_HEADER
+			LIBCFS_LINUX_BIO_INTEGRITY_HEADER
 			LIBCFS_HAVE_MMAP_LOCK
+			LC_HAVE_INVALIDATE_LOCK
+			LC_HAVE_WB_STAT_MOD
+			LC_STRUCT_LSM_CONTEXT_EARLY
+			LC_GRAB_CACHE_PAGE_WRITE_BEGIN_WITH_FLAGS
+			LC_HAVE_LOCKS_LOCK_FILE_WAIT_IN_FILELOCK
 
 			# Run any parallel compile tests
 			LB_PROG_LINUX_SRC
@@ -249,11 +271,15 @@ AC_MSG_RESULT([$enable_utils])
 # Build LNet Unit Test Framework?
 #
 AC_DEFUN([LB_CONFIG_LUTF], [
-AX_PYTHON_DEVEL()
+# Python development libs are optional, disable LUTF is not available
+# if you have python 2 and python3 and python defaults to 2 you can enable
+# python3 here by setting PYTHON_VERSION=3 before calling configure, example:
+#  $ PYTHON_VERSION=3 ./configure [options]
+AX_PYTHON_DEVEL([>= '3.6'], [true])
 AS_IF([test "x$enable_dist" != xno], [
 	enable_lutf="yes"
 ], [
-  AS_IF([test "x$PYTHON_VERSION_CHECK" = xno], [
+  AS_IF([test "x$ax_python_devel_found" = xno], [
 	enable_lutf="no"
   ], [
 	AX_PKG_SWIG(2.0, [ enable_lutf="yes" ],
@@ -414,7 +440,7 @@ AC_DEFUN([LB_CONFIG_FILES], [
 		Makefile
 		autoMakefile]
 		config/Makefile
-		[Rules:build/Rules.in]
+		[Rules:config/Rules.in]
 		AC_PACKAGE_TARNAME[.spec]
 		AC_PACKAGE_TARNAME[-dkms.spec]
 		ldiskfs/Makefile
@@ -429,6 +455,24 @@ AC_DEFUN([LB_CONFIG_FILES], [
 		lustre-iokit/ior-survey/Makefile
 		lustre-iokit/stats-collect/Makefile
 		lustre-iokit/lst-survey/Makefile
+		Documentation/Makefile
+		Documentation/man1/Makefile
+		Documentation/man3/Makefile
+		Documentation/man5/Makefile
+		Documentation/man7/Makefile
+		Documentation/man8/Makefile
+	)
+])
+
+#
+# LB_LUSTRE_LIBS_CONFIG_FILES
+#
+# lib config files
+#
+AC_DEFUN([LB_LUSTRE_LIBS_CONFIG_FILES], [
+	AC_CONFIG_FILES(
+		lib/Makefile
+		lib/libcfs/Makefile
 	)
 ])
 
@@ -457,10 +501,11 @@ AC_ARG_ENABLE([server],
 # before running, so until LB_CONFIG_MODULES can be reorganized, we
 # call it here.
 LB_CONFIG_MODULES
+LC_CONFIG_COVERAGE
 AS_IF([test x$enable_modules = xno], [enable_server=no])
 LB_CONFIG_LDISKFS
 LB_CONFIG_ZFS
-AS_IF([test "x$enable_dist" = xno], [
+AS_IF([test "x$enable_modules" = xyes], [
 	LB_KABI_LDISKFS
 	LZ_KABI_ZFS
 	LB_KABI_CHECKS
@@ -471,7 +516,7 @@ AS_IF([test "x$enable_dist" = xno], [
 AS_IF([test x$enable_ldiskfs = xno -a x$enable_zfs = xno], [
 	AS_CASE([$enable_server],
 		[maybe], [enable_server=no],
-		[yes], [AC_MSG_ERROR([cannot enable servers, no backends were configured])])
+		[yes], [AC_MSG_WARN([no backends were configured])])
 	], [
 		AS_IF([test x$enable_server = xmaybe], [enable_server=yes])
 	])
@@ -479,6 +524,10 @@ AS_IF([test x$enable_ldiskfs = xno -a x$enable_zfs = xno], [
 AC_MSG_CHECKING([whether to build Lustre server support])
 AC_MSG_RESULT([$enable_server])
 AS_IF([test x$enable_server = xyes], [
+	AS_IF([test "x$enable_modules" = xyes], [
+		AC_DEFINE(CONFIG_LUSTRE_FS_SERVER, 1,
+			  [build lustre server kernel support])
+	])
 	AC_DEFINE(HAVE_SERVER_SUPPORT, 1, [support server])
 	AC_SUBST(ENABLE_SERVER, yes)
 ], [
@@ -607,6 +656,9 @@ fi
 if test x$enable_mpitests != xyes ; then
 	RPMBINARGS="$RPMBINARGS --without mpi"
 fi
+if test x$enable_coverage != xno ; then
+	RPMBINARGS="$RPMBINARGS --with coverage"
+fi
 
 RPMBUILD_BINARY_ARGS=$RPMBINARGS
 
@@ -645,8 +697,6 @@ LB_INCLUDE_RULES
 
 LB_PATH_DEFAULTS
 
-LC_OSD_ADDON
-
 LB_CONFIG_DOCS
 LB_CONFIG_MANPAGES
 LB_CONFIG_UTILS
@@ -682,6 +732,7 @@ LB_PATH_LUSTREIOKIT
 
 LB_DEFINE_E2FSPROGS_NAMES
 
+EC_CONFIGURE
 LIBCFS_CONFIGURE
 LN_CONFIGURE
 LC_CONFIGURE
@@ -692,19 +743,18 @@ LB_CONFIG_HEADERS
 LPLUG_CONFIGURE
 LIBCFS_CONFIG_FILES
 LB_CONFIG_FILES
+EC_CONFIG_FILES
 LN_CONFIG_FILES
 LC_CONFIG_FILES
 LPLUG_CONFIG_FILES
+LB_LUSTRE_LIBS_CONFIG_FILES
 
 AC_SUBST(ac_configure_args)
-
-MOSTLYCLEANFILES='.*.cmd .*.flags *.o *.ko *.mod.c .depend .*.1.* Modules.symvers Module.symvers'
-AC_SUBST(MOSTLYCLEANFILES)
 
 LB_CONFIG_RPMBUILD_OPTIONS
 LB_CONFIG_CACHE_OPTIONS
 
-AS_IF([test -d $TEST_DIR -a "x${PARALLEL_BUILD_OPT}" != "xdebug"], [
+AS_IF([test -d "$TEST_DIR" -a "x${PARALLEL_BUILD_OPT}" != "xdebug"], [
 	AC_MSG_NOTICE([remove temporary parallel configure dir $TEST_DIR])
 	rm -rf $TEST_DIR
 ])

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
 #
@@ -12,14 +12,11 @@
 
 set -e
 pw="$PWD"
-for dir in libcfs lnet lustre ; do
-	ACLOCAL_FLAGS="$ACLOCAL_FLAGS -I $pw/$dir/autoconf"
-done
 
 # avoid the "modules.order: No such file or directory" failure
 touch modules.order
 
-libtoolize -q
+libtoolize -q -f
 aclocal -I $pw/config $ACLOCAL_FLAGS
 autoheader
 automake -a -c

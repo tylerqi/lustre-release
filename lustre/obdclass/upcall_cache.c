@@ -1,40 +1,20 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2016, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
- * lustre/obdclass/upcall_cache.c
- *
  * Supplementary groups cache.
  */
+
 #define DEBUG_SUBSYSTEM S_SEC
 
-#include <libcfs/libcfs.h>
 #include <uapi/linux/lnet/lnet-types.h>
 #include <upcall_cache.h>
 #include "upcall_cache_internal.h"
@@ -44,7 +24,7 @@ static struct upcall_cache_entry *alloc_entry(struct upcall_cache *cache,
 {
 	struct upcall_cache_entry *entry;
 
-	LIBCFS_ALLOC(entry, sizeof(*entry));
+	OBD_ALLOC(entry, sizeof(*entry));
 	if (!entry)
 		return NULL;
 
@@ -86,6 +66,15 @@ static inline int downcall_compare(struct upcall_cache *cache,
 	return 0;
 }
 
+static inline int accept_expired(struct upcall_cache *cache,
+				 struct upcall_cache_entry *entry)
+{
+	if (cache->uc_ops->accept_expired)
+		return cache->uc_ops->accept_expired(cache, entry);
+
+	return 0;
+}
+
 static inline void write_lock_from_read(rwlock_t *lock, bool *writelock)
 {
 	if (!*writelock) {
@@ -95,11 +84,17 @@ static inline void write_lock_from_read(rwlock_t *lock, bool *writelock)
 	}
 }
 
+/* Return value:
+ * 0 for suitable entry
+ * 1 for unsuitable entry
+ * -1 for expired entry
+ */
 static int check_unlink_entry(struct upcall_cache *cache,
 			      struct upcall_cache_entry *entry,
 			      bool writelock)
 {
 	time64_t now = ktime_get_seconds();
+	int accept_exp = 0;
 
 	if (UC_CACHE_IS_VALID(entry) && now < entry->ue_expire)
 		return 0;
@@ -117,12 +112,13 @@ static int check_unlink_entry(struct upcall_cache *cache,
 		UC_CACHE_SET_EXPIRED(entry);
 	}
 
-	if (writelock) {
+	accept_exp = accept_expired(cache, entry);
+	if (writelock && !accept_exp) {
 		list_del_init(&entry->ue_hash);
 		if (!atomic_read(&entry->ue_refcount))
 			free_entry(cache, entry);
 	}
-	return 1;
+	return accept_exp ? -1 : 1;
 }
 
 int upcall_cache_set_upcall(struct upcall_cache *cache, const char *buffer,
@@ -174,13 +170,14 @@ struct upcall_cache_entry *upcall_cache_get_entry(struct upcall_cache *cache,
 						  __u64 key, void *args)
 {
 	struct upcall_cache_entry *entry = NULL, *new = NULL, *next;
+	struct upcall_cache_entry *best_exp;
 	gid_t fsgid = (__u32)__kgid_val(INVALID_GID);
 	struct group_info *ginfo = NULL;
 	bool failedacquiring = false;
 	struct list_head *head;
 	wait_queue_entry_t wait;
 	bool writelock;
-	int rc = 0, found;
+	int rc = 0, rc2, found;
 
 	ENTRY;
 
@@ -198,9 +195,18 @@ find_again:
 		writelock = false;
 	}
 find_with_lock:
+	best_exp = NULL;
 	list_for_each_entry_safe(entry, next, head, ue_hash) {
 		/* check invalid & expired items */
-		if (check_unlink_entry(cache, entry, writelock))
+		rc2 = check_unlink_entry(cache, entry, writelock);
+		if (rc2 == -1) {
+			/* look for most recent expired entry */
+			if (upcall_compare(cache, entry, key, args) == 0 &&
+			    (!best_exp ||
+			     entry->ue_expire > best_exp->ue_expire))
+				best_exp = entry;
+		}
+		if (rc2)
 			continue;
 		if (upcall_compare(cache, entry, key, args) == 0) {
 			found = 1;
@@ -209,6 +215,22 @@ find_with_lock:
 	}
 
 	if (!found) {
+		if (best_exp) {
+			if (!writelock) {
+				/* We found an expired but potentially usable
+				 * entry while holding the read lock, so convert
+				 * it to a write lock and find again, to check
+				 * that entry was not modified/freed in between.
+				 */
+				write_lock_from_read(&cache->uc_lock,
+						     &writelock);
+				goto find_with_lock;
+			}
+			/* let's use that expired entry */
+			entry = best_exp;
+			get_entry(entry);
+			goto out;
+		}
 		if (!new) {
 			if (writelock)
 				write_unlock(&cache->uc_lock);
@@ -237,6 +259,11 @@ find_with_lock:
 			write_lock_from_read(&cache->uc_lock, &writelock);
 			found = 0;
 			goto find_with_lock;
+		}
+		if (best_exp) {
+			list_del_init(&best_exp->ue_hash);
+			if (!atomic_read(&best_exp->ue_refcount))
+				free_entry(cache, best_exp);
 		}
 		list_move(&entry->ue_hash, head);
 	}
@@ -352,6 +379,11 @@ out:
 		read_unlock(&cache->uc_lock);
 	if (ginfo)
 		groups_free(ginfo);
+	if (IS_ERR(entry))
+		CDEBUG(D_OTHER, "no entry found: rc = %ld\n", PTR_ERR(entry));
+	else
+		CDEBUG(D_OTHER, "found entry %p flags 0x%x\n",
+		       entry, entry->ue_flags);
 	RETURN(entry);
 }
 EXPORT_SYMBOL(upcall_cache_get_entry);
@@ -538,14 +570,14 @@ struct upcall_cache *upcall_cache_init(const char *name, const char *upcall,
 	int i;
 	ENTRY;
 
-	LIBCFS_ALLOC(cache, sizeof(*cache));
+	OBD_ALLOC(cache, sizeof(*cache));
 	if (!cache)
 		RETURN(ERR_PTR(-ENOMEM));
 
 	rwlock_init(&cache->uc_lock);
 	init_rwsem(&cache->uc_upcall_rwsem);
 	cache->uc_hashsize = hashsz;
-	LIBCFS_ALLOC(cache->uc_hashtable,
+	OBD_ALLOC(cache->uc_hashtable,
 		     sizeof(*cache->uc_hashtable) * cache->uc_hashsize);
 	if (!cache->uc_hashtable)
 		RETURN(ERR_PTR(-ENOMEM));
@@ -568,8 +600,8 @@ void upcall_cache_cleanup(struct upcall_cache *cache)
 	if (!cache)
 		return;
 	upcall_cache_flush_all(cache);
-	LIBCFS_FREE(cache->uc_hashtable,
+	OBD_FREE(cache->uc_hashtable,
 		    sizeof(*cache->uc_hashtable) * cache->uc_hashsize);
-	LIBCFS_FREE(cache, sizeof(*cache));
+	OBD_FREE(cache, sizeof(*cache));
 }
 EXPORT_SYMBOL(upcall_cache_cleanup);

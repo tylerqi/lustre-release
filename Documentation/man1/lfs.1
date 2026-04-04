@@ -1,0 +1,189 @@
+.TH LFS 1 2025-12-20 Lustre "Lustre User Utilities"
+.SH NAME
+lfs \- client utility for Lustre-specific file layout and other attributes
+.SH SYNOPSIS
+.SY lfs
+.SY lfs
+.B --version
+.SY lfs
+.B --list-commands
+.SY lfs
+.B help
+.YS
+.SH DESCRIPTION
+.B lfs
+can be used to create a new file with a specific striping pattern, determine
+the default striping pattern, gather the extended attributes (object numbers
+and location) for a specific file. It can be invoked interactively without any
+arguments or in a non-interactive mode with one of the arguments supported.
+.SH COMMANDS
+A number of sub-commands supported by lfs are listed below. Other commands
+are described in separate man pages of the form
+.BI lfs- COMMAND
+as listed in the
+.B SEE ALSO
+section at the end.
+.TP
+.BR check " {" mgts | mdts | osts | all "} [" \fIPATH ]
+Display the status of the MGTs, MDTs or OSTs (as specified in the command)
+or all the servers (MGTs, MDTs and OSTs). If
+.I PATH
+is provided, display the status of the lustre file system mounted at specified
+.I PATH
+only. This command will make an RPC to all the servers in scope to discover
+the server status. NOTE:
+.B lfs osts
+may be preferable for some use cases.
+.TP
+.BR data_version
+See
+.BR lfs-data_version (1).
+.TP
+.B flushctx
+See
+.BR lfs-flushctx (1).
+.TP
+.BR osts " [" PATH ]
+List all the OSTs for all mounted filesystems. If a
+.I PATH
+is provided that is located on a lustre mounted file system
+then only the OSTs belonging to that filesystem are displayed. This command will
+use a cached value for the OST status and will not make a RPC to discover
+status. The cached value will be updated by the client during the
+course of normal operations and would typically be less than 30 seconds old.
+NOTE:
+.B lfs check osts
+may be preferable for some use cases.
+.TP
+.BR mdts " [" PATH ]
+List all the MDTs for all mounted filesystems. If a
+.I PATH
+is provided that is located on a lustre mounted file system
+then only the MDTs belonging to that filesystem are displayed.
+.TP
+.BR pool_list " {" \fIFILESYSTEM }[ .\fIPOOLNAME "] | {" \fIPATHNAME }
+List the pools in
+.I FILESYSTEM
+or
+.IR PATHNAME ,
+or the OSTs in
+.IR FILESYSTEM.POOL .
+.TP
+.BI swap_layouts "FILENAME1 FILENAME2"
+Swap the data (layout and OST objects) of two regular files. The
+two files have to be in the same filesystem, owned by the same user,
+reside on the same MDT and writable by the user.
+.P
+Swapping the layout of two directories is not permitted.
+.TP
+.B mkdir
+lfs mkdir is documented in the man page: lfs-mkdir(1). NOTE:
+.B lfs setdirstripe
+is an alias of the command
+.B lfs mkdir
+.TP
+.B migrate
+See lfs-migrate(1).
+.TP
+.B setstripe
+See lfs-setstripe(1).
+.TP
+.B unlink_foreign
+Remove the foreign files/dirs that are prevented to be using
+regular unlink/rmdir commands/syscalls. Works also for regular files/dirs.
+.TP
+.BR rm_entry " | " rmentry
+Remove the name entry of a remote directory. This command will only delete
+the name entry, making the remote directory inaccessible. This can only be
+done by the administrator.
+.TP
+.B --version
+Output the build version of the lfs utility.
+Use "lctl lustre_build_version" to get the version of the Lustre kernel modules
+.TP
+.B --list-commands
+Output a list of the commands supported by the lfs utility
+.TP
+.B help
+Provides brief help on the various arguments
+.TP
+.B exit/quit
+Quit the interactive lfs session
+.SH NOTES
+The usage of
+.BR "lfs find" ,
+.BR "lfs getstripe" ,
+.BR "lfs hsm_*" ,
+.BR "lfs setstripe" ,
+.BR "lfs migrate" ,
+.BR "lfs getdirstripe" ,
+.BR "lfs setdirstripe" ,
+.BR "lfs mkdir" ,
+.BR "lfs flushctx" ,
+.BR "lfs changelog" ,
+.B "lfs changelog_clear"
+and
+.B "lfs project"
+are explained in separate man pages.
+.SH EXAMPLES
+Check the status of all servers (MGT, MDT, OST):
+.RS
+.EX
+.B # lfs check all
+.EE
+.RE
+.PP
+List all the OSTs:
+.RS
+.EX
+.B # lfs osts
+.EE
+.RE
+.PP
+List all the MDTs:
+.RS
+.EX
+.B # lfs mdts
+.EE
+.RE
+.SH AVAILABILITY
+The
+.B lfs
+command is part of the
+.BR lustre (7)
+filesystem package since release 0.10.0
+.\" Added in commit 0.9.1
+.SH SEE ALSO
+.BR lctl (8),
+.BR lfs-changelog (1),
+.BR lfs-changelog_clear (1),
+.BR lfs-data_version (1),
+.BR lfs-df (1),
+.BR lfs-fid2path (1),
+.BR lfs-find (1),
+.BR lfs-flushctx (1),
+.BR lfs-getdirstripe (1),
+.BR lfs-getname (1),
+.BR lfs-getsom (1),
+.BR lfs-getstripe (1),
+.BR lfs-heat_get (1),
+.BR lfs-heat_set (1),
+.BR lfs-hsm (1),
+.BR lfs-ladvise (1),
+.BR lfs-migrate (1),
+.BR lfs_migrate (1),
+.BR lfs-mirror (1),
+.BR lfs-mkdir (1),
+.BR lfs-path2fid (1),
+.BR lfs-pcc (1),
+.BR lfs-project (1),
+.BR lfs-quota (1),
+.BR lfs-rm_entry (8),
+.BR lfs-rmfid (1),
+.BR lfs-setdirstripe (1),
+.BR lfs-setquota (1),
+.BR lfs-setstripe (1),
+.BR lfs-somsync (1),
+.BR lfs-swap_layouts (1),
+.BR lfs-unlink_foreign (1),
+.BR lustre (7)

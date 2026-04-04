@@ -151,7 +151,7 @@ ldlm_flock_destroy(struct ldlm_lock *lock, enum ldlm_mode mode, __u64 flags)
 	EXIT;
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 /**
  * POSIX locks deadlock detection code.
  *
@@ -270,7 +270,7 @@ static void ldlm_flock_cancel_on_deadlock(struct ldlm_lock *lock,
 		ldlm_add_ast_work_item(lock, NULL, work_list);
 	}
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 /* Add newly granted lock into interval tree for the resource */
 void ldlm_flock_add_lock(struct ldlm_resource *res,
@@ -323,7 +323,7 @@ ldlm_process_flock_lock(struct ldlm_lock *req, __u64 *flags,
 	int splitted = 0;
 	__u64 start = START(req), end = LAST(req);
 	const struct ldlm_callback_suite null_cbs = { NULL };
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	struct list_head *grant_work = (intention == LDLM_PROCESS_ENQUEUE ?
 					NULL : work_list);
 #endif
@@ -363,7 +363,7 @@ reprocess:
 		/* This loop determines where this processes locks start
 		 * in the resource lr_granted list.
 		 */
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 		list_for_each_entry(lock, &res->lr_waiting, l_res_link) {
 			LASSERT(lock->l_req_mode != LCK_NL);
 
@@ -379,24 +379,24 @@ reprocess:
 				lock->l_flags |= LDLM_FL_AST_SENT;
 				ldlm_resource_unlink_lock(lock);
 				ldlm_add_ast_work_item(lock, NULL, &rpc_list);
-				LDLM_LOCK_GET(lock);
+				ldlm_lock_get(lock);
 				unlock_res_and_lock(req);
 				ldlm_run_ast_work(ns, &rpc_list,
 						  LDLM_WORK_CP_AST);
 				ldlm_lock_cancel(lock);
-				LDLM_LOCK_RELEASE(lock);
+				ldlm_lock_put(lock);
 				lock_res_and_lock(req);
 				break;
 			}
 		}
-#else /* !HAVE_SERVER_SUPPORT */
+#else /* !CONFIG_LUSTRE_FS_SERVER */
 		/* The only one possible case for client-side calls flock
 		 * policy function is ldlm_flock_completion_ast inside which
 		 * carries LDLM_FL_WAIT_NOREPROC flag.
 		 */
 		CERROR("Illegal parameter for client-side-only module.\n");
 		LBUG();
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	}
 	if ((*flags == LDLM_FL_WAIT_NOREPROC) || (mode == LCK_NL)) {
 		/* This loop collects all overlapping locks with the
@@ -412,7 +412,7 @@ reprocess:
 				ownlocks_end = &lock->l_same_owner;
 			}
 	}
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	else {
 		lockmode_verify(mode);
 
@@ -498,7 +498,7 @@ reprocess:
 	 * deadlock detection hash list.
 	 */
 	ldlm_flock_blocking_unlink(req);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 	/* Scan the locks owned by this process to handle overlaps.
 	 * We may have to merge or split existing locks.
@@ -554,7 +554,8 @@ reprocess:
 			continue;
 		}
 		if (LAST(new) >= LAST(lock)) {
-			ldlm_flock_range_update(lock, START(lock), LAST(new) - 1);
+			ldlm_flock_range_update(lock, START(lock),
+						START(new) - 1);
 			continue;
 		}
 
@@ -630,7 +631,7 @@ reprocess:
 	}
 
 	if (*flags != LDLM_FL_WAIT_NOREPROC) {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 		if (intention == LDLM_PROCESS_ENQUEUE) {
 			/* If this is an unlock, reprocess the waitq and
 			 * send completions ASTs for locks that can now be
@@ -666,14 +667,14 @@ restart:
 			LASSERT(req->l_completion_ast);
 			ldlm_add_ast_work_item(req, NULL, grant_work);
 		}
-#else /* !HAVE_SERVER_SUPPORT */
+#else /* !CONFIG_LUSTRE_FS_SERVER */
 		/* The only one possible case for client-side calls flock
 		 * policy function is ldlm_flock_completion_ast inside which
 		 * carries LDLM_FL_WAIT_NOREPROC flag.
 		 */
 		CERROR("Illegal parameter for client-side-only module.\n");
 		LBUG();
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	}
 
 	/* In case we're reprocessing the requested lock we can't destroy
@@ -791,7 +792,6 @@ int
 ldlm_flock_completion_ast(struct ldlm_lock *lock, __u64 flags, void *data)
 {
 	struct ldlm_flock_info *args;
-	struct obd_device *obd;
 	enum ldlm_error err;
 	int rc = 0;
 
@@ -825,7 +825,6 @@ ldlm_flock_completion_ast(struct ldlm_lock *lock, __u64 flags, void *data)
 
 	LDLM_DEBUG(lock,
 		   "client-side enqueue returned a blocked lock, sleeping");
-	obd = class_exp2obd(lock->l_conn_export);
 
 	/* Go to sleep until the lock is granted. */
 	rc = l_wait_event_abortable(lock->l_waitq,
@@ -1052,7 +1051,7 @@ static unsigned int
 ldlm_export_flock_hash(struct cfs_hash *hs, const void *key,
 		       const unsigned int bits)
 {
-	return cfs_hash_64(*(__u64 *)key, bits);
+	return hash_64(*(__u64 *)key, bits);
 }
 
 static void *

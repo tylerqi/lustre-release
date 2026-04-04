@@ -8,21 +8,9 @@
 #include <crypto/hash.h>
 #include <linux/scatterlist.h>
 #include <linux/pagemap.h>
-#include <libcfs/libcfs.h>
+#include <linux/libcfs/libcfs.h>
 #include <lnet/lnet_crypto.h>
 #include "adler.h"
-
-#ifndef HAVE_CRYPTO_HASH_HELPERS
-static inline const char *crypto_ahash_alg_name(struct crypto_ahash *tfm)
-{
-	return crypto_tfm_alg_name(crypto_ahash_tfm(tfm));
-}
-
-static inline const char *crypto_ahash_driver_name(struct crypto_ahash *tfm)
-{
-	return crypto_tfm_alg_driver_name(crypto_ahash_tfm(tfm));
-}
-#endif
 
 /**
  *  Array of hash algorithm speed in MByte per second
@@ -326,9 +314,9 @@ static void cfs_crypto_performance_test(enum cfs_crypto_hash_alg hash_alg)
 		goto out_err;
 	}
 
-	buf = kmap(page);
+	buf = kmap_local_page(page);
 	memset(buf, 0xAD, PAGE_SIZE);
-	kunmap(page);
+	kunmap_local(buf);
 
 	for (start = jiffies, end = start + cfs_time_seconds(1) / 4,
 	     bcount = 0; time_before(jiffies, end) && err == 0; bcount++) {

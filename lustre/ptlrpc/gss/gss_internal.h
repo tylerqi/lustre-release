@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
  * Modified from NFSv4 project for Lustre
  *
@@ -168,6 +170,7 @@ struct gss_cli_ctx {
 	__u32			gc_flavor;
 	__u32			gc_proc;
 	__u32			gc_win;
+	__u32			gc_gss_err;
 	atomic_t		gc_seq;
 	rawobj_t		gc_handle;
 	struct gss_ctx		*gc_mechctx;
@@ -351,7 +354,7 @@ __u32 g_verify_token_header(rawobj_t *mech, int *body_size,
 
 
 /* gss_cli_upcall.c */
-int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count);
+int gss_do_ctx_init_rpc(char *buffer, unsigned long count);
 int gss_do_ctx_fini_rpc(struct gss_cli_ctx *gctx);
 
 int  __init gss_init_cli_upcall(void);
@@ -423,15 +426,6 @@ void __dbg_memdump(char *name, void *ptr, int size)
         buf[size + size] = '\0';
         LCONSOLE_INFO("DUMP %s@%p(%d): %s\n", name, ptr, size, buf);
         OBD_FREE(buf, bufsize);
-}
-
-static inline unsigned int ll_read_key_usage(struct key *key)
-{
-#ifdef HAVE_KEY_USAGE_REFCOUNT
-	return refcount_read(&key->usage);
-#else
-	return atomic_read(&key->usage);
-#endif
 }
 
 #define RSI_UPCALL_PATH "/usr/sbin/l_getauth"

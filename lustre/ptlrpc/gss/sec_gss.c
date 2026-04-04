@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 /*
  * Modifications for Lustre
  *
@@ -18,32 +20,6 @@
  *
  *  Dug Song       <dugsong@monkey.org>
  *  Andy Adamson   <andros@umich.edu>
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted provided that the following conditions
- *  are met:
- *
- *  1. Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *  2. Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *  3. Neither the name of the University nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *  THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
- *  WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *  DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
- *  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- *  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- *  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
- *  BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- *  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- *  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
  */
 
 #define DEBUG_SUBSYSTEM S_SEC
@@ -2395,6 +2371,7 @@ int gss_svc_accept(struct ptlrpc_sec_policy *policy, struct ptlrpc_request *req)
 
 	grctx->src_base.sc_policy = sptlrpc_policy_get(policy);
 	atomic_set(&grctx->src_base.sc_refcount, 1);
+	grctx->src_base.sc_nodemap = NULL;
 	req->rq_svc_ctx = &grctx->src_base;
 	gw = &grctx->src_wirectx;
 
@@ -2429,6 +2406,8 @@ int gss_svc_accept(struct ptlrpc_sec_policy *policy, struct ptlrpc_request *req)
 	switch (rc) {
 	case SECSVC_OK:
 		LASSERT (grctx->src_ctx);
+
+		grctx->src_base.sc_nodemap = grctx->src_ctx->gsc_nm_name;
 
 		req->rq_auth_gss = 1;
 		req->rq_auth_usr_mdt = grctx->src_ctx->gsc_usr_mds;
@@ -2931,5 +2910,5 @@ MODULE_DESCRIPTION("Lustre GSS security policy");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(sptlrpc_gss_init);
+late_initcall_sync(sptlrpc_gss_init);
 module_exit(sptlrpc_gss_exit);

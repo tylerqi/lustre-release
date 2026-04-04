@@ -1,45 +1,24 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2013, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
- * lustre/obdclass/lu_ucred.c
- *
  * Lustre user credentials context infrastructure.
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
- *   Author: Fan Yong <fan.yong@intel.com>
- *   Author: Vitaly Fertman <vitaly_fertman@xyratex.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Fan Yong <fan.yong@intel.com>
+ * Author: Vitaly Fertman <vitaly_fertman@xyratex.com>
  */
 
 #define DEBUG_SUBSYSTEM S_CLASS
 
-#include <libcfs/libcfs.h>
 #include <obd_support.h>
 #include <lu_object.h>
 #include <md_object.h>
@@ -54,8 +33,10 @@ static struct lu_context_key lu_ucred_key = {
 };
 
 /**
- * Get ucred key if session exists and ucred key is allocated on it.
- * Return NULL otherwise.
+ * lu_ucred() - Get ucred key if session exists and allocated
+ * @env: current lustre environment
+ *
+ * Returns valid lu_ucred struct(UID, GID) on success or NULL on failure
  */
 struct lu_ucred *lu_ucred(const struct lu_env *env)
 {
@@ -66,8 +47,10 @@ struct lu_ucred *lu_ucred(const struct lu_env *env)
 EXPORT_SYMBOL(lu_ucred);
 
 /**
- * Get ucred key and check if it is properly initialized.
- * Return NULL otherwise.
+ * lu_ucred_check() - Get ucred key and check if it is properly initialized.
+ * @env: current lustre environment
+ *
+ * Returns valid lu_ucred struct(UID, GID) on success or NULL on failure
  */
 struct lu_ucred *lu_ucred_check(const struct lu_env *env)
 {
@@ -79,8 +62,13 @@ struct lu_ucred *lu_ucred_check(const struct lu_env *env)
 EXPORT_SYMBOL(lu_ucred_check);
 
 /**
+ * lu_ucred_assert() - Get ucred (user credentials) key
+ * @env: current lustre environment
+ *
  * Get ucred key, which must exist and must be properly initialized.
  * Assert otherwise.
+ *
+ * Returns valid lu_ucred struct(UID, GID) on success
  */
 struct lu_ucred *lu_ucred_assert(const struct lu_env *env)
 {

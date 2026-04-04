@@ -262,9 +262,11 @@ ssize_t lov_lsm_pack(const struct lov_stripe_md *lsm, void *buf,
 
 		lcme->lcme_id = cpu_to_le32(lsme->lsme_id);
 		lcme->lcme_flags = cpu_to_le32(lsme->lsme_flags);
-		if (lsme->lsme_flags & LCME_FL_NOSYNC)
-			lcme->lcme_timestamp =
-				cpu_to_le64(lsme->lsme_timestamp);
+		lcme->lcme_time_and_id = cpu_to_le64(
+			lcme_timestamp_and_id_pack(lsme->lsme_timestamp,
+				     lsme->lsme_mirror_link_id));
+		lcme->lcme_dstripe_count = lsme->lsme_dstripe_count;
+		lcme->lcme_cstripe_count = lsme->lsme_cstripe_count;
 		lcme->lcme_extent.e_start =
 			cpu_to_le64(lsme->lsme_extent.e_start);
 		lcme->lcme_extent.e_end =
@@ -286,12 +288,13 @@ ssize_t lov_lsm_pack(const struct lov_stripe_md *lsm, void *buf,
 /* Find the max stripecount we should use */
 __u16 lov_get_stripe_count(struct lov_obd *lov, __u32 magic, __u16 stripe_count)
 {
-	__u32 max_stripes = LOV_MAX_STRIPE_COUNT_OLD;
+	struct lu_tgt_descs *ltd = &lov->lov_ost_descs;
+	u32 max_stripes = LOV_MAX_STRIPE_COUNT_OLD;
 
 	if (!stripe_count)
-		stripe_count = lov->desc.ld_default_stripe_count;
-	if (stripe_count > lov->desc.ld_active_tgt_count)
-		stripe_count = lov->desc.ld_active_tgt_count;
+		stripe_count = ltd->ltd_lov_desc.ld_default_stripe_count;
+	if (stripe_count > ltd->ltd_lov_desc.ld_active_tgt_count)
+		stripe_count = ltd->ltd_lov_desc.ld_active_tgt_count;
 	if (!stripe_count)
 		stripe_count = 1;
 
@@ -310,18 +313,12 @@ __u16 lov_get_stripe_count(struct lov_obd *lov, __u32 magic, __u16 stripe_count)
 	return stripe_count;
 }
 
-int lov_free_memmd(struct lov_stripe_md **lsmp)
+void lov_free_memmd(struct lov_stripe_md **lsmp)
 {
 	struct lov_stripe_md *lsm = *lsmp;
-	int refc;
 
 	*lsmp = NULL;
-	refc = atomic_dec_return(&lsm->lsm_refc);
-	LASSERT(refc >= 0);
-	if (refc == 0)
-		lsm_free(lsm);
-
-	return refc;
+	kref_put(&lsm->lsm_refc, lsm_free);
 }
 
 /*

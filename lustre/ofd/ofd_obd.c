@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ofd/ofd_obd.c
  *
  * This file contains OBD API methods for OBD Filter Device (OFD) which are
  * used for export handling, configuration purposes and recovery.
@@ -67,12 +47,12 @@ static int ofd_export_stats_init(struct ofd_device *ofd,
 				 struct obd_export *exp,
 				 struct lnet_nid *client_nid)
 {
-	struct obd_device	*obd = ofd_obd(ofd);
-	struct nid_stat		*stats;
-	int			 rc;
+	struct obd_device *obd = ofd_obd(ofd);
+	char param[MAX_OBD_NAME * 4];
+	struct nid_stat	*stats;
+	int rc;
 
 	ENTRY;
-
 	if (obd_uuid_equals(&exp->exp_client_uuid, &obd->obd_uuid))
 		/* Self-export gets no proc entry */
 		RETURN(0);
@@ -83,24 +63,17 @@ static int ofd_export_stats_init(struct ofd_device *ofd,
 		RETURN(rc == -EALREADY ? 0 : rc);
 
 	stats = exp->exp_nid_stats;
-	stats->nid_stats = lprocfs_stats_alloc(LPROC_OFD_STATS_LAST,
-					       LPROCFS_STATS_FLAG_NOPERCPU);
+	scnprintf(param, sizeof(param), "obdfilter.%s.exports.%s.stats",
+		  obd->obd_name, libcfs_nidstr(client_nid));
+	stats->nid_stats = ldebugfs_stats_alloc(LPROC_OFD_STATS_LAST, param,
+						stats->nid_debugfs,
+						LPROCFS_STATS_FLAG_NOPERCPU);
 	if (!stats->nid_stats)
 		RETURN(-ENOMEM);
 
 	ofd_stats_counter_init(stats->nid_stats, 0, LPROCFS_CNTR_HISTOGRAM);
 
-	rc = lprocfs_stats_register(stats->nid_proc, "stats", stats->nid_stats);
-	if (rc != 0) {
-		lprocfs_stats_free(&stats->nid_stats);
-		GOTO(out, rc);
-	}
-
 	rc = lprocfs_nid_ldlm_stats_init(stats);
-	if (rc != 0)
-		GOTO(out, rc);
-
-out:
 	RETURN(rc);
 }
 
@@ -262,14 +235,13 @@ static int ofd_parse_connect_data(const struct lu_env *env,
 
 	data->ocd_version = LUSTRE_VERSION_CODE;
 
-	if (OCD_HAS_FLAG(data, PINGLESS)) {
-		if (ptlrpc_pinger_suppress_pings()) {
-			spin_lock(&exp->exp_obd->obd_dev_lock);
-			list_del_init(&exp->exp_obd_chain_timed);
-			spin_unlock(&exp->exp_obd->obd_dev_lock);
-		} else {
-			data->ocd_connect_flags &= ~OBD_CONNECT_PINGLESS;
-		}
+	if (OCD_HAS_FLAG(data, PINGLESS) && !ptlrpc_pinger_suppress_pings())
+		data->ocd_connect_flags &= ~OBD_CONNECT_PINGLESS;
+
+	if (!OCD_HAS_FLAG(data, PINGLESS)) {
+		spin_lock(&exp->exp_lock);
+		exp->exp_timed = 1;
+		spin_unlock(&exp->exp_lock);
 	}
 
 	if (!ofd->ofd_lut.lut_dt_conf.ddp_has_lseek_data_hole)
@@ -299,8 +271,10 @@ static int ofd_obd_reconnect(const struct lu_env *env, struct obd_export *exp,
 			     struct obd_connect_data *data,
 			     void *localdata)
 {
+	struct ptlrpc_request *req = localdata;
+	struct ptlrpc_svc_ctx *svc_ctx = NULL;
+	struct lnet_nid *client_nid = NULL;
 	struct ofd_device *ofd;
-	struct lnet_nid *client_nid = localdata;
 	int rc;
 
 	ENTRY;
@@ -308,17 +282,30 @@ static int ofd_obd_reconnect(const struct lu_env *env, struct obd_export *exp,
 	if (!exp || !obd || !cluuid)
 		RETURN(-EINVAL);
 
-	rc = nodemap_add_member(client_nid, exp);
-	if (rc != 0 && rc != -EEXIST)
-		RETURN(rc);
+	if (req) {
+		svc_ctx = req->rq_svc_ctx;
+		client_nid = &req->rq_peer.nid;
+	}
+
+	if (svc_ctx || client_nid) {
+		rc = nodemap_add_member(svc_ctx, client_nid, exp);
+		if (rc != 0 && rc != -EEXIST)
+			RETURN(rc);
+	} else {
+		CDEBUG(D_HA,
+		       "%s: cannot find nodemap for client %s: svc_ctx and nid are null\n",
+		       obd->obd_name, cluuid->uuid);
+	}
 
 	ofd = ofd_dev(obd->obd_lu_dev);
 
 	rc = ofd_parse_connect_data(env, exp, data, false);
-	if (rc == 0)
-		ofd_export_stats_init(ofd, exp, client_nid);
-	else
+	if (rc == 0) {
+		if (client_nid)
+			ofd_export_stats_init(ofd, exp, client_nid);
+	} else {
 		nodemap_del_member(exp);
+	}
 
 	RETURN(rc);
 }
@@ -344,10 +331,12 @@ static int ofd_obd_connect(const struct lu_env *env, struct obd_export **_exp,
 			   struct obd_device *obd, struct obd_uuid *cluuid,
 			   struct obd_connect_data *data, void *localdata)
 {
+	struct ptlrpc_request *req = localdata;
+	struct ptlrpc_svc_ctx *svc_ctx = NULL;
+	struct lnet_nid *client_nid = NULL;
+	struct lustre_handle conn = { 0 };
 	struct obd_export *exp;
 	struct ofd_device *ofd;
-	struct lustre_handle conn = { 0 };
-	struct lnet_nid *client_nid = localdata;
 	int rc;
 
 	ENTRY;
@@ -364,13 +353,18 @@ static int ofd_obd_connect(const struct lu_env *env, struct obd_export **_exp,
 	exp = class_conn2export(&conn);
 	LASSERT(exp != NULL);
 
-	if (client_nid) {
-		rc = nodemap_add_member(client_nid, exp);
+	if (req) {
+		svc_ctx = req->rq_svc_ctx;
+		client_nid = &req->rq_peer.nid;
+	}
+
+	if (svc_ctx || client_nid) {
+		rc = nodemap_add_member(svc_ctx, client_nid, exp);
 		if (rc != 0 && rc != -EEXIST)
 			GOTO(out, rc);
 	} else {
 		CDEBUG(D_HA,
-		       "%s: cannot find nodemap for client %s: nid is null\n",
+		       "%s: cannot find nodemap for client %s: svc_ctx and nid are null\n",
 		       obd->obd_name, cluuid->uuid);
 	}
 
@@ -378,7 +372,7 @@ static int ofd_obd_connect(const struct lu_env *env, struct obd_export **_exp,
 	if (rc)
 		GOTO(out, rc);
 
-	if (obd->obd_replayable) {
+	if (test_bit(OBDF_REPLAYABLE, obd->obd_flags)) {
 		struct tg_export_data *ted = &exp->exp_target_data;
 
 		memcpy(ted->ted_lcd->lcd_uuid, cluuid,
@@ -386,7 +380,8 @@ static int ofd_obd_connect(const struct lu_env *env, struct obd_export **_exp,
 		rc = tgt_client_new(env, exp);
 		if (rc != 0)
 			GOTO(out, rc);
-		ofd_export_stats_init(ofd, exp, client_nid);
+		if (client_nid)
+			ofd_export_stats_init(ofd, exp, client_nid);
 	}
 
 	CDEBUG(D_HA, "%s: get connection from MDS %d\n", obd->obd_name,
@@ -433,7 +428,7 @@ int ofd_obd_disconnect(struct obd_export *exp)
 		tgt_grant_sanity_check(ofd_obd(ofd), __func__);
 
 	/* Do not erase record for recoverable client. */
-	if (exp->exp_obd->obd_replayable &&
+	if (test_bit(OBDF_REPLAYABLE, exp->exp_obd->obd_flags) &&
 	    (!exp->exp_obd->obd_fail || exp->exp_failed)) {
 		rc = lu_env_init(&env, LCT_DT_THREAD);
 		if (rc)
@@ -772,6 +767,9 @@ int ofd_statfs(const struct lu_env *env,  struct obd_export *exp,
 	}
 
 	/* OS_STATFS_READONLY can be set by OSD already, only add flags */
+	if (ofd->ofd_readonly)
+		osfs->os_state |= OS_STATFS_READONLY;
+
 	if (ofd->ofd_raid_degraded)
 		osfs->os_state |= OS_STATFS_DEGRADED;
 
@@ -1232,6 +1230,15 @@ out:
 	return rc;
 }
 
+/* this should sync the whole device */
+static int ofd_device_sync(const struct lu_env *env, struct ofd_device *ofd)
+{
+	lu_objects_destroy_delayed();
+
+	RETURN(dt_sync(env, ofd->ofd_osd));
+}
+
+
 /**
  * Implementation of obd_ops::o_iocontrol.
  *
@@ -1273,10 +1280,10 @@ static int ofd_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		GOTO(out, rc);
 	case OBD_IOC_SYNC:
 		CDEBUG(D_RPCTRACE, "syncing ost %s\n", obd->obd_name);
-		rc = dt_sync(&env, ofd->ofd_osd);
+		rc = ofd_device_sync(&env, ofd);
 		GOTO(out, rc);
 	case OBD_IOC_SET_READONLY:
-		rc = dt_sync(&env, ofd->ofd_osd);
+		rc = ofd_device_sync(&env, ofd);
 		if (rc == 0)
 			rc = dt_ro(&env, ofd->ofd_osd);
 		GOTO(out, rc);
@@ -1321,24 +1328,6 @@ static int ofd_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 out:
 	lu_env_fini(&env);
 	RETURN(rc);
-}
-
-/**
- * Implementation of obd_ops::o_precleanup.
- *
- * This function stops device activity before shutting it down. It is called
- * from a cleanup function upon forceful device cleanup. For OFD there are no
- * special actions, it just invokes target_recovery_cleanup().
- *
- * \param[in] obd	OBD device of OFD
- *
- * \retval		0
- */
-static int ofd_precleanup(struct obd_device *obd)
-{
-	ENTRY;
-	target_cleanup_recovery(obd);
-	RETURN(0);
 }
 
 /**
@@ -1439,7 +1428,6 @@ const struct obd_ops ofd_obd_ops = {
 	.o_postrecov		= ofd_obd_postrecov,
 	.o_getattr		= ofd_echo_getattr,
 	.o_iocontrol		= ofd_iocontrol,
-	.o_precleanup		= ofd_precleanup,
 	.o_health_check		= ofd_health_check,
 	.o_set_info_async	= ofd_set_info_async,
 	.o_get_info		= ofd_get_info,

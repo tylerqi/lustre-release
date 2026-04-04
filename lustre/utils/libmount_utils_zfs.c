@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
-
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License version 2 for more details.  A copy is
- * included in the COPYING file that accompanied this code.
-
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2012, 2017, Intel Corporation.
  * Use is subject to license terms.
@@ -506,8 +486,8 @@ int zfs_read_ldd(char *ds,  struct lustre_disk_data *ldd)
 		uint64_t mh = zpool_get_prop_int(pool, ZPOOL_PROP_MULTIHOST,
 						 NULL);
 		if (!mh)
-			fprintf(stderr, "%s: %s is configured for failover "
-				"but zpool does not have multihost enabled\n",
+			fprintf(stderr,
+				"%s: warning: %s is configured for failover, but zpool does not have multihost enabled\n",
 				progname, ds);
 	}
 
@@ -636,6 +616,12 @@ static int zfs_create_vdev(struct mkfs_opts *mop, char *vdev)
 
 	return ret;
 }
+/* interop will break if we change MAX_NAME from 255 */
+#ifdef ZAP_MAXNAMELEN_NEW
+#define ZFS_LONGNAME_FEATURE	" -o feature@longname=disabled"
+#else
+#define ZFS_LONGNAME_FEATURE	""
+#endif
 
 int zfs_make_lustre(struct mkfs_opts *mop)
 {
@@ -713,7 +699,8 @@ int zfs_make_lustre(struct mkfs_opts *mop)
 
 		memset(mkfs_cmd, 0, PATH_MAX);
 		snprintf(mkfs_cmd, PATH_MAX,
-			"zpool create -f -O canmount=off %s", pool);
+			"zpool create%s -f -O canmount=off %s",
+			ZFS_LONGNAME_FEATURE, pool);
 
 		/* Append the vdev config and create file vdevs as required */
 		while (*mop->mo_pool_vdevs != NULL) {
@@ -779,6 +766,7 @@ int zfs_make_lustre(struct mkfs_opts *mop)
 	 * zfs 0.6.1 - system attribute based xattrs
 	 * zfs 0.6.5 - large block support
 	 * zfs 0.7.0 - large dnode support
+	 * zfs 2.2.6 - compression handling
 	 *
 	 * Check if zhp is NULL as a defensive measure. Any dataset
 	 * validation errors that would cause zfs_open() to fail
@@ -786,6 +774,8 @@ int zfs_make_lustre(struct mkfs_opts *mop)
 	 */
 	zhp = zfs_open(g_zfs, ds, ZFS_TYPE_FILESYSTEM);
 	if (zhp) {
+		char *opt;
+
 		/* zfs 0.6.1 - system attribute based xattrs */
 		if (!strstr(mop->mo_mkfsopts, "xattr="))
 			zfs_set_prop_str(zhp, "xattr", "sa");
@@ -800,6 +790,24 @@ int zfs_make_lustre(struct mkfs_opts *mop)
 			if (!strstr(mop->mo_mkfsopts, "recordsize=") &&
 			    !strstr(mop->mo_mkfsopts, "recsize="))
 				zfs_set_prop_str(zhp, "recordsize", "1M");
+		}
+
+		/* zfs 2.2.6 - compression handling */
+		opt = strstr(mop->mo_mkfsopts, "compression=");
+		if (opt) {
+			char *end = index(opt, ',');
+			size_t len = strlen(opt);
+
+			if (end) {
+				len = end - opt;
+				end = strndup(opt, len);
+			}
+			zfs_set_prop_str(zhp, "compression", end ? end : opt);
+			if (end)
+				free(end);
+		} else {
+			/* By default turn off compression */
+			zfs_set_prop_str(zhp, "compression", "off");
 		}
 
 		zfs_close(zhp);
@@ -867,6 +875,24 @@ int zfs_label_lustre(struct mount_opts *mop)
 		return EINVAL;
 
 	ret = zfs_set_prop_str(zhp, LDD_SVNAME_PROP, mop->mo_ldd.ldd_svname);
+	zfs_close(zhp);
+
+	return ret;
+}
+
+int zfs_label_read(char *dev, struct lustre_disk_data *ldd)
+{
+	zfs_handle_t *zhp;
+	int ret;
+
+	if (osd_check_zfs_setup() == 0)
+		return EINVAL;
+
+	zhp = zfs_open(g_zfs, dev, ZFS_TYPE_FILESYSTEM);
+	if (zhp == NULL)
+		return EINVAL;
+
+	ret = zfs_get_prop_str(zhp, LDD_SVNAME_PROP, ldd->ldd_svname);
 	zfs_close(zhp);
 
 	return ret;
@@ -957,7 +983,9 @@ int zfs_init(void)
 	if (ret == 0)
 		osd_zfs_setup = 1;
 	else
-		fprintf(stderr, "Failed to initialize ZFS library: %d\n", ret);
+		fprintf(stderr,
+			"Failed to initialize ZFS library. Are the ZFS packages and modules correctly installed? (%d)\n",
+			ret);
 
 	return ret;
 }
@@ -984,6 +1012,7 @@ struct module_backfs_ops zfs_ops = {
 	.prepare_lustre		= zfs_prepare_lustre,
 	.tune_lustre		= zfs_tune_lustre,
 	.label_lustre		= zfs_label_lustre,
+	.label_read		= zfs_label_read,
 	.enable_quota		= zfs_enable_quota,
 	.rename_fsname		= zfs_rename_fsname,
 };

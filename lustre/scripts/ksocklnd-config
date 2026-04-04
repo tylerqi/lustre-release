@@ -1,5 +1,4 @@
-#!/bin/bash
-
+#!/usr/bin/bash
 me="${0##*/}"
 
 # convert number of mask bits to x.x.x.x or x:x:x:x:x:x:x:x mask format
@@ -148,10 +147,55 @@ if [ "$checkskipcmd" == "1" ]; then
 	exit 0
 fi
 
+iface_args=$1
+LNETCTL=${LNETCTL:-$(which lnetctl 2>/dev/null)}
+if [[ -z $LNETCTL ]]; then
+   >&2 echo "lnetctl cannot be found in PATH"
+   exit 1
+fi
+if [[ ! -e $LNETCTL ]]; then
+	>&2 echo "$LNETCTL does not exist"
+	exit 1
+fi
+
+if [ -z "$iface_args" ]; then
+	iface_args=$($LNETCTL net show | awk '
+		/^-[[:space:]]+net type: tcp/ {
+		    tcp = 1;
+		    next;
+		}
+		tcp {
+			if ($0 ~ /^[[:space:]]+interfaces:/) {
+				while (getline > 0) {
+					# If line has an iface (eg. "0: eth1")
+					if ($0 ~ /^[[:space:]]+[0-9]+: /) {
+						split($0, arr, ": ");
+						interfaces = interfaces arr[2] ",";
+					}
+					if ($0 ~ /^-[[:space:]]+net type:/ &&
+					    $0 !~ /^-[[:space:]]+net type: tcp/) {
+						tcp = 0;
+						break;
+					}
+				}
+			}
+			if ($0 ~ /^-[[:space:]]+net type:/ &&
+			    $0 !~ /^-[[:space:]]+net type: tcp/) {
+				tcp = 0;
+			}
+		}
+		END {
+			# Remove last comma
+			if (length(interfaces) > 0) {
+				print substr(interfaces, 1, length(interfaces)-1);
+			}
+		}')
+fi
+
 # Extract comma-separated interfaces from the argument
 j=0
 declare -a interfaces
-for i in $(echo $1 | sed "s/,/ /g")
+for i in $(echo $iface_args | sed "s/,/ /g")
 do
 	# verify that the interface exists
 	ipv4_addr=$(/sbin/ip -o -4 addr list $i 2>&- | awk '{print $4}' | cut -d/ -f1)
@@ -206,7 +250,20 @@ do
 	eval "${logcmd[@]}"
 done
 
-filename='/etc/iproute2/rt_tables'
+# iproute config dir can be found in /etc or in /usr/share
+# If found in /usr/share, we copy it into /etc to avoid modifying
+# distro-provided version
+rt_tables_path="/etc/iproute2/rt_tables"
+if [ ! -f "$rt_tables_path" ]; then
+	distro_path=/usr/share/iproute2/rt_tables
+	if [ ! -f $distro_path ]; then
+		echo "Error: rt_tables file cannot be found"
+		exit 1
+	fi
+	mkdir -p /etc/iproute2/
+	cp $distro_path $rt_tables_path
+fi
+
 n=1
 max_table_num=0
 while read line; do
@@ -238,14 +295,14 @@ while read line; do
 		fi
 	done
 	n=$((n+1))
-done < $filename
+done < $rt_tables_path
 
 # add entries for unlisted interfaces
 for i in "${interfaces[@]}"
 do
 	if [[ ! " ${interfaces_listed[@]} " =~ " ${i} " ]]; then
 		max_table_num=$((max_table_num+1))
-		echo "$max_table_num $i" >> $filename
+		echo "$max_table_num $i" >> $rt_tables_path
 	fi
 done
 

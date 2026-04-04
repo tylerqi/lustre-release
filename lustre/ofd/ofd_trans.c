@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2014, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ofd/ofd_trans.c
  *
  * This file provides functions for OBD Filter Device (OFD) transaction
  * management.
@@ -39,19 +19,21 @@
 
 #define DEBUG_SUBSYSTEM S_FILTER
 
+#include <obd_class.h>
+#include <lustre_nodemap.h>
 #include "ofd_internal.h"
 
 /**
- * Create new transaction in OFD.
+ * ofd_trans_create() - Create new transaction in OFD.
+ * @env: execution environment
+ * @ofd: OFD device
  *
  * This function creates a transaction with dt_trans_create()
  * and makes it synchronous if required by the export state.
  *
- * \param[in] env	execution environment
- * \param[in] ofd	OFD device
- *
- * \retval		struct thandle if transaction was created successfully
- * \retval		ERR_PTR on negative value in case of error
+ * Return:
+ * * %struct thandle if transaction was created successfully
+ * * %ERR_PTR on negative value in case of error
  */
 struct thandle *ofd_trans_create(const struct lu_env *env,
 				 struct ofd_device *ofd)
@@ -71,25 +53,38 @@ struct thandle *ofd_trans_create(const struct lu_env *env,
 	if (IS_ERR(th))
 		return th;
 
-	/* export can require sync operations */
-	if (info->fti_exp != NULL)
+	if (info->fti_exp != NULL) {
+		struct lu_nodemap *nodemap;
+
+		/* export can require sync operations */
 		th->th_sync |= info->fti_exp->exp_need_sync;
+
+		nodemap = nodemap_get_from_exp(info->fti_exp);
+		if (!IS_ERR_OR_NULL(nodemap)) {
+			th->th_ignore_root_proj_quota = !!(nodemap->nmf_rbac &
+						NODEMAP_RBAC_IGN_ROOT_PRJQUOTA);
+			nodemap_putref(nodemap);
+		} else {
+			th->th_ignore_root_proj_quota = 1;
+		}
+	}
+
 	return th;
 }
 
 /**
- * Start transaction in OFD.
+ * ofd_trans_start() - Start transaction in OFD.
+ * @env: execution environment
+ * @ofd: OFD device
+ * @obj: OFD object affected by this transaction
+ * @th: transaction handle
  *
- * This function updates the given \a obj object version and calls
+ * This function updates the given @obj object version and calls
  * dt_trans_start().
  *
- * \param[in] env	execution environment
- * \param[in] ofd	OFD device
- * \param[in] obj	OFD object affected by this transaction
- * \param[in] th	transaction handle
- *
- * \retval		0 if successful
- * \retval		negative value in case of error
+ * Return:
+ * * %0 if successful
+ * * %negative value in case of error
  */
 int ofd_trans_start(const struct lu_env *env, struct ofd_device *ofd,
 		    struct ofd_object *obj, struct thandle *th)
@@ -102,18 +97,18 @@ int ofd_trans_start(const struct lu_env *env, struct ofd_device *ofd,
 }
 
 /**
- * Stop transaction in OFD.
+ * ofd_trans_stop() - Stop transaction in OFD.
+ * @env: execution environment
+ * @ofd: OFD device
+ * @th: transaction handle
+ * @rc: result code of whole operation
  *
  * This function fills thandle::th_result with result of whole operation
  * and calls dt_trans_stop().
  *
- * \param[in] env	execution environment
- * \param[in] ofd	OFD device
- * \param[in] th	transaction handle
- * \param[in] rc	result code of whole operation
- *
- * \retval		0 if successful
- * \retval		negative value if case of error
+ * Return:
+ * * %0 if successful
+ * * %negative value if case of error
  */
 int ofd_trans_stop(const struct lu_env *env, struct ofd_device *ofd,
 		    struct thandle *th, int rc)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
 /*
  * Modifications for Lustre
  *
@@ -7,43 +9,13 @@
  */
 
 /*
- *  linux/net/sunrpc/gss_krb5_mech.c
- *  linux/net/sunrpc/gss_krb5_crypto.c
- *  linux/net/sunrpc/gss_krb5_seal.c
- *  linux/net/sunrpc/gss_krb5_seqnum.c
- *  linux/net/sunrpc/gss_krb5_unseal.c
+ * linux/net/sunrpc/gss_krb5_mech.c
  *
- *  Copyright (c) 2001 The Regents of the University of Michigan.
- *  All rights reserved.
+ * Copyright (c) 2001 The Regents of the University of Michigan.
+ * All rights reserved.
  *
- *  Andy Adamson <andros@umich.edu>
- *  J. Bruce Fields <bfields@umich.edu>
- *
- *  Redistribution and use in source and binary forms, with or without
- *  modification, are permitted provided that the following conditions
- *  are met:
- *
- *  1. Redistributions of source code must retain the above copyright
- *     notice, this list of conditions and the following disclaimer.
- *  2. Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *  3. Neither the name of the University nor the names of its
- *     contributors may be used to endorse or promote products derived
- *     from this software without specific prior written permission.
- *
- *  THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED
- *  WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
- *  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- *  DISCLAIMED. IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
- *  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- *  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- *  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
- *  BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- *  LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- *  NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- *  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
+ * Andy Adamson <andros@umich.edu>
+ * J. Bruce Fields <bfields@umich.edu>
  */
 
 #define DEBUG_SUBSYSTEM S_SEC
@@ -263,11 +235,10 @@ int gss_crypt_generic(struct crypto_sync_skcipher *tfm, int decrypt,
 	skcipher_request_set_crypt(req, &sg, &sg, length, local_iv);
 
 	if (decrypt)
-		ret = crypto_skcipher_decrypt_iv(req, &sg, &sg, length);
+		ret = crypto_skcipher_decrypt(req);
 	else
-		ret = crypto_skcipher_encrypt_iv(req, &sg, &sg, length);
+		ret = crypto_skcipher_encrypt(req);
 
-	skcipher_request_zero(req);
 	gss_teardown_sgtable(&sg_out);
 out:
 	return ret;
@@ -434,30 +405,22 @@ int gss_crypt_rawobjs(struct crypto_sync_skcipher *tfm, __u8 *iv,
 		}
 
 		skcipher_request_set_crypt(req, &src, &dst, src.length, iv);
-		if (!iv) {
-			skcipher_request_set_crypt_iv(req);
-		}
-
 		if (enc)
-			rc = crypto_skcipher_encrypt_iv(req, &dst, &src,
-							src.length);
+			rc = crypto_skcipher_encrypt(req);
 		else
-			rc = crypto_skcipher_decrypt_iv(req, &dst, &src,
-							src.length);
+			rc = crypto_skcipher_decrypt(req);
 
 		gss_teardown_sgtable(&sg_src);
 		gss_teardown_sgtable(&sg_dst);
 
 		if (rc) {
 			CERROR("encrypt error %d\n", rc);
-			skcipher_request_zero(req);
 			RETURN(rc);
 		}
 
 		datalen += inobjs[i].len;
 		buf += inobjs[i].len;
 	}
-	skcipher_request_zero(req);
 
 	outobj->len = datalen;
 	RETURN(0);

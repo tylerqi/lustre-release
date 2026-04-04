@@ -164,6 +164,10 @@ int llog_cat_reverse_process(const struct lu_env *env,
 			     void *data);
 int llog_cat_retain_cb(const struct lu_env *env, struct llog_handle *cat,
 		       struct llog_rec_hdr *rec, void *data);
+int llog_cat_modify_rec(const struct lu_env *env, struct llog_handle *cathandle,
+			struct llog_logid *lid, struct llog_rec_hdr *hdr,
+			struct llog_cookie *cookie);
+int llog_cat_set_first_idx(struct llog_handle *cathandle, int newidx);
 /* llog_obd.c */
 int llog_setup(const struct lu_env *env, struct obd_device *obd,
 	       struct obd_llog_group *olg, int index,
@@ -269,7 +273,7 @@ struct llog_operations {
 /* In-memory descriptor for a log object or log catalog */
 struct llog_handle {
 	struct rw_semaphore	 lgh_lock;
-	struct mutex		 lgh_hdr_mutex; /* protect lgh_hdr data */
+	spinlock_t		 lgh_hdr_lock; /* protect lgh_hdr data */
 	struct llog_logid	 lgh_id; /* id of this log */
 	struct llog_log_hdr	*lgh_hdr; /* may be vmalloc'd */
 	size_t			lgh_hdr_size;
@@ -292,8 +296,10 @@ struct llog_handle {
 	const struct llog_operations	*lgh_logops;
 	refcount_t		 lgh_refcount;
 
+	int			lgh_max_index;
 	int			lgh_max_size;
 	bool			lgh_destroyed;
+	unsigned long		lgh_timestamp;
 };
 
 /* llog_osd.c */
@@ -517,18 +523,19 @@ static inline int llog_connect(struct llog_ctxt *ctxt,
 }
 
 
-static inline int llog_max_idx(struct llog_log_hdr *lh)
+static inline int llog_max_idx(const struct llog_handle *lgh)
 {
 	if (CFS_FAIL_PRECHECK(OBD_FAIL_CAT_RECORDS) &&
-	    unlikely(lh->llh_flags & LLOG_F_IS_CAT))
+	    unlikely(lgh->lgh_hdr->llh_flags & LLOG_F_IS_CAT)) {
 		return cfs_fail_val;
-	else
-		return LLOG_HDR_BITMAP_SIZE(lh) - 1;
+	}
+	LASSERT(lgh->lgh_max_index > 8192);
+	return lgh->lgh_max_index;
 }
 
 static inline int llog_is_full(struct llog_handle *llh)
 {
-	return llh->lgh_last_idx >= llog_max_idx(llh->lgh_hdr);
+	return llh->lgh_last_idx >= llog_max_idx(llh);
 }
 
 /* Determine if a llog plain of a catalog could be skiped based on record
@@ -599,6 +606,10 @@ int llog_open_create(const struct lu_env *env, struct llog_ctxt *ctxt,
 		     char *name);
 int llog_erase(const struct lu_env *env, struct llog_ctxt *ctxt,
 	       struct llog_logid *logid, char *name);
+void llog_get_cookie(const struct lu_env *env, struct llog_cookie *out);
+int llog_write_cookie(const struct lu_env *env, struct llog_handle *loghandle,
+		      struct llog_rec_hdr *rec, struct llog_cookie *cookie,
+		      int idx);
 int llog_write(const struct lu_env *env, struct llog_handle *loghandle,
 	       struct llog_rec_hdr *rec, int idx);
 

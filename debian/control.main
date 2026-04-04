@@ -4,9 +4,9 @@ Priority: optional
 Maintainer: Lustre Developers <lustre-devel@lists.lustre.org>
 Uploaders: Lustre Developers <lustre-devel@lists.lustre.org>
 Standards-Version: 3.8.3
-Build-Depends: module-assistant, libreadline-dev, debhelper (>= 11), automake (>=1.7) | automake1.7 | automake1.8 | automake1.9, pkg-config, libtool, libyaml-dev, libnl-genl-3-dev, libselinux-dev, bzip2, quilt, linux-headers-generic | linux-headers-amd64 | linux-headers-arm64, rsync, libssl-dev, libpython3-dev, swig, libmount-dev, ed
+Build-Depends: module-assistant, libreadline-dev, debhelper (>= 11), automake (>=1.7) | automake1.7 | automake1.8 | automake1.9, pkg-config, libtool, libyaml-dev, libnl-genl-3-dev, libselinux-dev, bzip2, linux-headers-generic | linux-headers-amd64 | linux-headers-arm64, rsync, libssl-dev, libpython3-dev, swig, libmount-dev
 Homepage: https://wiki.whamcloud.com/
-Vcs-Git: git://git.whamcloud.com/fs/lustre-release.git
+Vcs-Git: https://github.com/lustre/lustre-release.git
 
 Package: lustre-source
 Section: admin
@@ -95,6 +95,18 @@ Description: Test suite for the Lustre filesystem
  https://wiki.whamcloud.com/
  .
  This package provides regression test scripts for the Lustre filesystem.
+
+Package: lustre-coverage
+Section: utils
+Architecture: i386 armhf powerpc ppc64el amd64 ia64 arm64
+Priority: optional
+Depends: lustre-tests (= ${binary:Version}), lcov
+Description: Coverage data and scripts
+ Lustre is a scalable, secure, robust, highly-available cluster file system.
+ This release is maintained by Whamcloud and available from
+ https://wiki.whamcloud.com/
+ .
+ This package provides coverage data and scripts for the Lustre filesystem.
 
 Package: lustre-dev
 Section: libdevel

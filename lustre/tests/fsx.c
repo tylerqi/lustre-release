@@ -218,10 +218,7 @@ FILE *fsxlogf;
 int badoff = -1;
 
 static void
-vwarnc(code, fmt, ap)
-	int code;
-	const char *fmt;
-	va_list ap;
+vwarnc(int code, const char *fmt, va_list ap)
 {
 	fprintf(stderr, "fsx: ");
 	if (fmt) {
@@ -1469,11 +1466,22 @@ do_mirror_ops(int op)
 		} else if (WIFEXITED(rc)) {
 			rc = WEXITSTATUS(rc);
 			if (rc > 0) {
-				prt("mirror op %d: %s: %d\n", op, cmd, rc);
-				snprintf(cmd, sizeof(cmd),
-					 "lfs mirror verify -v %s", tf->path);
-				rc = system(cmd);
-				report_failure(184);
+				/* lfs mirror verify returns ESTALE (116)
+				 * for stale mirrors, which is expected
+				 * behavior. Other errors are real failures.
+				 */
+				if (rc == ESTALE) {
+					prt("mirror op %d: %s: %d\n", op, cmd,
+					    rc);
+					snprintf(cmd, sizeof(cmd),
+						 "lfs mirror verify -v %s",
+						 tf->path);
+					rc = system(cmd);
+				} else {
+					prt("mirror op %d: %s: %d\n", op, cmd,
+					    rc);
+					report_failure(184);
+				}
 			}
 		}
 	}
@@ -1625,8 +1633,7 @@ segv(int sig)
 }
 
 static void
-cleanup(sig)
-	int	sig;
+cleanup(int sig)
 {
 	if (sig)
 		prt("signal %d\n", sig);

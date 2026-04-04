@@ -1,41 +1,21 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see http://www.gnu.org/licenses
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
 
 /*
  * Copyright (c) 2014 Bull SAS
  *
  * Copyright (c) 2015, 2016, Intel Corporation.
- * Author: Sebastien Buisson sebastien.buisson@bull.net
  */
 
 /*
- * lustre/llite/xattr_security.c
+ * This file is part of Lustre, http://www.lustre.org/
+ *
  * Handler for storing security labels as extended attributes.
+ *
+ * Author: Sebastien Buisson sebastien.buisson@bull.net
  */
 
 #include <linux/types.h>
 #include <linux/security.h>
-#ifdef HAVE_LINUX_SELINUX_IS_ENABLED
-#include <linux/selinux.h>
-#endif
 #include <linux/xattr.h>
 #include "llite_internal.h"
 
@@ -63,7 +43,7 @@ int ll_dentry_init_security(struct dentry *dentry, int mode, struct qstr *name,
 	const char *secctx_name_lsm = NULL;
 #endif
 #ifdef HAVE_SECURITY_DENTRY_INIT_SECURTY_WITH_CTX
-	struct lsmcontext ctx = {};
+	struct lsm_context ctx = {};
 #endif
 	int rc;
 
@@ -121,16 +101,21 @@ int ll_dentry_init_security(struct dentry *dentry, int mode, struct qstr *name,
 }
 
 /**
- * A helper function for security_inode_init_security()
+ * ll_initxattrs() - A helper function for security_inode_init_security()
  * that takes care of setting xattrs
  *
- * Get security context of @inode from @xattr_array,
- * and put it in 'security.xxx' xattr of dentry
- * stored in @fs_info.
+ * @inode: pointer to inode for which the security context is initialized
+ * @xattr_array: pointer to array of xattr structures, these structures are
+ * extended attribute to be set on the inode
+ * @fs_info: pointer to additional FS info (dentry linked with the inode)
  *
- * \retval 0        success
- * \retval -ENOMEM  if no memory could be allocated for xattr name
- * \retval < 0      failure to set xattr
+ * Get security context of @inode from @xattr_array, and put it in
+ * 'security.xxx' xattr of dentry stored in @fs_info.
+ *
+ * Returns:
+ * * %0        success
+ * * %-ENOMEM  if no memory could be allocated for xattr name
+ * * <0        failure to set xattr
  */
 static int
 ll_initxattrs(struct inode *inode, const struct xattr *xattr_array,
@@ -160,14 +145,19 @@ ll_initxattrs(struct inode *inode, const struct xattr *xattr_array,
 }
 
 /**
- * Initializes security context
+ * ll_inode_init_security() - Initializes security context
  *
- * Get security context of @inode in @dir,
- * and put it in 'security.xxx' xattr of @dentry.
+ * @dentry: dentry linked with the inode
+ * @inode: pointer to inode for which the security context is initialized
+ * @dir: inode struct of the directory, in which new inode to be created
  *
- * \retval 0        success, or SELinux is disabled
- * \retval -ENOMEM  if no memory could be allocated for xattr name
- * \retval < 0      failure to get security context or set xattr
+ * Get security context of @inode in @dir, and put it in 'security.xxx'
+ * xattr of @dentry.
+ *
+ * Return:
+ * * %0        success, or SELinux is disabled
+ * * %-ENOMEM  if no memory could be allocated for xattr name
+ * * <0        failure to get security context or set xattr
  */
 int
 ll_inode_init_security(struct dentry *dentry, struct inode *inode,
@@ -187,12 +177,17 @@ ll_inode_init_security(struct dentry *dentry, struct inode *inode,
 }
 
 /**
- * Notify security context to the security layer
+ * ll_inode_notifysecctx() - Notify security context to the security layer
+ *
+ * @inode: pointer to inode for which the security context is notifyed
+ * @secctx: security context that will be set into inode
+ * @secctxlen: security context length
  *
  * Notify security context @secctx of inode @inode to the security layer.
  *
- * \retval 0        success, or SELinux is disabled or not supported by the fs
- * \retval < 0      failure to set the security context
+ * Returns:
+ * * %0       success, or SELinux is disabled or not supported by the fs
+ * * <0      failure to set the security context
  */
 int ll_inode_notifysecctx(struct inode *inode,
 			  void *secctx, __u32 secctxlen)
@@ -217,7 +212,7 @@ int ll_inode_notifysecctx(struct inode *inode,
 	return rc;
 }
 
-/**
+/*
  * Free the security context xattr name used by policy
  */
 void ll_secctx_name_free(struct ll_sb_info *sbi)
@@ -228,11 +223,15 @@ void ll_secctx_name_free(struct ll_sb_info *sbi)
 }
 
 /**
- * Get security context xattr name used by policy and save it.
+ * ll_secctx_name_store() - Get security context xattr name used by policy and
+ * save it.
  *
- * \retval > 0      length of xattr name
- * \retval == 0     no LSM module registered supporting security contexts
- * \retval <= 0     failure to get xattr name or xattr is not supported
+ * @in: pointer to inode for which the security context is retrieved
+ *
+ * Returns:
+ * * %0    no LSM module registered supporting security contexts
+ * * >0    length of xattr name
+ * * <=0   failure to get xattr name or xattr is not supported
  */
 int ll_secctx_name_store(struct inode *in)
 {
@@ -286,10 +285,15 @@ err_free:
 }
 
 /**
- * Retrieved file security context xattr name stored.
+ * ll_secctx_name_get() - Retrieved file security context xattr name stored.
  *
- * \retval      security context xattr name size stored.
- * \retval 0	no xattr name stored.
+ * @sbi: Lustre superblock information struct (FS specific info: secturity
+ * context)
+ * @secctx_name: Returned security context xattr on success
+ *
+ * Returns:
+ * * %secctx_name security context xattr name size stored.
+ * * %0           no xattr name stored.
  */
 __u32 ll_secctx_name_get(struct ll_sb_info *sbi, const char **secctx_name)
 {
@@ -302,14 +306,21 @@ __u32 ll_secctx_name_get(struct ll_sb_info *sbi, const char **secctx_name)
 }
 
 /**
- * Filter out xattr file security context if not managed by LSM
+ * ll_security_secctx_name_filter() - Filter out xattr file security context
+ * if not managed by LSM
+ *
+ * @sbi: Lustre superblock information struct (FS specific info: secturity
+ * context)
+ * @xattr_type: type of xattr being processed. (security-related xattrs)
+ * @suffix: xattr string that follows XATTR_SECURITY_PREFIX ("security.")
  *
  * This is done to improve performance for application that blindly try to get
  * file context (like "ls -l" for security.linux).
  * See LU-549 for more information.
  *
- * \retval 0		xattr not filtered
- * \retval -EOPNOTSUPP	no enabled LSM security module supports the xattr
+ * Returns:
+ * * %0                 xattr not filtered
+ * * %-EOPNOTSUPP       no enabled LSM security module supports the xattr
  */
 int ll_security_secctx_name_filter(struct ll_sb_info *sbi, int xattr_type,
 				   const char *suffix)

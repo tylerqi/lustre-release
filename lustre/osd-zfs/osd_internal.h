@@ -83,6 +83,9 @@
 
 #define OSD_MAX_CACHE_SIZE OBD_OBJECT_EOF
 
+/* Default FatZAP leaf block shift: 2^13 = 8K */
+#define OSD_FZAP_BLOCKSHIFT_DEFAULT	13
+
 #ifndef HAVE_ZFS_REFCOUNT_HEADER
 #ifndef HAVE_ZFS_REFCOUNT_ADD
 #define zfs_refcount_add	refcount_add
@@ -146,6 +149,10 @@ struct osd_zap_it {
 	enum osd_zap_pos	 ozi_pos;
 	struct luz_direntry	 ozi_zde;
 	zap_attribute_t		 ozi_za;
+#ifdef ZAP_MAXNAMELEN_NEW
+	/* flexible array: zap_attribute_t.za_name[], ensure space allocated */
+	char			 ozi_za_name_buffer[MAXNAMELEN];
+#endif
 	union {
 		char		 ozi_name[MAXNAMELEN]; /* file name for dir */
 		__u64		 ozi_key; /* binary key for index files */
@@ -238,7 +245,15 @@ struct osd_thread_info {
 	struct lu_attr		 oti_la;
 	struct osa_attr		 oti_osa;
 	zap_attribute_t		 oti_za;
+#ifdef ZAP_MAXNAMELEN_NEW
+	/* flexible array: zap_attribute_t.za_name[], ensure space allocated */
+	char			 oti_za_name_buffer[MAXNAMELEN];
+#endif
 	zap_attribute_t		 oti_za2;
+#ifdef ZAP_MAXNAMELEN_NEW
+	/* flexible array: zap_attribute_t.za_name[], ensure space allocated */
+	char			 oti_za2_name_buffer[MAXNAMELEN];
+#endif
 	dmu_object_info_t	 oti_doi;
 	struct luz_direntry	 oti_zde;
 
@@ -258,6 +273,10 @@ struct osd_thread_info {
 	char			*oti_seq_name;
 	char			*oti_dir_name;
 	uint64_t		oti_lastid_oid;
+
+	/* just for fake RW now */
+	struct page		**oti_dio_pages;
+	int			oti_dio_pages_used;
 };
 
 extern struct lu_context_key osd_key;
@@ -275,6 +294,7 @@ struct osd_thandle {
 	struct list_head	 ot_sa_list;
 	dmu_tx_t		*ot_tx;
 	struct lquota_trans	 ot_quota_trans;
+	__u64			 ot_txg;
 	__u32			 ot_assigned:1;
 };
 
@@ -304,6 +324,8 @@ struct osd_seq_list {
 };
 
 #define OSD_OST_MAP_SIZE	32
+#define OSD_TXG_MAP_SIZE	8
+#define OSD_TXG_MAP_MASK	(OSD_TXG_MAP_SIZE-1)
 
 /*
  * osd device.
@@ -324,6 +346,7 @@ struct osd_device {
 	uint64_t		 od_remote_parent_dir;
 	uint64_t		 od_index_backup_id;
 	uint64_t		 od_max_blksz;
+	uint64_t		 od_min_blksz;
 	uint64_t		 od_root;
 	uint64_t		 od_O_id;
 	struct osd_oi		**od_oi_table;
@@ -339,6 +362,10 @@ struct osd_device {
 				 od_nonrotational:1,
 				 od_sync_on_lseek:1;
 	unsigned int		 od_dnsize;
+	/* blockshift controls ZFS FatZAP leaf block size.
+	 * Actual block size = 2^N bytes.
+	 */
+	int			 od_fzap_blockshift;
 	int			 od_index_backup_stop;
 
 	enum lustre_index_backup_policy od_index_backup_policy;
@@ -384,6 +411,12 @@ struct osd_device {
 	struct list_head	 od_index_restore_list;
 	spinlock_t		 od_lock;
 	unsigned long long	 od_readcache_max_filesize;
+
+	/* slots to track per-txg commit callbacks */
+	atomic_t		 od_commit_cb_in_txg[OSD_TXG_MAP_SIZE];
+	wait_queue_head_t	 od_commit_cb_waitq;
+	/* last seen txg, used to count commit callbacks in a specific slot */
+	atomic64_t		 od_last_txg;
 };
 
 static inline struct qsd_instance *osd_def_qsd(struct osd_device *osd)
@@ -415,9 +448,6 @@ struct osd_object {
 	sa_handle_t		*oo_sa_hdl;
 	nvlist_t		*oo_sa_xattr;
 	struct list_head	 oo_sa_linkage;
-
-	/* used to implement osd_object_*_{lock|unlock} */
-	struct rw_semaphore	 oo_sem;
 
 	/* to serialize some updates: destroy vs. others,
 	 * xattr_set, object block size change etc
@@ -598,7 +628,7 @@ extern struct kmem_cache *osd_zapit_cachep;
 extern struct lprocfs_vars lprocfs_osd_obd_vars[];
 
 int osd_procfs_init(struct osd_device *osd, const char *name);
-int osd_procfs_fini(struct osd_device *osd);
+void osd_procfs_fini(struct osd_device *osd);
 
 /* osd_object.c */
 extern char *osd_obj_tag;
@@ -693,6 +723,8 @@ int osd_oii_insert(const struct lu_env *env, struct osd_device *dev,
 		   const struct lu_fid *fid, uint64_t oid, bool insert);
 int osd_oii_lookup(struct osd_device *dev, const struct lu_fid *fid,
 		   uint64_t *oid);
+int osd_last_seq_get(const struct lu_env *env, struct dt_device *dt,
+		     __u64 *seq);
 
 /**
  * Basic transaction credit op
@@ -731,6 +763,7 @@ int osd_xattr_get_lma(const struct lu_env *env, struct osd_object *obj,
 int osd_xattr_get(const struct lu_env *env, struct dt_object *dt,
 		  struct lu_buf *buf, const char *name);
 int osd_declare_xattr_set(const struct lu_env *env, struct dt_object *dt,
+			  const struct lu_attr *attr,
 			  const struct lu_buf *buf, const char *name,
 			  int fl, struct thandle *handle);
 int osd_xattr_set(const struct lu_env *env, struct dt_object *dt,
@@ -819,6 +852,11 @@ static inline uint32_t attrs_zfs2fs(const uint64_t flags)
 }
 
 #endif
+
+#define ZFS_OSD_USER_USER_MODIFIABLE	(LUSTRE_APPEND_FL | \
+					 LUSTRE_NODUMP_FL | \
+					 LUSTRE_PROJINHERIT_FL | \
+					 LUSTRE_IMMUTABLE_FL)
 
 static inline uint64_t
 osd_dmu_object_alloc(objset_t *os, dmu_object_type_t objtype, int blocksize,
@@ -983,7 +1021,7 @@ static inline void osd_dmu_write(struct osd_device *osd, dnode_t *dn,
 				 const char *buf, dmu_tx_t *tx)
 {
 	LASSERT(dn);
-	dmu_write_by_dnode(dn, offset, size, buf, tx);
+	ll_dmu_write_by_dnode(dn, offset, size, buf, tx, 0);
 }
 
 static inline int osd_dmu_read(struct osd_device *osd, dnode_t *dn,

@@ -1,33 +1,16 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -42,6 +25,7 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/list.h>
+#include <linux/namei.h>
 
 #include <linux/sysctl.h>
 #include <linux/debugfs.h>
@@ -49,9 +33,9 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
-#include <libcfs/libcfs.h>
+#include <linux/libcfs/libcfs.h>
 #include <lnet/lib-lnet.h>
-#include <lustre_crypto.h>
+#include <uapi/linux/lustre/lustre_ver.h>
 #include "tracefile.h"
 
 int cpu_npartitions;
@@ -71,47 +55,19 @@ struct lnet_debugfs_symlink_def {
 
 static struct dentry *lnet_debugfs_root;
 
-#if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 18, 53, 0)
-/* remove deprecated libcfs ioctl handling, since /dev/lnet has
- * moved to lnet and there is no way to call these ioctls until
- * after the lnet module is loaded.  They are replaced by writing
- * to "debug_marker", handled by libcfs_debug_marker() below.
- */
-int libcfs_ioctl(unsigned int cmd, struct libcfs_ioctl_data *data)
-{
-	switch (cmd) {
-	case IOC_LIBCFS_CLEAR_DEBUG:
-		libcfs_debug_clear_buffer();
-		break;
-	case IOC_LIBCFS_MARK_DEBUG:
-		if (data == NULL ||
-		    data->ioc_inlbuf1 == NULL ||
-		    data->ioc_inlbuf1[data->ioc_inllen1 - 1] != '\0')
-			return -EINVAL;
-
-		libcfs_debug_mark_buffer(data->ioc_inlbuf1);
-		break;
-
-	default:
-		return -EINVAL;
-	}
-	return 0;
-}
-EXPORT_SYMBOL(libcfs_ioctl);
-#endif
-
 static int proc_dobitmasks(const struct ctl_table *table,
 			   int write, void __user *buffer, size_t *lenp,
 			   loff_t *ppos)
 {
-	const int     tmpstrlen = 512;
-	char         *tmpstr = NULL;
-	int           rc;
+	unsigned int *mask = table->data;
+	int is_subsys = (mask == &libcfs_subsystem_debug ||
+			 mask == &libcfs_subsystem_printk) ? 1 : 0;
+	int is_printk = (mask == &libcfs_printk) ? 1 : 0;
+	const int tmpstrlen = 512;
+	char *tmpstr = NULL;
 	size_t nob = *lenp;
 	loff_t pos = *ppos;
-	unsigned int *mask = table->data;
-	int           is_subsys = (mask == &libcfs_subsystem_debug) ? 1 : 0;
-	int           is_printk = (mask == &libcfs_printk) ? 1 : 0;
+	int rc;
 
 	if (!write) {
 		tmpstr = kmalloc(tmpstrlen, GFP_KERNEL | __GFP_ZERO);
@@ -127,6 +83,8 @@ static int proc_dobitmasks(const struct ctl_table *table,
 						      tmpstr + pos, NULL);
 		}
 	} else {
+		if (nob > USHRT_MAX)
+			return -E2BIG;
 		tmpstr = memdup_user_nul(buffer, nob);
 		if (IS_ERR(tmpstr))
 			return PTR_ERR(tmpstr);
@@ -198,12 +156,13 @@ static int proc_fail_loc(const struct ctl_table *table,
 	}
 
 	if (write) {
-		char *kbuf = memdup_user_nul(buffer, *lenp);
+		char kbuf[sizeof(cfs_fail_loc) * 4] = { '\0' };
 
-		if (IS_ERR(kbuf))
-			return PTR_ERR(kbuf);
+		if (*lenp > sizeof(kbuf))
+			return -E2BIG;
+		if (copy_from_user(kbuf, buffer, *lenp))
+			return -EFAULT;
 		rc = kstrtoul(kbuf, 0, &cfs_fail_loc);
-		kfree(kbuf);
 		*ppos += *lenp;
 	} else {
 		char kbuf[64/3+3];
@@ -265,14 +224,16 @@ int debugfs_doint(const struct ctl_table *table, int write,
 	}
 
 	if (write) {
-		char *kbuf = memdup_user_nul(buffer, *lenp);
 		int val;
+		char kbuf[sizeof(val) * 4] = { '\0' };
 
-		if (IS_ERR(kbuf))
-			return PTR_ERR(kbuf);
+		if (*lenp > sizeof(kbuf))
+			return -E2BIG;
+
+		if (copy_from_user(kbuf, buffer, *lenp))
+			return -EFAULT;
 
 		rc = kstrtoint(kbuf, 0, &val);
-		kfree(kbuf);
 		if (!rc) {
 			if (table->extra1 && val < *(int *)table->extra1)
 				val = *(int *)table->extra1;
@@ -308,14 +269,16 @@ static int debugfs_dou64(const struct ctl_table *table, int write,
 	}
 
 	if (write) {
-		char *kbuf = memdup_user_nul(buffer, *lenp);
 		unsigned long long val;
+		char kbuf[sizeof(val) * 4] = { '\0' };
 
-		if (IS_ERR(kbuf))
-			return PTR_ERR(kbuf);
+		if (*lenp > sizeof(kbuf))
+			return -E2BIG;
+
+		if (copy_from_user(kbuf, buffer, *lenp))
+			return -EFAULT;
 
 		rc = kstrtoull(kbuf, 0, &val);
-		kfree(kbuf);
 		if (!rc)
 			*(u64 *)table->data = val;
 		*ppos += *lenp;
@@ -386,6 +349,13 @@ static struct ctl_table lnet_table[] = {
 	{
 		.procname	= "printk",
 		.data		= &libcfs_printk,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= cfs_proc_handler(&proc_dobitmasks),
+	},
+	{
+		.procname	= "subsystem_printk",
+		.data		= &libcfs_subsystem_printk,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= cfs_proc_handler(&proc_dobitmasks),
@@ -616,7 +586,7 @@ void lnet_remove_debugfs(const struct ctl_table *table)
 					      strlen(table->procname));
 		struct dentry *dentry;
 
-		dentry = d_hash_and_lookup(lnet_debugfs_root, &dname);
+		dentry = try_lookup_noperm(&dname, lnet_debugfs_root);
 		debugfs_remove(dentry);
 	}
 }
@@ -638,15 +608,6 @@ int libcfs_setup(void)
 	rc = libcfs_debug_init(5 * 1024 * 1024);
 	if (rc < 0) {
 		pr_err("LustreError: libcfs_debug_init: rc = %d\n", rc);
-		goto cleanup_lock;
-	}
-
-	cfs_rehash_wq = alloc_workqueue("cfs_rh", WQ_SYSFS, 4);
-	if (!cfs_rehash_wq) {
-		rc = -ENOMEM;
-		CERROR("libcfs: failed to start rehash workqueue: rc = %d\n",
-		       rc);
-		libcfs_debug_cleanup();
 		goto cleanup_lock;
 	}
 
@@ -697,9 +658,6 @@ static void __exit libcfs_exit(void)
 	CDEBUG(D_MALLOC, "before Portals cleanup: kmem %lld\n",
 	       libcfs_kmem_read());
 
-	if (cfs_rehash_wq)
-		destroy_workqueue(cfs_rehash_wq);
-
 	/* the below message is checked in test-framework.sh check_mem_leak() */
 	if (libcfs_kmem_read() != 0)
 		CERROR("Portals memory leaked: %lld bytes\n",
@@ -709,6 +667,7 @@ static void __exit libcfs_exit(void)
 	if (rc)
 		pr_err("LustreError: libcfs_debug_cleanup: rc = %d\n", rc);
 
+	debug_format_buffer_free_buffers();
 	cfs_arch_exit();
 }
 
@@ -717,5 +676,5 @@ MODULE_DESCRIPTION("Lustre helper library");
 MODULE_VERSION(LIBCFS_VERSION);
 MODULE_LICENSE("GPL");
 
-module_init(libcfs_init);
+late_initcall(libcfs_init);
 module_exit(libcfs_exit);

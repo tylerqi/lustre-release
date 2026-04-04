@@ -1,28 +1,12 @@
+// SPDX-License-Identifier: LGPL-2.1+
 /*
- * LGPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
  * (C) Copyright 2014 Commissariat a l'energie atomique et aux energies
  *     alternatives
  *
  * Copyright (c) 2017, Intel Corporation.
- *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 or (at your discretion) any later version.
- * (LGPL) version 2.1 accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * LGPL HEADER END
  */
 /*
- * lustre/utils/liblustreapi_lease.c
+ * This file is part of Lustre, http://www.lustre.org/
  *
  * lustreapi library for file leases
  *
@@ -46,19 +30,19 @@ static inline const char *lease_mode2str(enum ll_lease_mode mode)
 	return "???";
 }
 
+#define FMT_STR_LEASE_SET "cannot get %s lease, ext %x"
 /**
- * Extend lease set support.
- *
- * \param fd	File to set lease on.
- * \param data	ll_ioc_lease data.
+ * llapi_lease_set() - Extend lease set support.
+ * @fd: File to set lease on.
+ * @data: ll_ioc_lease data.
  *
  * For setting lease lock, it will return zero for success. For unlock, it will
  * return the lock type it owned for succuess.
  *
- * \retval >= 0 on success.
- * \retval -errno on error.
+ * Return:
+ * * %>=0 on success.
+ * * %-errno on error
  */
-#define FMT_STR_LEASE_SET "cannot get %s lease, ext %x"
 int llapi_lease_set(int fd, const struct ll_ioc_lease *data)
 {
 	int rc;
@@ -85,15 +69,15 @@ int llapi_lease_set(int fd, const struct ll_ioc_lease *data)
 }
 
 /**
- * Acquire a lease on an open file.
+ * llapi_lease_acquire() - Acquire a lease on an open file.
+ * @fd: File to get the lease on.
+ * @mode: Lease mode, either LL_LEASE_RDLCK or LL_LEASE_WRLCK.
  *
- * \param fd    File to get the lease on.
- * \param mode  Lease mode, either LL_LEASE_RDLCK or LL_LEASE_WRLCK.
+ * see llapi_lease_release().
  *
- * \see llapi_lease_release().
- *
- * \retval >= 0 on success.
- * \retval -errno on error.
+ * Return:
+ * * %>=0 on success.
+ * * %-errno on error
  */
 int llapi_lease_acquire(int fd, enum ll_lease_mode mode)
 {
@@ -114,13 +98,13 @@ int llapi_lease_acquire(int fd, enum ll_lease_mode mode)
 }
 
 /**
- * Release a lease.
+ * llapi_lease_release() - Release a lease.
+ * @fd: File to remove the lease from.
  *
- * \param fd    File to remove the lease from.
- *
- * \retval type of the lease that was removed (LL_LEASE_READ or LL_LEASE_WRITE).
- * \retval 0 if no lease was present.
- * \retval -errno on error.
+ * Return:
+ * * %LL_LEASE_READ/%LL_LEASE_WRITE type of the lease that was removed
+ * * %0 if no lease was present.
+ * * %-errno on error.
  */
 int llapi_lease_release(int fd)
 {
@@ -130,15 +114,18 @@ int llapi_lease_release(int fd)
 }
 
 /**
+ * llapi_lease_release_intent() - Release a lease with intent operation
+ * @fd: File to remove the lease from.
+ * @data: 
+ *
  * Release a lease with intent operation. This API will release the lease
  * and execute the intent operation atomically.
  *
- * \param fd    File to remove the lease from.
- *
- * \retval type of the lease that was removed (LL_LEASE_READ or LL_LEASE_WRITE).
- * \retval 0 if no lease was present.
- * \retval -EBUSY lease broken, intent operation not executed.
- * \retval -errno on error.
+ * Return:
+ * * %LL_LEASE_READ/%LL_LEASE_WRITE type of the lease that was removed
+ * * %0 if no lease was present.
+ * * %-EBUSY lease broken, intent operation not executed.
+ * * %-errno on error.
  */
 int llapi_lease_release_intent(int fd, struct ll_ioc_lease *data)
 {
@@ -149,13 +136,13 @@ int llapi_lease_release_intent(int fd, struct ll_ioc_lease *data)
 }
 
 /**
- * Check if a lease is still set on a file.
+ * llapi_lease_check() - Check if a lease is still set on a file.
+ * @fd: File to check the lease on.
  *
- * \param fd    File to check the lease on.
- *
- * \retval lease type if present (LL_LEASE_READ or LL_LEASE_WRITE).
- * \retval 0 if no lease is present.
- * \retval -errno on error.
+ * Return:
+ * * %LL_LEASE_READ/%LL_LEASE_WRITE type of the lease that was removed
+ * * %0 if no lease was present.
+ * * %-errno on error.
  */
 int llapi_lease_check(int fd)
 {
@@ -177,7 +164,7 @@ int llapi_lease_check(int fd)
 	return rc;
 }
 
-/**
+/*
  * XXX: This is an obsoleted API - do not use it any more.
  */
 int llapi_lease_get(int fd, int mode)
@@ -194,7 +181,7 @@ int llapi_lease_get(int fd, int mode)
 	return rc;
 }
 
-/**
+/*
  * XXX: This is an obsoleted API - do not use it any more.
  */
 int llapi_lease_put(int fd)

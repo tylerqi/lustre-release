@@ -1,29 +1,11 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2017, Intel Corporation.
  */
+
 /*
- * lustre/obdclass/scrub.c
+ * This file is part of Lustre, http://www.lustre.org/
  *
  * The OI scrub is used for checking and (re)building Object Index files
  * that are usually backend special. Here are some general scrub related
@@ -479,7 +461,7 @@ void scrub_stop(struct lustre_scrub *scrub)
 }
 EXPORT_SYMBOL(scrub_stop);
 
-const char *const scrub_status_names[] = {
+static const char *const scrub_status_names[] = {
 	"init",
 	"scanning",
 	"completed",
@@ -490,7 +472,7 @@ const char *const scrub_status_names[] = {
 	NULL
 };
 
-const char *const scrub_flags_names[] = {
+static const char *const scrub_flags_names[] = {
 	"recreated",
 	"inconsistent",
 	"auto",
@@ -498,7 +480,7 @@ const char *const scrub_flags_names[] = {
 	NULL
 };
 
-const char *const scrub_param_names[] = {
+static const char *const scrub_param_names[] = {
 	"failout",
 	"dryrun",
 	NULL
@@ -902,7 +884,8 @@ static int lustre_index_update_lma(const struct lu_env *env,
 	if (IS_ERR(th))
 		RETURN(rc);
 
-	rc = dt_declare_xattr_set(env, obj, &lbuf, XATTR_NAME_LMA, fl, th);
+	rc = dt_declare_xattr_set(env, obj, NULL, &lbuf, XATTR_NAME_LMA, fl,
+				  th);
 	if (rc)
 		GOTO(stop, rc);
 

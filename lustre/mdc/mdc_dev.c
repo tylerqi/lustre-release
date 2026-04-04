@@ -80,8 +80,8 @@ static int mdc_dom_lock_match(const struct lu_env *env, struct obd_export *exp,
 			      union ldlm_policy_data *policy,
 			      enum ldlm_mode mode, __u64 *flags,
 			      struct osc_object *obj,
-			      struct lustre_handle *lockh,
-			      enum ldlm_match_flags match_flags)
+			      enum ldlm_match_flags match_flags,
+			      struct lustre_handle *lockh)
 {
 	struct obd_device *obd = exp->exp_obd;
 	__u64 lflags = *flags;
@@ -90,7 +90,7 @@ static int mdc_dom_lock_match(const struct lu_env *env, struct obd_export *exp,
 	ENTRY;
 
 	rc = ldlm_lock_match_with_skip(obd->obd_namespace, lflags, 0,
-			     res_id, type, policy, mode, lockh, match_flags);
+			     res_id, type, policy, mode, match_flags, lockh);
 	if (rc == 0 || lflags & LDLM_FL_TEST_LOCK)
 		RETURN(rc);
 
@@ -100,10 +100,10 @@ static int mdc_dom_lock_match(const struct lu_env *env, struct obd_export *exp,
 		LASSERT(lock != NULL);
 		if (mdc_set_dom_lock_data(lock, obj)) {
 			lock_res_and_lock(lock);
-			if (!ldlm_is_lvb_cached(lock)) {
+			if (!(lock->l_flags & LDLM_FL_LVB_CACHED)) {
 				LASSERT(lock->l_ast_data == obj);
 				mdc_lock_lvb_update(env, obj, lock, NULL);
-				ldlm_set_lvb_cached(lock);
+				(lock->l_flags |= LDLM_FL_LVB_CACHED);
 			}
 			unlock_res_and_lock(lock);
 		} else {
@@ -115,7 +115,7 @@ static int mdc_dom_lock_match(const struct lu_env *env, struct obd_export *exp,
 	RETURN(rc);
 }
 
-/**
+/*
  * Finds an existing lock covering a page with given index.
  * Copy of osc_obj_dlmlock_at_pgoff() but for DoM IBITS lock.
  */
@@ -156,7 +156,7 @@ again:
 	 * writers can share a single PW lock. */
 	mode = mdc_dom_lock_match(env, osc_export(obj), resname, LDLM_IBITS,
 				  policy, LCK_PR | LCK_PW | LCK_GROUP, &flags,
-				  obj, &lockh, match_flags);
+				  obj, match_flags, &lockh);
 	if (mode != 0) {
 		lock = ldlm_handle2lock(&lockh);
 		/* RACE: the lock is cancelled so let's try again */
@@ -167,7 +167,7 @@ again:
 	RETURN(lock);
 }
 
-/**
+/*
  * Check if page @page is covered by an extra lock or discard it.
  */
 static bool mdc_check_and_discard_cb(const struct lu_env *env, struct cl_io *io,
@@ -207,7 +207,7 @@ static bool mdc_check_and_discard_cb(const struct lu_env *env, struct cl_io *io,
 	return true;
 }
 
-/**
+/*
  * Discard pages protected by the given lock. This function traverses radix
  * tree to find all covering pages and discard them. If a page is being covered
  * by other locks, it should remain in cache.
@@ -229,6 +229,8 @@ static int mdc_lock_discard_pages(const struct lu_env *env,
 
 	io->ci_obj = cl_object_top(osc2cl(osc));
 	io->ci_ignore_layout = 1;
+	io->u.ci_misc.lm_next_rpc_time = 0;
+
 	result = cl_io_init(env, io, CIT_MISC, io->ci_obj);
 	if (result != 0)
 		GOTO(out, result);
@@ -254,7 +256,7 @@ static int mdc_lock_flush(const struct lu_env *env, struct osc_object *obj,
 
 	if (mode == CLM_WRITE) {
 		result = osc_cache_writeback_range(env, obj, start, end, 1,
-						   discard);
+						   discard, IO_PRIO_NORMAL);
 		CDEBUG(D_CACHE, "object %p: [%lu -> %lu] %d pages were %s.\n",
 		       obj, start, end, result,
 		       discard ? "discarded" : "written back");
@@ -289,7 +291,7 @@ static void mdc_lock_lockless_cancel(const struct lu_env *env,
 	osc_lock_wake_waiters(env, osc, ols);
 }
 
-/**
+/*
  * Helper for osc_dlm_blocking_ast() handling discrepancies between cl_lock
  * and ldlm_lock caches.
  */
@@ -310,7 +312,7 @@ static int mdc_dlm_canceling(const struct lu_env *env,
 		RETURN(0);
 	}
 
-	discard = ldlm_is_discard_data(dlmlock);
+	discard = (dlmlock->l_flags & LDLM_FL_DISCARD_DATA);
 	if (dlmlock->l_granted_mode & (LCK_PW | LCK_GROUP))
 		mode = CLM_WRITE;
 
@@ -393,6 +395,12 @@ int mdc_ldlm_blocking_ast(struct ldlm_lock *dlmlock,
 }
 
 /**
+ * mdc_lock_lvb_update() - Updates obj attributes from a LVB
+ * @env: Lustre environment
+ * @osc: pointer to the osc_object
+ * @dlmlock: LDLM lock
+ * @lvb: A pointer to struct ost_lvb. (updated object attrs)
+ *
  * Updates object attributes from a lock value block (lvb) received together
  * with the DLM lock reply from the server.
  * This can be optimized to not update attributes when lock is a result of a
@@ -406,8 +414,8 @@ void mdc_lock_lvb_update(const struct lu_env *env, struct osc_object *osc,
 	struct cl_object *obj = osc2cl(osc);
 	struct lov_oinfo *oinfo = osc->oo_oinfo;
 	struct cl_attr *attr = &osc_env_info(env)->oti_attr;
-	unsigned valid = CAT_BLOCKS | CAT_ATIME | CAT_CTIME | CAT_MTIME |
-			 CAT_SIZE;
+	enum cl_attr_valid valid = CAT_BLOCKS | CAT_ATIME | CAT_CTIME |
+				   CAT_MTIME | CAT_SIZE;
 	unsigned int setkms = 0;
 
 	ENTRY;
@@ -491,11 +499,11 @@ static void mdc_lock_granted(const struct lu_env *env, struct osc_lock *oscl,
 		descr->cld_end = CL_PAGE_EOF;
 
 		/* no lvb update for matched lock */
-		if (!ldlm_is_lvb_cached(dlmlock)) {
+		if (!(dlmlock->l_flags & LDLM_FL_LVB_CACHED)) {
 			LASSERT(oscl->ols_flags & LDLM_FL_LVB_READY);
 			LASSERT(osc == dlmlock->l_ast_data);
 			mdc_lock_lvb_update(env, osc, dlmlock, NULL);
-			ldlm_set_lvb_cached(dlmlock);
+			(dlmlock->l_flags |= LDLM_FL_LVB_CACHED);
 		}
 	}
 	unlock_res_and_lock(dlmlock);
@@ -505,7 +513,7 @@ static void mdc_lock_granted(const struct lu_env *env, struct osc_lock *oscl,
 	EXIT;
 }
 
-/**
+/*
  * Lock upcall function that is executed either when a reply to ENQUEUE rpc is
  * received from a server, or after mdc_enqueue_send() matched a local DLM
  * lock.
@@ -722,7 +730,7 @@ static int mdc_enqueue_send(const struct lu_env *env, struct obd_export *exp,
 		match_flags = LDLM_MATCH_GROUP;
 	mode = ldlm_lock_match_with_skip(obd->obd_namespace, search_flags, 0,
 					 res_id, einfo->ei_type, policy, mode,
-					 &lockh, match_flags);
+					 match_flags, &lockh);
 	if (mode) {
 		struct ldlm_lock *matched;
 
@@ -732,7 +740,7 @@ static int mdc_enqueue_send(const struct lu_env *env, struct obd_export *exp,
 		matched = ldlm_handle2lock(&lockh);
 
 		if (CFS_FAIL_CHECK(OBD_FAIL_MDC_GLIMPSE_DDOS))
-			ldlm_set_kms_ignore(matched);
+			(matched->l_flags |= LDLM_FL_KMS_IGNORE);
 
 		if (mdc_set_dom_lock_data(matched, einfo->ei_cbdata)) {
 			*flags |= LDLM_FL_LVB_READY;
@@ -823,6 +831,12 @@ static int mdc_enqueue_send(const struct lu_env *env, struct obd_export *exp,
 }
 
 /**
+ * mdc_lock_enqueue() - initiates ldlm enqueue:
+ * @env: Lustre environment
+ * @slice: client-side lock structure
+ * @unused: Unused
+ * @anchor: This is used for to wait for the resources before getting lock.
+ *
  * Implementation of cl_lock_operations::clo_enqueue() method for osc
  * layer. This initiates ldlm enqueue:
  *
@@ -835,6 +849,10 @@ static int mdc_enqueue_send(const struct lu_env *env, struct obd_export *exp,
  * when a reply from the server is received.
  *
  * This function does not wait for the network communication to complete.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int mdc_lock_enqueue(const struct lu_env *env,
 			    const struct cl_lock_slice *slice,
@@ -988,11 +1006,9 @@ static int mdc_lock_init(const struct lu_env *env, struct cl_object *obj,
 	RETURN(0);
 }
 
-/**
- * IO operations.
- *
- * An implementation of cl_io_operations specific methods for MDC layer.
- *
+/*
+ * IO operations : An implementation of cl_io_operations specific methods for
+ *                 MDC layer.
  */
 static int mdc_async_upcall(void *a, int rc)
 {
@@ -1048,28 +1064,27 @@ static int mdc_io_setattr_start(const struct lu_env *env,
 	__u64 size = io->u.ci_setattr.sa_attr.lvb_size;
 	unsigned int ia_avalid = io->u.ci_setattr.sa_avalid;
 	enum op_xvalid ia_xvalid = io->u.ci_setattr.sa_xvalid;
-	int rc;
+	int rc = 0;
 
 	/* silently ignore non-truncate setattr for Data-on-MDT object */
 	if (cl_io_is_trunc(io)) {
 		/* truncate cache dirty pages first */
 		rc = osc_cache_truncate_start(env, cl2osc(obj), size,
 					      &oio->oi_trunc);
-		if (rc < 0)
-			return rc;
 	} else if (cl_io_is_fallocate(io) &&
-		   io->u.ci_setattr.sa_falloc_mode & FALLOC_FL_PUNCH_HOLE) {
+		   (io->u.ci_setattr.sa_falloc_mode &
+		    (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))) {
 		rc = osc_punch_start(env, io, obj);
-		if (rc < 0)
-			return rc;
 	}
+	if (rc < 0)
+		return rc;
 
 	if (oio->oi_lockless == 0) {
 		cl_object_attr_lock(obj);
 		rc = cl_object_attr_get(env, obj, attr);
 		if (rc == 0) {
 			struct ost_lvb *lvb = &io->u.ci_setattr.sa_attr;
-			unsigned int cl_valid = 0;
+			enum cl_attr_valid cl_valid = 0;
 
 			if (ia_avalid & ATTR_SIZE) {
 				attr->cat_size = size;
@@ -1135,9 +1150,9 @@ static int mdc_io_setattr_start(const struct lu_env *env,
 	return rc;
 }
 
-static int mdc_io_read_ahead(const struct lu_env *env,
-			     const struct cl_io_slice *ios,
-			     pgoff_t start, struct cl_read_ahead *ra)
+static int mdc_io_read_ahead_prep(const struct lu_env *env,
+				  const struct cl_io_slice *ios,
+				  pgoff_t start, struct cl_read_ahead *ra)
 {
 	struct osc_object *osc = cl2osc(ios->cis_obj);
 	struct osc_io *oio = cl2osc_io(env, ios);
@@ -1158,7 +1173,7 @@ static int mdc_io_read_ahead(const struct lu_env *env,
 		ldlm_lock_decref(&lockh, dlmlock->l_req_mode);
 	}
 
-	ra->cra_rpc_pages = osc_cli(osc)->cl_max_pages_per_rpc;
+	ra->cra_rpc_pages = osc_cli(osc)->cl_max_pages_per_rpc_read;
 	ra->cra_end_idx = CL_PAGE_EOF;
 	ra->cra_release = osc_read_ahead_release;
 	ra->cra_dlmlock = dlmlock;
@@ -1181,9 +1196,16 @@ static int mdc_io_fsync_start(const struct lu_env *env,
 	if (fio->fi_mode == CL_FSYNC_RECLAIM) {
 		struct client_obd *cli = osc_cli(osc);
 
-		if (!atomic_long_read(&cli->cl_unstable_count)) {
-			/* Stop flush when there are no unstable pages? */
-			CDEBUG(D_CACHE, "unstable count is zero\n");
+		if (!atomic_read(&osc->oo_nr_ios) &&
+		    !atomic_read(&osc->oo_nr_writes) &&
+		    !atomic_long_read(&cli->cl_unstable_count)) {
+			/*
+			 * No active IO, no dirty pages needing to write and no
+			 * unstable pages needing to commit.
+			 */
+			CDEBUG(D_CACHE,
+			       "%s: dirty/unstable counts are both zero\n",
+			       cli_name(cli));
 			RETURN(0);
 		}
 	}
@@ -1192,7 +1214,8 @@ static int mdc_io_fsync_start(const struct lu_env *env,
 	 * possible range despite of supplied start/end values.
 	 */
 	result = osc_cache_writeback_range(env, osc, 0, CL_PAGE_EOF, 0,
-					   fio->fi_mode == CL_FSYNC_DISCARD);
+					   fio->fi_mode == CL_FSYNC_DISCARD,
+					   fio->fi_prio);
 	if (result > 0) {
 		fio->fi_nr_written += result;
 		result = 0;
@@ -1377,11 +1400,12 @@ static const struct cl_io_operations mdc_io_ops = {
 			.cio_end    = osc_io_lseek_end,
 		},
 	},
-	.cio_read_ahead   = mdc_io_read_ahead,
-	.cio_lru_reserve  = osc_io_lru_reserve,
-	.cio_submit	  = osc_io_submit,
-	.cio_commit_async = osc_io_commit_async,
-	.cio_extent_release = osc_io_extent_release,
+	.cio_read_ahead_prep	= mdc_io_read_ahead_prep,
+	.cio_lru_reserve	= osc_io_lru_reserve,
+	.cio_submit		= osc_io_submit,
+	.cio_dio_submit		= osc_dio_submit,
+	.cio_commit_async	= osc_io_commit_async,
+	.cio_extent_release	= osc_io_extent_release,
 };
 
 static int mdc_io_init(const struct lu_env *env, struct cl_object *obj,
@@ -1400,7 +1424,7 @@ static void mdc_build_res_name(struct osc_object *osc,
 	fid_build_reg_res_name(lu_object_fid(osc2lu(osc)), resname);
 }
 
-/**
+/*
  * Implementation of struct cl_req_operations::cro_attr_set() for MDC
  * layer. MDC is responsible for struct obdo::o_id and struct obdo::o_seq
  * fields.
@@ -1482,7 +1506,7 @@ static int mdc_object_ast_clear(struct ldlm_lock *lock, void *data)
 	LASSERT(lock->l_resource->lr_type == LDLM_IBITS);
 	memcpy(lvb, &oinfo->loi_lvb, sizeof(oinfo->loi_lvb));
 	cl_object_attr_unlock(&osc->oo_cl);
-	ldlm_clear_lvb_cached(lock);
+	(lock->l_flags &= ~LDLM_FL_LVB_CACHED);
 
 	RETURN(LDLM_ITER_CONTINUE);
 }
@@ -1540,7 +1564,7 @@ static int mdc_object_fiemap(const struct lu_env *env, struct cl_object *obj,
 		flags = LDLM_FL_BLOCK_GRANTED | LDLM_FL_LVB_READY;
 		mode = mdc_dom_lock_match(env, exp, resid, LDLM_IBITS, policy,
 					  LCK_PR | LCK_PW | LCK_GROUP,
-					  &flags, osc, &lockh, 0);
+					  &flags, osc, 0, &lockh);
 		fmkey->lfik_oa.o_valid |= OBD_MD_FLFLAGS;
 		if (mode) { /* lock is cached on client */
 			fmkey->lfik_oa.o_flags &= ~OBD_FL_SRVLOCK;
@@ -1596,6 +1620,7 @@ drop_lock:
 
 static const struct cl_object_operations mdc_ops = {
 	.coo_page_init = osc_page_init,
+	.coo_dio_pages_init = osc_dio_pages_init,
 	.coo_lock_init = mdc_lock_init,
 	.coo_io_init = mdc_io_init,
 	.coo_attr_get = mdc_attr_get,
@@ -1668,49 +1693,87 @@ static int mdc_process_config(const struct lu_env *env, struct lu_device *d,
 	return count > 0 ? 0 : count;
 }
 
-const struct lu_device_operations mdc_lu_ops = {
+static const struct lu_device_operations mdc_lu_ops = {
 	.ldo_object_alloc = mdc_object_alloc,
 	.ldo_process_config = mdc_process_config,
 	.ldo_recovery_complete = NULL,
 };
+
+static struct lu_device *mdc_device_free(const struct lu_env *env,
+					 struct lu_device *lu)
+{
+	struct obd_device *obd = lu->ld_obd;
+	struct client_obd *cli = &obd->u.cli;
+	struct osc_device *osc = lu2osc_dev(lu);
+
+	LASSERT(cli->cl_mod_rpcs_in_flight == 0);
+	cl_device_fini(lu2cl_dev(lu));
+	osc_cleanup_common(obd);
+	OBD_FREE_PTR(osc);
+
+	return NULL;
+}
 
 static struct lu_device *mdc_device_alloc(const struct lu_env *env,
 					  struct lu_device_type *t,
 					  struct lustre_cfg *cfg)
 {
 	struct lu_device *d;
-	struct osc_device *oc;
+	struct osc_device *osc;
 	struct obd_device *obd;
 	int rc;
 
-	OBD_ALLOC_PTR(oc);
-	if (oc == NULL)
+	OBD_ALLOC_PTR(osc);
+	if (osc == NULL)
 		RETURN(ERR_PTR(-ENOMEM));
 
-	cl_device_init(&oc->osc_cl, t);
-	d = osc2lu_dev(oc);
+	cl_device_init(&osc->osc_cl, t);
+	d = osc2lu_dev(osc);
 	d->ld_ops = &mdc_lu_ops;
 
 	/* Setup MDC OBD */
 	obd = class_name2obd(lustre_cfg_string(cfg, 0));
 	if (obd == NULL)
 		RETURN(ERR_PTR(-ENODEV));
+	obd->obd_lu_dev = d;
 
 	rc = mdc_setup(obd, cfg);
 	if (rc < 0) {
-		osc_device_free(env, d);
+		mdc_device_free(env, d);
 		RETURN(ERR_PTR(rc));
 	}
-	oc->osc_exp = obd->obd_self_export;
-	oc->osc_stats.os_init = ktime_get_real();
+	osc->osc_exp = obd->obd_self_export;
+	osc->osc_stats.os_init = ktime_get_real();
 	RETURN(d);
+}
+
+static int mdc_device_init(const struct lu_env *env, struct lu_device *d,
+			   const char *name, struct lu_device *next)
+{
+	RETURN(0);
+}
+
+static struct lu_device *mdc_device_fini(const struct lu_env *env,
+					 struct lu_device *lu)
+{
+	struct obd_device *obd = lu->ld_obd;
+
+	ENTRY;
+
+	lprocfs_free_md_stats(obd);
+	ptlrpc_lprocfs_unregister_obd(obd);
+	osc_precleanup_common(obd);
+	mdc_changelog_cdev_finish(obd);
+	mdc_llog_finish(obd);
+
+	RETURN(NULL);
 }
 
 static const struct lu_device_type_operations mdc_device_type_ops = {
 	.ldto_device_alloc = mdc_device_alloc,
-	.ldto_device_free = osc_device_free,
-	.ldto_device_init = osc_device_init,
-	.ldto_device_fini = osc_device_fini
+	.ldto_device_free = mdc_device_free,
+	.ldto_device_init = mdc_device_init,
+	.ldto_device_fini = mdc_device_fini
 };
 
 struct lu_device_type mdc_device_type = {

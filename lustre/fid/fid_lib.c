@@ -18,7 +18,6 @@
 
 #define DEBUG_SUBSYSTEM S_FID
 
-#include <libcfs/libcfs.h>
 #include <linux/module.h>
 #include <obd.h>
 #include <obd_class.h>
@@ -27,7 +26,7 @@
 
 #include "fid_internal.h"
 
-/**
+/*
  * A cluster-wide range from which fid-sequences are granted to servers and
  * then clients.
  *

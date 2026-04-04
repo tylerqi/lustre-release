@@ -1,33 +1,16 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
+
 #define DEBUG_SUBSYSTEM S_CLASS
 
 
@@ -134,7 +117,7 @@ static struct ll_rpc_opcode {
 	{ SEC_CTX_FINI,     "sec_ctx_fini" },
 	{ FLD_QUERY,        "fld_query" },
 	{ FLD_READ,	    "fld_read" },
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	{ OUT_UPDATE,	    "out_update" },
 	{ LFSCK_NOTIFY,	    "lfsck_notify" },
 	{ LFSCK_QUERY,	    "lfsck_query" },
@@ -164,21 +147,32 @@ static struct ll_eopcode {
 
 const char *ll_opcode2str(__u32 opcode)
 {
+	static char unknown_opcode[32];
 	__u32 offset = opcode_offset(opcode);
 
-	/* When one of the assertions below fail, chances are that:
-	 *     1) A new opcode was added in include/lustre/lustre_idl.h,
-	 *        but is missing from the table above.
-	 * or  2) The opcode space was renumbered or rearranged,
-	 *        and the opcode_offset() function in
-	 *        ptlrpc_internal.h needs to be modified.
-	 */
-	LASSERTF(offset < LUSTRE_MAX_OPCODES,
-		 "offset %u >= LUSTRE_MAX_OPCODES %u\n",
-		 offset, LUSTRE_MAX_OPCODES);
-	LASSERTF(ll_rpc_opcode_table[offset].opcode == opcode,
-		 "ll_rpc_opcode_table[%u].opcode %u != opcode %u\n",
-		 offset, ll_rpc_opcode_table[offset].opcode, opcode);
+	/* Handle invalid opcodes gracefully */
+	if (offset == -1 || offset >= LUSTRE_MAX_OPCODES) {
+		snprintf(unknown_opcode, sizeof(unknown_opcode),
+			 "unknown-opcode-%u", opcode);
+		return unknown_opcode;
+	}
+
+	/* Verify the opcode table is correct */
+	if (ll_rpc_opcode_table[offset].opcode != opcode) {
+		/* This should not happen unless there's a bug in the
+		 * opcode_offset() function or the opcode table.
+		 */
+		snprintf(unknown_opcode, sizeof(unknown_opcode),
+			 "opcode-mismatch-%u", opcode);
+		return unknown_opcode;
+	}
+
+	/* If the opname is NULL, return a string with the opcode number */
+	if (ll_rpc_opcode_table[offset].opname == NULL) {
+		snprintf(unknown_opcode, sizeof(unknown_opcode),
+			 "unnamed-opcode-%u", opcode);
+		return unknown_opcode;
+	}
 
 	return ll_rpc_opcode_table[offset].opname;
 }
@@ -205,7 +199,6 @@ static const char *ll_eopcode2str(__u32 opcode)
 static void
 ptlrpc_ldebugfs_register(struct dentry *root, char *dir, char *name,
 			 struct dentry **debugfs_root_ret,
-			 struct kobject *kobj,
 			 struct lprocfs_stats **stats_ret)
 {
 	struct dentry *svc_debugfs_entry;
@@ -214,16 +207,14 @@ ptlrpc_ldebugfs_register(struct dentry *root, char *dir, char *name,
 					     LPROCFS_CNTR_STDDEV;
 	int i;
 
-	LASSERT(!*debugfs_root_ret);
 	LASSERT(!*stats_ret);
-
 	if (dir)
 		svc_debugfs_entry = debugfs_create_dir(dir, root);
 	else
 		svc_debugfs_entry = root;
 
 	svc_stats = ldebugfs_stats_alloc(EXTRA_MAX_OPCODES + LUSTRE_MAX_OPCODES,
-					 name, svc_debugfs_entry, kobj, 0);
+					 name, svc_debugfs_entry, 0);
 	if (!svc_stats)
 		return;
 
@@ -262,10 +253,12 @@ ptlrpc_ldebugfs_register(struct dentry *root, char *dir, char *name,
 	*stats_ret = svc_stats;
 }
 
-static int
-ptlrpc_lprocfs_req_buffer_history_len_seq_show(struct seq_file *m, void *v)
+static ssize_t req_buffer_history_len_show(struct kobject *kobj,
+					   struct attribute *attr,
+					   char *buf)
 {
-	struct ptlrpc_service *svc = m->private;
+	struct ptlrpc_service *svc = container_of(kobj, struct ptlrpc_service,
+						  srv_kobj);
 	struct ptlrpc_service_part *svcpt;
 	int total = 0;
 	int i;
@@ -273,17 +266,16 @@ ptlrpc_lprocfs_req_buffer_history_len_seq_show(struct seq_file *m, void *v)
 	ptlrpc_service_for_each_part(svcpt, i, svc)
 		total += svcpt->scp_hist_nrqbds;
 
-	seq_printf(m, "%d\n", total);
-
-	return 0;
+	return scnprintf(buf, PAGE_SIZE, "%d\n", total);
 }
+LUSTRE_RO_ATTR(req_buffer_history_len);
 
-LDEBUGFS_SEQ_FOPS_RO(ptlrpc_lprocfs_req_buffer_history_len);
-
-static int
-ptlrpc_lprocfs_req_buffer_history_max_seq_show(struct seq_file *m, void *n)
+static ssize_t req_buffer_history_max_show(struct kobject *kobj,
+					   struct attribute *attr,
+					   char *buf)
 {
-	struct ptlrpc_service *svc = m->private;
+	struct ptlrpc_service *svc = container_of(kobj, struct ptlrpc_service,
+						  srv_kobj);
 	struct ptlrpc_service_part *svcpt;
 	int total = 0;
 	int i;
@@ -291,23 +283,22 @@ ptlrpc_lprocfs_req_buffer_history_max_seq_show(struct seq_file *m, void *n)
 	ptlrpc_service_for_each_part(svcpt, i, svc)
 		total += svc->srv_hist_nrqbds_cpt_max;
 
-	seq_printf(m, "%d\n", total);
-	return 0;
+	return scnprintf(buf, PAGE_SIZE, "%d\n", total);
 }
 
-static ssize_t
-ptlrpc_lprocfs_req_buffer_history_max_seq_write(struct file *file,
-						const char __user *buffer,
-						size_t count, loff_t *off)
+static ssize_t req_buffer_history_max_store(struct kobject *kobj,
+					    struct attribute *attr,
+					    const char *buffer,
+					    size_t count)
 {
-	struct seq_file *m = file->private_data;
-	struct ptlrpc_service *svc = m->private;
+	struct ptlrpc_service *svc = container_of(kobj, struct ptlrpc_service,
+						  srv_kobj);
 	unsigned long long val;
 	unsigned long long limit;
 	int bufpages;
 	int rc;
 
-	rc = kstrtoull_from_user(buffer, count, 0, &val);
+	rc = kstrtoull(buffer, 10, &val);
 	if (rc < 0)
 		return rc;
 
@@ -321,7 +312,7 @@ ptlrpc_lprocfs_req_buffer_history_max_seq_write(struct file *file,
 	 * will be upgraded */
 	bufpages = (roundup_pow_of_two(svc->srv_buf_size) + PAGE_SIZE - 1) >>
 							PAGE_SHIFT;
-	limit = cfs_totalram_pages() / (2 * bufpages);
+	limit = compat_totalram_pages() / (2 * bufpages);
 	/* do not allow history to consume more than half max number of rqbds */
 	if ((svc->srv_nrqbds_max == 0 && val > limit) ||
 	    (svc->srv_nrqbds_max != 0 && val > svc->srv_nrqbds_max / 2))
@@ -339,29 +330,29 @@ ptlrpc_lprocfs_req_buffer_history_max_seq_write(struct file *file,
 
 	return count;
 }
+LUSTRE_RW_ATTR(req_buffer_history_max);
 
-LDEBUGFS_SEQ_FOPS(ptlrpc_lprocfs_req_buffer_history_max);
-
-static int
-ptlrpc_lprocfs_req_buffers_max_seq_show(struct seq_file *m, void *n)
+static ssize_t req_buffers_max_show(struct kobject *kobj,
+				    struct attribute *attr,
+				    char *buf)
 {
-	struct ptlrpc_service *svc = m->private;
+	struct ptlrpc_service *svc = container_of(kobj, struct ptlrpc_service,
+						  srv_kobj);
 
-	seq_printf(m, "%d\n", svc->srv_nrqbds_max);
-	return 0;
+	return scnprintf(buf, PAGE_SIZE, "%d\n", svc->srv_nrqbds_max);
 }
 
-static ssize_t
-ptlrpc_lprocfs_req_buffers_max_seq_write(struct file *file,
-					 const char __user *buffer,
-					 size_t count, loff_t *off)
+static ssize_t req_buffers_max_store(struct kobject *kobj,
+				     struct attribute *attr,
+				     const char *buffer,
+				     size_t count)
 {
-	struct seq_file *m = file->private_data;
-	struct ptlrpc_service *svc = m->private;
+	struct ptlrpc_service *svc = container_of(kobj, struct ptlrpc_service,
+						  srv_kobj);
 	int val;
 	int rc;
 
-	rc = kstrtoint_from_user(buffer, count, 0, &val);
+	rc = kstrtouint(buffer, 10, &val);
 	if (rc < 0)
 		return rc;
 
@@ -376,8 +367,7 @@ ptlrpc_lprocfs_req_buffers_max_seq_write(struct file *file,
 
 	return count;
 }
-
-LDEBUGFS_SEQ_FOPS(ptlrpc_lprocfs_req_buffers_max);
+LUSTRE_RW_ATTR(req_buffers_max);
 
 static ssize_t threads_min_show(struct kobject *kobj, struct attribute *attr,
 				char *buf)
@@ -473,15 +463,14 @@ static ssize_t threads_max_store(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RW_ATTR(threads_max);
 
 /**
- * Translates \e ptlrpc_nrs_pol_state values to human-readable strings.
+ * nrs_state2str() - Translates @state values to human-readable strings.
+ * @state: The policy state
  *
- * \param[in] state The policy state
+ * Returns char *(string) correspoding to @state or NULl
  */
 static const char *nrs_state2str(enum ptlrpc_nrs_pol_state state)
 {
 	switch (state) {
-	default:
-		LBUG();
 	case NRS_POL_STATE_INVALID:
 		return "invalid";
 	case NRS_POL_STATE_STOPPED:
@@ -492,16 +481,18 @@ static const char *nrs_state2str(enum ptlrpc_nrs_pol_state state)
 		return "starting";
 	case NRS_POL_STATE_STARTED:
 		return "started";
+	default:
+		LBUG();
+		return NULL;
 	}
 }
 
 /**
- * Obtains status information for \a policy.
+ * nrs_policy_get_info_locked() - Obtains status information for @policy.
+ * @policy: The policy
+ * @info: Holds returned status information [out]
  *
- * Information is copied in \a info.
- *
- * \param[in] policy The policy
- * \param[out] info  Holds returned status information
+ * Information is copied in @info.
  */
 static void nrs_policy_get_info_locked(struct ptlrpc_nrs_policy *policy,
 				       struct ptlrpc_nrs_pol_info *info)
@@ -524,7 +515,7 @@ static void nrs_policy_get_info_locked(struct ptlrpc_nrs_policy *policy,
 	info->pi_req_started = policy->pol_req_started;
 }
 
-/**
+/*
  * Reads and prints policy status information for all policies of a PTLRPC
  * service.
  */
@@ -709,14 +700,14 @@ out:
 }
 
 #define LPROCFS_NRS_WR_MAX_ARG (1024)
-/**
+/*
  * The longest valid command string is the maxium policy name size, plus the
  * length of the " reg" substring, plus the lenght of argument
  */
 #define LPROCFS_NRS_WR_MAX_CMD (NRS_POL_NAME_MAX + sizeof(" reg") - 1 + \
 				LPROCFS_NRS_WR_MAX_ARG)
 
-/**
+/*
  * Starts and stops a given policy on a PTLRPC service.
  *
  * Commands consist of the policy name, followed by an optional [reg|hp] token;
@@ -879,13 +870,13 @@ ptlrpc_lprocfs_svc_req_history_seek(struct ptlrpc_service_part *svcpt,
 /* make up seq_file pos from cpt */
 #define PTLRPC_REQ_CPT2POS(svc, cpt)			\
 	((svc)->srv_cpt_bits == 0 ? 0 :			\
-	 (cpt) << (64 - (svc)->srv_cpt_bits))
+	 (__u64)(cpt) << (64 - (svc)->srv_cpt_bits))
 
 /* convert sequence to position */
 #define PTLRPC_REQ_SEQ2POS(svc, seq)			\
 	((svc)->srv_cpt_bits == 0 ? (seq) :		\
-	 ((seq) >> (svc)->srv_cpt_bits) |		\
-	 ((seq) << (64 - (svc)->srv_cpt_bits)))
+	 ((__u64)(seq) >> (svc)->srv_cpt_bits) |		\
+	 ((__u64)(seq) << (64 - (svc)->srv_cpt_bits)))
 
 /* convert position to sequence */
 #define PTLRPC_REQ_POS2SEQ(svc, pos)			\
@@ -896,12 +887,12 @@ ptlrpc_lprocfs_svc_req_history_seek(struct ptlrpc_service_part *svcpt,
 static void *
 ptlrpc_lprocfs_svc_req_history_start(struct seq_file *s, loff_t *pos)
 {
-	struct ptlrpc_service		*svc = s->private;
-	struct ptlrpc_service_part	*svcpt;
-	struct ptlrpc_srh_iterator	*srhi;
-	unsigned int			cpt;
-	int				rc;
-	int				i;
+	struct ptlrpc_service *svc = s->private;
+	struct ptlrpc_service_part *svcpt;
+	struct ptlrpc_srh_iterator *srhi;
+	__u64 cpt;
+	int rc;
+	int i;
 
 	if (sizeof(loff_t) != sizeof(__u64)) { /* can't support */
 		CWARN("Failed to read request history because size of loff_t "
@@ -1170,10 +1161,13 @@ static ssize_t high_priority_ratio_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(high_priority_ratio);
 
 static struct attribute *ptlrpc_svc_attrs[] = {
+	&lustre_attr_high_priority_ratio.attr,
+	&lustre_attr_req_buffer_history_len.attr,
+	&lustre_attr_req_buffer_history_max.attr,
+	&lustre_attr_req_buffers_max.attr,
 	&lustre_attr_threads_min.attr,
 	&lustre_attr_threads_started.attr,
 	&lustre_attr_threads_max.attr,
-	&lustre_attr_high_priority_ratio.attr,
 	NULL,
 };
 
@@ -1211,24 +1205,15 @@ int ptlrpc_sysfs_register_service(struct kset *parent,
 				    &parent->kobj, "%s", svc->srv_name);
 }
 
-void ptlrpc_ldebugfs_register_service(struct dentry *entry,
+void ptlrpc_ldebugfs_register_service(struct dentry *entry, char *param,
 				      struct ptlrpc_service *svc)
 {
 	struct ldebugfs_vars ldebugfs_vars[] = {
-		{ .name	= "req_buffer_history_len",
-		  .fops	= &ptlrpc_lprocfs_req_buffer_history_len_fops,
-		  .data	= svc },
-		{ .name = "req_buffer_history_max",
-		  .fops	= &ptlrpc_lprocfs_req_buffer_history_max_fops,
-		  .data	= svc },
 		{ .name = "timeouts",
 		  .fops = &ptlrpc_lprocfs_timeouts_fops,
 		  .data = svc },
 		{ .name = "nrs_policies",
 		  .fops = &ptlrpc_lprocfs_nrs_policies_fops,
-		  .data = svc },
-		{ .name = "req_buffers_max",
-		  .fops = &ptlrpc_lprocfs_req_buffers_max_fops,
 		  .data = svc },
 		{ NULL }
 	};
@@ -1237,12 +1222,11 @@ void ptlrpc_ldebugfs_register_service(struct dentry *entry,
 		.open		= ptlrpc_lprocfs_svc_req_history_open,
 		.read		= seq_read,
 		.llseek		= seq_lseek,
-		.release	= lprocfs_seq_release,
+		.release	= seq_release,
 	};
 
-	ptlrpc_ldebugfs_register(entry, svc->srv_name, "stats",
-				 &svc->srv_debugfs_entry,
-				 &svc->srv_kobj, &svc->srv_stats);
+	ptlrpc_ldebugfs_register(entry, svc->srv_name, param,
+				 &svc->srv_debugfs_entry, &svc->srv_stats);
 	if (!svc->srv_debugfs_entry)
 		return;
 
@@ -1254,9 +1238,12 @@ void ptlrpc_ldebugfs_register_service(struct dentry *entry,
 
 void ptlrpc_lprocfs_register_obd(struct obd_device *obd)
 {
-	ptlrpc_ldebugfs_register(obd->obd_debugfs_entry, NULL, "stats",
+	char param[MAX_OBD_NAME * 4];
+
+	scnprintf(param, sizeof(param), "%s.%s.stats",
+		  kobject_name(&obd->obd_type->typ_kobj), obd->obd_name);
+	ptlrpc_ldebugfs_register(obd->obd_debugfs_entry, NULL, param,
 				 &obd->obd_svc_debugfs_entry,
-				 &obd->obd_kset.kobj,
 				 &obd->obd_svc_stats);
 }
 EXPORT_SYMBOL(ptlrpc_lprocfs_register_obd);
@@ -1442,30 +1429,32 @@ out:
 }
 EXPORT_SYMBOL(ldebugfs_import_seq_write);
 
-int lprocfs_pinger_recov_seq_show(struct seq_file *m, void *n)
+ssize_t pinger_recov_show(struct kobject *kobj, struct attribute *attr,
+			  char *buf)
 {
-	struct obd_device *obd = m->private;
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
 	struct obd_import *imp;
 	int rc;
 
 	with_imp_locked(obd, imp, rc)
-		seq_printf(m, "%d\n", !imp->imp_no_pinger_recover);
+		rc = scnprintf(buf, PAGE_SIZE, "%d\n",
+			       !imp->imp_no_pinger_recover);
 
 	return rc;
 }
-EXPORT_SYMBOL(lprocfs_pinger_recov_seq_show);
+EXPORT_SYMBOL(pinger_recov_show);
 
-ssize_t
-lprocfs_pinger_recov_seq_write(struct file *file, const char __user *buffer,
-			       size_t count, loff_t *off)
+ssize_t pinger_recov_store(struct kobject *kobj, struct attribute *attr,
+			   const char *buffer, size_t count)
 {
-	struct seq_file *m = file->private_data;
-	struct obd_device *obd = m->private;
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
 	struct obd_import *imp;
 	bool val;
 	int rc;
 
-	rc = kstrtobool_from_user(buffer, count, &val);
+	rc = kstrtobool(buffer, &val);
 	if (rc < 0)
 		return rc;
 
@@ -1477,4 +1466,147 @@ lprocfs_pinger_recov_seq_write(struct file *file, const char __user *buffer,
 
 	return rc ?: count;
 }
-EXPORT_SYMBOL(lprocfs_pinger_recov_seq_write);
+EXPORT_SYMBOL(pinger_recov_store);
+
+static struct kobject *ptlrpc_kobj;
+
+static ssize_t
+enable_pmqos_show(struct kobject *kobj, struct attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", ptlrpc_enable_pmqos);
+}
+
+static ssize_t
+enable_pmqos_store(struct kobject *kobj, struct attribute *attr,
+		   const char *buf, size_t count)
+{
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buf, &val);
+	if (rc < 0)
+		return rc;
+
+	CDEBUG(D_INFO, "Setting 'enable_pmqos' to %s\n", val ? "true" : "false");
+	ptlrpc_enable_pmqos = val;
+
+	return count;
+}
+
+LUSTRE_RW_ATTR(enable_pmqos);
+
+static ssize_t
+pmqos_latency_max_usec_show(struct kobject *kobj, struct attribute *attr,
+			    char *buf)
+{
+	return sprintf(buf, "%d\n", ptlrpc_pmqos_latency_max_usec);
+}
+
+static ssize_t
+pmqos_latency_max_usec_store(struct kobject *kobj, struct attribute *attr,
+			     const char *buf, size_t count)
+{
+	int val;
+	int rc;
+
+	rc = kstrtoint(buf, 0, &val);
+	if (rc < 0)
+		return rc;
+
+	CDEBUG(D_INFO, "Setting 'pmqos_latency_max_usec' to %d", val);
+	ptlrpc_pmqos_latency_max_usec = val;
+
+	return count;
+}
+
+LUSTRE_RW_ATTR(pmqos_latency_max_usec);
+
+static ssize_t
+pmqos_default_duration_usec_show(struct kobject *kobj,
+				 struct attribute *attr, char *buf)
+{
+	return sprintf(buf, "%llu\n", ptlrpc_pmqos_default_duration_usec);
+}
+
+static ssize_t
+pmqos_default_duration_usec_store(struct kobject *kobj,
+				  struct attribute *attr, const char *buf,
+				  size_t count)
+{
+	u64 val;
+	int rc;
+
+	rc = kstrtoull(buf, 0, &val);
+	if (rc < 0)
+		return rc;
+
+	CDEBUG(D_INFO, "Setting 'pmqos_default_duration_usec' to %llu", val);
+	ptlrpc_pmqos_default_duration_usec = val;
+
+	return count;
+}
+
+LUSTRE_RW_ATTR(pmqos_default_duration_usec);
+
+static ssize_t
+pmqos_use_stats_for_duration_show(struct kobject *kobj,
+				  struct attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", ptlrpc_pmqos_use_stats_for_duration);
+}
+
+static ssize_t
+pmqos_use_stats_for_duration_store(struct kobject *kobj,
+				   struct attribute *attr, const char *buf,
+				   size_t count)
+{
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buf, &val);
+	if (rc < 0)
+		return rc;
+
+	CDEBUG(D_INFO, "Setting 'pmqos_use_stats_for_duration' to %s\n",
+	       val ? "true" : "false");
+	ptlrpc_pmqos_use_stats_for_duration = val;
+
+	return count;
+}
+
+LUSTRE_RW_ATTR(pmqos_use_stats_for_duration);
+
+static struct attribute *ptlrpc_attrs[] = {
+	&lustre_attr_enable_pmqos.attr,
+	&lustre_attr_pmqos_latency_max_usec.attr,
+	&lustre_attr_pmqos_default_duration_usec.attr,
+	&lustre_attr_pmqos_use_stats_for_duration.attr,
+	NULL,
+};
+
+static struct attribute_group ptlrpc_attr_group = {
+	.attrs = ptlrpc_attrs,
+};
+
+int ptlrpc_lproc_init(void)
+{
+	int rc = 0;
+
+	ptlrpc_kobj = kobject_create_and_add("ptlrpc", &lustre_kset->kobj);
+	if (!ptlrpc_kobj)
+		RETURN(-ENOMEM);
+
+	rc = sysfs_create_group(ptlrpc_kobj, &ptlrpc_attr_group);
+	if (rc)
+		ptlrpc_lproc_fini();
+
+	return rc;
+}
+
+void ptlrpc_lproc_fini(void)
+{
+	if (ptlrpc_kobj) {
+		sysfs_remove_group(ptlrpc_kobj, &ptlrpc_attr_group);
+		kobject_put(ptlrpc_kobj);
+	}
+}

@@ -1,24 +1,5 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (C) 2013, Trustees of Indiana University
  *
@@ -32,12 +13,11 @@
 #include "nodemap_internal.h"
 
 /**
- * Allocate the lu_idmap structure
+ * idmap_create() - Allocate the lu_idmap structure
+ * @client_id: client uid or gid
+ * @fs_id: filesystem uid or gid
  *
- * \param	client_id		client uid or gid
- * \param	fs_id			filesystem uid or gid
- *
- * \retval	alloated lu_idmap structure on success, NULL otherwise
+ * Return alloated lu_idmap structure on success, NULL otherwise
  */
 struct lu_idmap *idmap_create(__u32 client_id, __u32 fs_id)
 {
@@ -66,18 +46,18 @@ static void idmap_destroy(struct lu_idmap *idmap)
 }
 
 /**
- * Insert idmap into the proper trees
+ * idmap_insert() - Insert idmap into the proper trees
+ * @id_type: NODEMAP_UID or NODEMAP_GID or NODEMAP_PROJID
+ * @idmap: lu_idmap structure to insert
+ * @nodemap: nodemap to associate with the map
  *
- * \param	id_type		NODEMAP_UID or NODEMAP_GID
- * \param	idmap		lu_idmap structure to insert
- * \param	nodemap		nodemap to associate with the map
- *
- * \retval	NULL		 on success
- * \retval	ERR_PTR(-EEXIST) if this idmap already exists
- * \retval	struct lu_idmap	 if only id_client or id_fs of this idmap
- *				 is matched, return the matched idmap.
- *				 The caller will delete this old idmap and
- *				 its index before insert the new idmap again.
+ * Return:
+ * * %NULL		 on success
+ * * %ERR_PTR(-EEXIST) if this idmap already exists
+ * * %struct lu_idmap	 if only id_client or id_fs of this idmap
+ *			 is matched, return the matched idmap.
+ *			 The caller will delete this old idmap and
+ *			 its index before insert the new idmap again.
  */
 struct lu_idmap *idmap_insert(enum nodemap_id_type id_type,
 			      struct lu_idmap *idmap,
@@ -168,12 +148,10 @@ struct lu_idmap *idmap_insert(enum nodemap_id_type id_type,
 }
 
 /**
- * Delete idmap from the correct nodemap tree
- *
- * \param	node_type		0 for UID
- *					1 for GID
- * \param	idmap			idmap to delete
- * \param	nodemap			assoicated idmap
+ * idmap_delete() - Delete idmap from the correct nodemap tree
+ * @id_type: 0 for UID and 1 for GID
+ * @idmap: idmap to delete
+ * @nodemap: assoicated idmap
  */
 void idmap_delete(enum nodemap_id_type id_type, struct lu_idmap *idmap,
 		  struct lu_nodemap *nodemap)
@@ -201,16 +179,14 @@ void idmap_delete(enum nodemap_id_type id_type, struct lu_idmap *idmap,
 }
 
 /**
- * Search for an existing id in the nodemap trees.
+ * idmap_search() - Search for an existing id in the nodemap trees.
+ * @nodemap: nodemap trees to search
+ * @tree_type: 0 for filesystem to client maps
+ *             1 for client to filesystem maps
+ * @id_type: 0 for UID or 1 for GID
+ * @id: numeric id for which to search
  *
- * \param	nodemap		nodemap trees to search
- * \param	tree_type	0 for filesystem to client maps
- *				1 for client to filesystem maps
- * \param	id_type		0 for UID
- *				1 for GID
- * \param	id		numeric id for which to search
- *
- * \retval	lu_idmap structure with the map on success
+ * Returns lu_idmap structure with the map on success
  */
 struct lu_idmap *idmap_search(struct lu_nodemap *nodemap,
 			      enum nodemap_tree_type tree_type,
@@ -296,4 +272,77 @@ void idmap_delete_tree(struct lu_nodemap *nodemap)
 					     id_client_to_fs) {
 		idmap_destroy(idmap);
 	}
+}
+
+/*
+ * copy all idmap trees from a source nodemap to a dest nodemap
+ *
+ * \param	dst		nodemap to copy trees to
+ * \param	src		nodemap to copy trees from
+ *
+ * \retval	0 on success, error code otherwise
+ *
+ * This uses the postorder safe traversal code that is committed
+ * in a later kernel. Each lu_idmap structure is copied.
+ * No need for this function to hold nm_idmap_lock, as it is called
+ * only when a sub-nodemap is first attached to a parent.
+ */
+int idmap_copy_tree(struct lu_nodemap *dst, struct lu_nodemap *src)
+{
+	struct lu_idmap *idmap, *temp, *idmap_new, *err;
+	struct rb_root root;
+	int rc = 0;
+
+	root = src->nm_fs_to_client_uidmap;
+	rbtree_postorder_for_each_entry_safe(idmap, temp, &root,
+					     id_fs_to_client) {
+		idmap_new = idmap_create(idmap->id_client, idmap->id_fs);
+		if (!idmap_new)
+			GOTO(out_copy_tree, rc = -ENOMEM);
+
+		err = idmap_insert(NODEMAP_UID, idmap_new, dst);
+		if (err) {
+			OBD_FREE_PTR(idmap);
+			GOTO(out_copy_tree,
+			     rc = IS_ERR(err) ? PTR_ERR(err) : -EEXIST);
+		}
+	}
+
+	root = src->nm_client_to_fs_gidmap;
+	rbtree_postorder_for_each_entry_safe(idmap, temp, &root,
+					     id_client_to_fs) {
+		idmap_new = idmap_create(idmap->id_client, idmap->id_fs);
+		if (!idmap_new)
+			GOTO(out_copy_tree, rc = -ENOMEM);
+
+		err = idmap_insert(NODEMAP_GID, idmap_new, dst);
+		if (err) {
+			OBD_FREE_PTR(idmap);
+			GOTO(out_copy_tree,
+			     rc = IS_ERR(err) ? PTR_ERR(err) : -EEXIST);
+		}
+	}
+
+	root = src->nm_client_to_fs_projidmap;
+	rbtree_postorder_for_each_entry_safe(idmap, temp, &root,
+					     id_client_to_fs) {
+		idmap_new = idmap_create(idmap->id_client, idmap->id_fs);
+		if (!idmap_new)
+			GOTO(out_copy_tree, rc = -ENOMEM);
+
+		err = idmap_insert(NODEMAP_PROJID, idmap_new, dst);
+		if (err) {
+			OBD_FREE_PTR(idmap);
+			GOTO(out_copy_tree,
+			     rc = IS_ERR(err) ? PTR_ERR(err) : -EEXIST);
+		}
+	}
+
+out_copy_tree:
+	if (rc)
+		CDEBUG(D_INFO,
+		       "Copying idmap %d:%d from %s to %s failed: rc=%d\n",
+		       idmap->id_client, idmap->id_fs,
+		       src->nm_name, dst->nm_name, rc);
+	return rc;
 }

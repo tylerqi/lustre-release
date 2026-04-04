@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -66,8 +48,13 @@ static void ll_release(struct dentry *de)
 	EXIT;
 }
 
-/* Compare if two dentries are the same.  Don't match if the existing dentry
- * is marked invalid.  Returns 1 if different, 0 if the same.
+/**
+ * ll_dcompare() - Compare if two dentries are the same. Don't match if the
+ * existing dentry is marked invalid.
+ * @dentry: directory which is being compared
+ * @len: length
+ * @str: name of directory being compared
+ * @name: name and length (struct qstr) of directory being compared
  *
  * This avoids a race where ll_lookup_it() instantiates a dentry, but we get
  * an AST before calling d_revalidate_it().  The dentry still exists (marked
@@ -79,27 +66,25 @@ static void ll_release(struct dentry *de)
  * in ll_lookup_nd() at a time.  So allow invalid dentries to match
  * while d_in_lookup().  We will be called again when the lookup
  * completes, and can give a different answer then.
+ *
+ * Return:
+ * * %0 - if the same
+ * * %1 - if different
  */
-#if defined(HAVE_D_COMPARE_5ARGS)
-static int ll_dcompare(const struct dentry *parent, const struct dentry *dentry,
+static int ll_dcompare(const struct dentry *dentry,
 		       unsigned int len, const char *str,
 		       const struct qstr *name)
-#elif defined(HAVE_D_COMPARE_4ARGS)
-static int ll_dcompare(const struct dentry *dentry, unsigned int len,
-		       const char *str, const struct qstr *name)
-#endif
 {
 	ENTRY;
-
 	if (len != name->len)
 		RETURN(1);
 
 	if (memcmp(str, name->name, len))
 		RETURN(1);
 
-	CDEBUG(D_DENTRY, "found name %.*s(%p) flags %#x refc %d\n",
-	       name->len, name->name, dentry, dentry->d_flags,
-	       ll_d_count(dentry));
+	CDEBUG(D_DENTRY, "found name "DNAME"(%p) flags %#x refc %d\n",
+	       encode_fn_qstr(*name), dentry, dentry->d_flags,
+	       d_count(dentry));
 
 	/* mountpoint is always valid */
 	if (d_mountpoint((struct dentry *)dentry))
@@ -116,20 +101,28 @@ static int ll_dcompare(const struct dentry *dentry, unsigned int len,
 }
 
 /**
+ * ll_ddelete() - Called when last reference to a dentry is dropped
+ *
+ * @de: directory which is being deleted
+ *
  * Called when last reference to a dentry is dropped and dcache wants to know
  * whether or not it should cache it:
  * - return 1 to delete the dentry immediately
  * - return 0 to cache the dentry
  * Should NOT be called with the dcache lock, see fs/dcache.c
+ *
+ * Return:
+ * * %0 - to cache the dentry
+ * * %1 - to delete the dentry immediately
  */
 static int ll_ddelete(const struct dentry *de)
 {
 	ENTRY;
 	LASSERT(de);
 
-	CDEBUG(D_DENTRY, "%s dentry %pd (%p, parent %p, inode %p) %s%s\n",
+	CDEBUG(D_DENTRY, "%s dentry "DNAME" (%p, parent %p, inode %p) %s%s\n",
 	       d_lustre_invalid(de) ? "deleting" : "keeping",
-	       de, de, de->d_parent, de->d_inode,
+	       encode_fn_dentry(de), de, de->d_parent, de->d_inode,
 	       d_unhashed((struct dentry *)de) ? "" : "hashed,",
 	       d_no_children(de) ? "" : "subdirs");
 
@@ -138,7 +131,6 @@ static int ll_ddelete(const struct dentry *de)
 	RETURN(0);
 }
 
-#ifdef HAVE_D_INIT
 static int ll_d_init(struct dentry *de)
 {
 	struct ll_dentry_data *lld;
@@ -148,40 +140,6 @@ static int ll_d_init(struct dentry *de)
 	de->d_fsdata = lld;
 	return 0;
 }
-#else /* !HAVE_D_INIT */
-
-bool ll_d_setup(struct dentry *de, bool do_put)
-{
-	struct ll_dentry_data *lld;
-	bool success = true;
-
-	if (de->d_fsdata)
-		return success;
-
-	OBD_ALLOC_PTR(lld);
-	if (likely(lld)) {
-		spin_lock(&de->d_lock);
-		/* Since the first d_fsdata test was not
-		 * done under the spinlock it could have
-		 * changed by time the memory is allocated.
-		 */
-		if (!de->d_fsdata) {
-			lld->lld_invalid = 1;
-			de->d_fsdata = lld;
-		}
-		spin_unlock(&de->d_lock);
-		/* See if we lost the race to set d_fsdata. */
-		if (de->d_fsdata != lld)
-			OBD_FREE_PTR(lld);
-	} else {
-		success = false;
-		if (do_put)
-			dput(de);
-	}
-
-	return success;
-}
-#endif /* !HAVE_D_INIT */
 
 void ll_intent_drop_lock(struct lookup_intent *it)
 {
@@ -242,7 +200,7 @@ void ll_prune_aliases(struct inode *inode)
 	       PFID(ll_inode2fid(inode)), inode);
 
 	spin_lock(&inode->i_lock);
-	hlist_for_each_entry(dentry, &inode->i_dentry, d_alias)
+	hlist_for_each_entry(dentry, &inode->i_dentry, d_u.d_alias)
 		d_lustre_invalidate(dentry);
 	spin_unlock(&inode->i_lock);
 
@@ -256,7 +214,7 @@ int ll_revalidate_it_finish(struct ptlrpc_request *request,
 			    struct dentry *de)
 {
 	struct inode *inode = de->d_inode;
-	__u64 bits = 0;
+	enum mds_ibits_locks bits = MDS_INODELOCK_NONE;
 	int rc = 0;
 
 	ENTRY;
@@ -303,15 +261,19 @@ void ll_lookup_finish_locks(struct lookup_intent *it, struct dentry *dentry)
 		ll_intent_drop_lock(it);
 }
 
-static int ll_revalidate_dentry(struct dentry *dentry,
+static int ll_revalidate_dentry(
+#ifdef HAVE_D_REVALIDATE_WITH_INODE_NAME
+				struct inode *inode, const struct qstr *qstr,
+#endif
+				struct dentry *dentry,
 				unsigned int lookup_flags)
 {
 	struct dentry *parent;
 	struct inode *dir;
 	int rc;
 
-	CDEBUG(D_VFSTRACE, "VFS Op:name=%s, flags=%u\n",
-	       dentry->d_name.name, lookup_flags);
+	CDEBUG(D_VFSTRACE, "VFS Op:name="DNAME", flags=%u\n",
+	       encode_fn_dentry(dentry), lookup_flags);
 
 	rc = llcrypt_d_revalidate(dentry, lookup_flags);
 	if (rc != 1)
@@ -369,9 +331,7 @@ static int ll_revalidate_dentry(struct dentry *dentry,
 }
 
 const struct dentry_operations ll_d_ops = {
-#ifdef HAVE_D_INIT
 	.d_init		= ll_d_init,
-#endif
 	.d_revalidate	= ll_revalidate_dentry,
 	.d_release	= ll_release,
 	.d_delete	= ll_ddelete,

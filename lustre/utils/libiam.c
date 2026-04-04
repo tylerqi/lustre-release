@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -51,16 +31,16 @@
 #include <lustre/libiam.h>
 
 
-/**
- * Stores \a val at \a dst, where the latter is possibly unaligned. Uses
+/*
+ * Stores @val at @dst, where the latter is possibly unaligned. Uses
  * memcpy(). This macro is needed to avoid dependency of user level tools on
  * the kernel headers.
  */
-#define STORE_UNALIGNED(val, dst)               \
-({                                              \
-	typeof(*(dst)) __val = (val);           \
+#define STORE_UNALIGNED(val, dst)		\
+({						\
+	typeof(*(dst)) __val = (val);		\
 						\
-	memcpy(dst, &__val, sizeof *(dst));     \
+	memcpy(dst, &__val, sizeof *(dst));	\
 })
 
 

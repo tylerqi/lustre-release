@@ -18,8 +18,6 @@
 
 #include <linux/kthread.h>
 #include <linux/list.h>
-#include <libcfs/libcfs.h>
-#include <libcfs/linux/linux-mem.h>
 #include <lustre_errno.h>
 #include <lustre_dlm.h>
 #include <obd_class.h>
@@ -41,7 +39,7 @@ MODULE_PARM_DESC(ldlm_cpts, "CPU partitions ldlm threads should run on");
 static DEFINE_MUTEX(ldlm_ref_mutex);
 static int ldlm_refcount;
 
-struct kobject *ldlm_kobj;
+static struct kobject *ldlm_kobj;
 struct kset *ldlm_ns_kset;
 struct kset *ldlm_svc_kset;
 
@@ -100,7 +98,7 @@ struct ldlm_bl_work_item {
 	int			blwi_mem_pressure;
 };
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 
 /**
  * Protects both waiting_locks_list and expired_lock_thread.
@@ -119,8 +117,8 @@ static DEFINE_SPINLOCK(waiting_locks_spinlock); /* BH lock (timer) */
  * All access to it should be under waiting_locks_spinlock.
  */
 static LIST_HEAD(waiting_locks_list);
-static void waiting_locks_callback(TIMER_DATA_TYPE unused);
-static CFS_DEFINE_TIMER(waiting_locks_timer, waiting_locks_callback, 0, 0);
+static void waiting_locks_callback(struct timer_list *unused);
+static DEFINE_TIMER(waiting_locks_timer, waiting_locks_callback);
 
 enum elt_state {
 	ELT_STOPPED,
@@ -155,9 +153,17 @@ static inline int have_expired_locks(void)
 static int expired_lock_main(void *arg)
 {
 	struct list_head *expired = &expired_lock_list;
-	int do_dump;
+	struct lu_env env;
+	int rc, do_dump;
 
 	ENTRY;
+
+	rc = lu_env_init(&env, LCT_DT_THREAD | LCT_MD_THREAD);
+	if (rc)
+		RETURN(rc);
+	rc = lu_env_add(&env);
+	if (unlikely(rc))
+		GOTO(out_fini, rc);
 
 	expired_lock_thread_state = ELT_READY;
 	wake_up(&expired_lock_wait_queue);
@@ -167,7 +173,15 @@ static int expired_lock_main(void *arg)
 				have_expired_locks() ||
 				expired_lock_thread_state == ELT_TERMINATE);
 
+		rc = lu_env_refill(&env);
+		if (unlikely(rc)) {
+			CERROR("can't refill env context: rc=%d\n", rc);
+			schedule_timeout(HZ * 3);
+			continue;
+		}
+
 		spin_lock_bh(&waiting_locks_spinlock);
+
 		if (expired_lock_dump) {
 			spin_unlock_bh(&waiting_locks_spinlock);
 
@@ -240,7 +254,8 @@ static int expired_lock_main(void *arg)
 					   lock->l_blast_sent,
 					   obd_export_nid2str(export));
 				ldlm_lock_to_ns(lock)->ns_timeouts++;
-				if (do_dump_on_eviction(export->exp_obd))
+				if (do_dump_on_eviction(export->exp_obd,
+							DUMP_LDLM_LOCK))
 					do_dump++;
 				class_fail_export(export);
 			}
@@ -266,7 +281,13 @@ static int expired_lock_main(void *arg)
 
 	expired_lock_thread_state = ELT_STOPPED;
 	wake_up(&expired_lock_wait_queue);
-	RETURN(0);
+	rc = 0;
+
+	lu_env_remove(&env);
+out_fini:
+	lu_env_fini(&env);
+
+	RETURN(rc);
 }
 
 /**
@@ -297,7 +318,7 @@ static int ldlm_lock_busy(struct ldlm_lock *lock)
 }
 
 /* This is called from within a timer interrupt and cannot schedule */
-static void waiting_locks_callback(TIMER_DATA_TYPE unused)
+static void waiting_locks_callback(struct timer_list *unused)
 {
 	struct ldlm_lock *lock;
 	int need_dump = 0;
@@ -588,7 +609,7 @@ int ldlm_refresh_waiting_lock(struct ldlm_lock *lock, timeout_t timeout)
 }
 EXPORT_SYMBOL(ldlm_refresh_waiting_lock);
 
-#else /* HAVE_SERVER_SUPPORT */
+#else /* CONFIG_LUSTRE_FS_SERVER */
 
 int ldlm_del_waiting_lock(struct ldlm_lock *lock)
 {
@@ -600,9 +621,9 @@ int ldlm_refresh_waiting_lock(struct ldlm_lock *lock, timeout_t timeout)
 	RETURN(0);
 }
 
-#endif /* !HAVE_SERVER_SUPPORT */
+#endif /* !CONFIG_LUSTRE_FS_SERVER */
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 
 /**
  * Calculate the per-export Blocking timeout (covering BL AST, data flush,
@@ -632,59 +653,6 @@ timeout_t ldlm_bl_timeout(struct ldlm_lock *lock)
 		     (timeout_t)obd_get_ldlm_enqueue_min(obd));
 }
 EXPORT_SYMBOL(ldlm_bl_timeout);
-
-/**
- * Calculate the per-export Blocking timeout by the given RPC (covering the
- * reply to this RPC and the next RPC). The next RPC could be still not CANCEL,
- * but having the lock refresh mechanism it is enough.
- *
- * Used for lock refresh timeout when we are in the middle of the process -
- * BL AST is sent, CANCEL is ahead - it is still 1 reply for the current RPC
- * and at least 1 RPC (which will trigger another refresh if it will be not
- * CANCEL) - but more accurate than ldlm_bl_timeout as the timeout is taken
- * from the RPC (i.e. the view of the client on the current AT) is taken into
- * account.
- *
- * \param[in] req     req which export needs the timeout calculation
- *
- * \retval            timeout in seconds to wait for the next client's RPC
- */
-timeout_t ldlm_bl_timeout_by_rpc(struct ptlrpc_request *req)
-{
-	struct ptlrpc_service_part *svcpt = req->rq_rqbd->rqbd_svcpt;
-	timeout_t timeout, req_timeout, at_timeout, netl;
-	struct obd_device *obd = req->rq_export->exp_obd;
-
-	if (obd_at_off(obd))
-		return obd_timeout / 2;
-
-	/* A blocked lock means somebody in the cluster is waiting, and we
-	 * should not consider the worst ever case, consisting of a chain of
-	 * failures on each step, however this timeout should survive a
-	 * recovery of at least 1 failure, let this one to be the worst one:
-	 * in case a server NID is dead first re-connect is done through the
-	 * same router and also times out.
-	 *
-	 * Either this on the next RPC times out, take the max.
-	 * Considering the current RPC, take just the left time.
-	 */
-	netl = obd_at_get(obd,
-			  &req->rq_export->exp_imp_reverse->imp_at.iat_net_latency);
-	req_timeout = req->rq_deadline - ktime_get_real_seconds() + netl;
-	at_timeout = at_est2timeout(obd_at_get(obd, &svcpt->scp_at_estimate))
-				    + netl;
-	req_timeout = max(req_timeout, at_timeout);
-
-	/* Take 1 re-connect failure and 1 re-connect success into account. */
-	timeout = at_timeout + INITIAL_CONNECT_TIMEOUT + netl + req_timeout;
-
-	/* Client's timeout is calculated as at_est2timeout(), let's be a bit
-	 * more conservative than client
-	 */
-	return max(timeout + (timeout >> 4),
-		   (timeout_t)obd_get_ldlm_enqueue_min(obd));
-}
-EXPORT_SYMBOL(ldlm_bl_timeout_by_rpc);
 
 /**
  * Perform lock cleanup if AST sending failed.
@@ -738,7 +706,7 @@ static int ldlm_handle_ast_error(struct ldlm_lock *lock,
 			 * -ENODEV error is returned by ptl_send_rpc() for
 			 *  new request in such import.
 			 * -SHUTDOWN is returned by ptlrpc_import_delay_req()
-			 *  if imp_invalid is set or obd_no_recov.
+			 *  if imp_invalid is set or OBDF_NO_RECOV.
 			 * Meanwhile there is also check for LUSTRE_IMP_CLOSED
 			 * in ptlrpc_import_delay_req() as well with -EIO code.
 			 * In all such cases errors are ignored.
@@ -1007,7 +975,7 @@ int ldlm_server_blocking_ast(struct ldlm_lock *lock,
 		unlock_res_and_lock(lock);
 
 		/* Do not resend after lock callback timeout */
-		req->rq_delay_limit = ldlm_bl_timeout(lock);
+		req->rq_delay_limit_ns = ktime_set(ldlm_bl_timeout(lock), 0);
 		req->rq_resend_cb = ldlm_update_resend;
 	}
 
@@ -1145,10 +1113,11 @@ int ldlm_server_completion_ast(struct ldlm_lock *lock, __u64 flags, void *data)
 
 			lock_res_and_lock(lock);
 		} else {
+			u64 timeout = ldlm_bl_timeout(lock);
 			/* start the lock-timeout clock */
 			ldlm_add_waiting_lock(lock, ldlm_bl_timeout(lock));
 			/* Do not resend after lock callback timeout */
-			req->rq_delay_limit = ldlm_bl_timeout(lock);
+			req->rq_delay_limit_ns = ktime_set(timeout, 0);
 			req->rq_resend_cb = ldlm_update_resend;
 		}
 	}
@@ -1303,6 +1272,12 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 
 	flags = ldlm_flags_from_wire(dlm_req->lock_flags);
 
+	if (flags & ~LDLM_FL_WIRE_REQ_FLAGS_MASK) {
+		DEBUG_REQ(D_ERROR, req, "invalid lock request flags %llx",
+			  flags & ~LDLM_FL_WIRE_REQ_FLAGS_MASK);
+		GOTO(out, rc = -EPROTO);
+	}
+
 	/* for intent enqueue the stat will be updated inside intent policy */
 	if (ptlrpc_req2svc(req)->srv_stats != NULL &&
 	    !(dlm_req->lock_flags & LDLM_FL_HAS_INTENT))
@@ -1313,15 +1288,15 @@ int ldlm_handle_enqueue(struct ldlm_namespace *ns,
 		lprocfs_counter_incr(req->rq_export->exp_nid_stats->nid_ldlm_stats,
 				     LDLM_ENQUEUE - LDLM_FIRST_OPC);
 
-	if (unlikely(dlm_req->lock_desc.l_resource.lr_type < LDLM_MIN_TYPE ||
-		     dlm_req->lock_desc.l_resource.lr_type >= LDLM_MAX_TYPE)) {
+	if (unlikely(dlm_req->lock_desc.l_resource.lr_type < LDLM_TYPE_MIN ||
+		     dlm_req->lock_desc.l_resource.lr_type >= LDLM_TYPE_END)) {
 		DEBUG_REQ(D_ERROR, req, "invalid lock request type %d",
 			  dlm_req->lock_desc.l_resource.lr_type);
 		GOTO(out, rc = -EFAULT);
 	}
 
-	if (unlikely(dlm_req->lock_desc.l_req_mode <= LCK_MINMODE ||
-		     dlm_req->lock_desc.l_req_mode >= LCK_MAXMODE ||
+	if (unlikely(dlm_req->lock_desc.l_req_mode <= LCK_MODE_MIN ||
+		     dlm_req->lock_desc.l_req_mode >= LCK_MODE_END ||
 		     dlm_req->lock_desc.l_req_mode &
 		     (dlm_req->lock_desc.l_req_mode-1))) {
 		DEBUG_REQ(D_ERROR, req, "invalid lock request mode %d",
@@ -1485,7 +1460,7 @@ existing_lock:
 			struct ldlm_lock_desc *rep_desc = &dlm_rep->lock_desc;
 
 			LDLM_DEBUG(lock,
-				   "save blocking bits %llx in granted lock",
+				   "save blocking bits %lx in granted lock",
 				   bl_lock->l_policy_data.l_inodebits.bits);
 			/*
 			 * If lock is blocked then save blocking ibits
@@ -1591,7 +1566,8 @@ retry:
 			}
 		}
 
-		if (rc != 0 && !(flags & LDLM_FL_RESENT)) {
+		if ((rc != 0 || err == ELDLM_LOCK_ABORTED) &&
+		    !(flags & LDLM_FL_RESENT)) {
 			if (lock->l_export) {
 				ldlm_lock_cancel(lock);
 			} else {
@@ -1652,8 +1628,8 @@ int ldlm_handle_convert0(struct ptlrpc_request *req,
 	struct obd_export *exp = req->rq_export;
 	struct ldlm_reply *dlm_rep;
 	struct ldlm_lock *lock;
-	__u64 bits;
-	__u64 new_bits;
+	enum mds_ibits_locks bits;
+	enum mds_ibits_locks new_bits;
 	int rc;
 
 	ENTRY;
@@ -1706,7 +1682,8 @@ int ldlm_handle_convert0(struct ptlrpc_request *req,
 			ldlm_del_waiting_lock(lock);
 
 		ldlm_clear_cbpending(lock);
-		lock->l_policy_data.l_inodebits.cancel_bits = 0;
+		lock->l_policy_data.l_inodebits.cancel_bits =
+			MDS_INODELOCK_NONE;
 		ldlm_inodebits_drop(lock, bits & ~new_bits);
 
 		ldlm_clear_blocking_data(lock);
@@ -1780,7 +1757,7 @@ int ldlm_request_cancel(struct ptlrpc_request *req,
 		if (lock->l_export != req->rq_export) {
 			LDLM_DEBUG_NOLOCK("server-side cancel mismatched export (cookie %llx)",
 					dlm_req->lock_handle[i].cookie);
-			LDLM_LOCK_PUT(lock);
+			ldlm_lock_put(lock);
 			continue;
 		}
 
@@ -1869,7 +1846,7 @@ int ldlm_handle_cancel(struct ptlrpc_request *req)
 
 	RETURN(ptlrpc_reply(req));
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 /**
  * Server may pass additional information about blocking lock.
@@ -1898,7 +1875,8 @@ void ldlm_bl_desc2lock(const struct ldlm_lock_desc *ld, struct ldlm_lock *lock)
 		    ldlm_res_eq(&ld->l_resource.lr_name,
 				&lock->l_resource->lr_name) &&
 		    !(ldlm_is_cbpending(lock) &&
-		      lock->l_policy_data.l_inodebits.cancel_bits == 0)) {
+		      lock->l_policy_data.l_inodebits.cancel_bits ==
+						MDS_INODELOCK_NONE)) {
 			/* always combine conflicting ibits */
 			lock->l_policy_data.l_inodebits.cancel_bits |=
 				ld->l_policy_data.l_inodebits.cancel_bits;
@@ -1908,7 +1886,8 @@ void ldlm_bl_desc2lock(const struct ldlm_lock_desc *ld, struct ldlm_lock *lock)
 			 * has no cancel_bits set
 			 * - the full lock is to be cancelled
 			 */
-			lock->l_policy_data.l_inodebits.cancel_bits = 0;
+			lock->l_policy_data.l_inodebits.cancel_bits =
+						   MDS_INODELOCK_NONE;
 		}
 	}
 }
@@ -1947,6 +1926,8 @@ void ldlm_handle_bl_callback(struct ldlm_namespace *ns,
 		CDEBUG(D_DLMTRACE,
 		       "Lock %p is referenced, will be cancelled later\n",
 		       lock);
+		if (ns->ns_hp_handler != NULL)
+			ns->ns_hp_handler(lock);
 	}
 
 	LDLM_DEBUG(lock, "client blocking callback handler END");
@@ -2441,6 +2422,14 @@ static int ldlm_callback_handler(struct ptlrpc_request *req)
 		RETURN(0);
 	}
 
+	if (dlm_req->lock_flags & ~LDLM_FL_WIRE_AST_FLAGS_MASK) {
+		rc = ldlm_callback_reply(req, -EPROTO);
+		ldlm_callback_errmsg(req, "invalid lock request flags",
+				     dlm_req->lock_flags &
+				     ~LDLM_FL_WIRE_AST_FLAGS_MASK, NULL);
+		RETURN(0);
+	}
+
 	/*
 	 * Force a known safe race, send a cancel to the server for a lock
 	 * which the server has already started a blocking callback on.
@@ -2514,7 +2503,7 @@ static int ldlm_callback_handler(struct ptlrpc_request *req)
 
 	switch (lustre_msg_get_opc(req->rq_reqmsg)) {
 	case LDLM_BL_CALLBACK:
-		LDLM_DEBUG(lock, "blocking ast");
+		LDLM_DEBUG(lock, "blocking ast ");
 		req_capsule_extend(&req->rq_pill, &RQF_LDLM_BL_CALLBACK);
 		if (!ldlm_is_cancel_on_block(lock)) {
 			rc = ldlm_callback_reply(req, 0);
@@ -2526,14 +2515,14 @@ static int ldlm_callback_handler(struct ptlrpc_request *req)
 			ldlm_handle_bl_callback(ns, &dlm_req->lock_desc, lock);
 		break;
 	case LDLM_CP_CALLBACK:
-		LDLM_DEBUG(lock, "completion ast");
+		LDLM_DEBUG(lock, "completion ast ");
 		req_capsule_extend(&req->rq_pill, &RQF_LDLM_CP_CALLBACK);
 		rc = ldlm_handle_cp_callback(req, ns, dlm_req, lock);
 		if (!CFS_FAIL_CHECK(OBD_FAIL_LDLM_CANCEL_BL_CB_RACE))
 			ldlm_callback_reply(req, rc);
 		break;
 	case LDLM_GL_CALLBACK:
-		LDLM_DEBUG(lock, "glimpse ast");
+		LDLM_DEBUG(lock, "glimpse ast ");
 		req_capsule_extend(&req->rq_pill, &RQF_LDLM_GL_CALLBACK);
 		ldlm_handle_gl_callback(req, ns, dlm_req, lock);
 		break;
@@ -2544,7 +2533,7 @@ static int ldlm_callback_handler(struct ptlrpc_request *req)
 	RETURN(0);
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 /**
  * Main handler for canceld thread.
  *
@@ -2719,75 +2708,42 @@ static int ldlm_hpreq_handler(struct ptlrpc_request *req)
 	RETURN(0);
 }
 
-static int ldlm_revoke_lock_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
-			       struct hlist_node *hnode, void *data)
-
-{
-	struct list_head *rpc_list = data;
-	struct ldlm_lock *lock = cfs_hash_object(hs, hnode);
-
-	lock_res_and_lock(lock);
-
-	if (!ldlm_is_granted(lock)) {
-		unlock_res_and_lock(lock);
-		return 0;
-	}
-
-	LASSERT(lock->l_resource);
-	if (lock->l_resource->lr_type != LDLM_IBITS &&
-	    lock->l_resource->lr_type != LDLM_PLAIN) {
-		unlock_res_and_lock(lock);
-		return 0;
-	}
-
-	if (ldlm_is_ast_sent(lock)) {
-		unlock_res_and_lock(lock);
-		return 0;
-	}
-
-	LASSERT(lock->l_blocking_ast);
-	LASSERT(!lock->l_blocking_lock);
-
-	ldlm_set_ast_sent(lock);
-	if (lock->l_export && lock->l_export->exp_lock_hash) {
-		/*
-		 * NB: it's safe to call cfs_hash_del() even lock isn't
-		 * in exp_lock_hash.
-		 */
-		/*
-		 * In the function below, .hs_keycmp resolves to
-		 * ldlm_export_lock_keycmp()
-		 */
-		cfs_hash_del(lock->l_export->exp_lock_hash,
-			     &lock->l_remote_handle, &lock->l_exp_hash);
-	}
-
-	list_add_tail(&lock->l_rk_ast, rpc_list);
-	ldlm_lock_get(lock);
-
-	unlock_res_and_lock(lock);
-	return 0;
-}
-
 void ldlm_revoke_export_locks(struct obd_export *exp)
 {
-	int rc;
-	LIST_HEAD(rpc_list);
+	struct lu_env *env = lu_env_find();
+	struct lu_env _env;
+	int rc = 0;
 
 	ENTRY;
 
-	cfs_hash_for_each_nolock(exp->exp_lock_hash,
-				 ldlm_revoke_lock_cb, &rpc_list, 0);
-	rc = ldlm_run_ast_work(exp->exp_obd->obd_namespace, &rpc_list,
-			  LDLM_WORK_REVOKE_AST);
+	if (!env) {
+		rc = lu_env_init(&_env, LCT_DT_THREAD);
+		if (rc)
+			RETURN_EXIT;
+		env = &_env;
+		rc = lu_env_add(env);
+		if (rc)
+			GOTO(out_env_fini, rc);
+	}
 
-	if (rc == -ERESTART)
-		ldlm_reprocess_recovery_done(exp->exp_obd->obd_namespace);
+	/* From ldlm_bl_thread_exports:
+	 * If the given export has blocked locks, the next in the list may have
+	 * them too, thus cancel regular locks only if the current export has
+	 * no blocked locks.
+	 */
+	rc = ldlm_export_cancel_blocked_locks(exp);
+	if (rc == 0)
+		ldlm_export_cancel_locks(exp);
 
+	if (env == &_env) {
+		lu_env_remove(env);
+out_env_fini:
+		lu_env_fini(env);
+	}
 	EXIT;
 }
 EXPORT_SYMBOL(ldlm_revoke_export_locks);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 static int ldlm_bl_get_work(struct ldlm_bl_pool *blp,
 			    struct ldlm_bl_work_item **p_blwi,
@@ -2937,7 +2893,7 @@ static int ldlm_bl_thread_blwi(struct ldlm_bl_pool *blp,
 		count = ldlm_cli_cancel_list_local(&blwi->blwi_head,
 						   blwi->blwi_count,
 						   LCF_BL_AST);
-		ldlm_cli_cancel_list(&blwi->blwi_head, count, NULL,
+		ldlm_cli_cancel_list(&blwi->blwi_head, count, NULL, NULL,
 				     blwi->blwi_flags);
 	} else if (blwi->blwi_lock) {
 		ldlm_handle_bl_callback(blwi->blwi_ns, &blwi->blwi_ld,
@@ -2945,7 +2901,7 @@ static int ldlm_bl_thread_blwi(struct ldlm_bl_pool *blp,
 	} else {
 		ldlm_pool_recalc(&blwi->blwi_ns->ns_pool, true);
 		spin_lock(&blwi->blwi_ns->ns_lock);
-		blwi->blwi_ns->ns_rpc_recalc = 0;
+		clear_bit(LDLM_NS_RPC_RECALC, blwi->blwi_ns->ns_flags);
 		spin_unlock(&blwi->blwi_ns->ns_lock);
 		ldlm_namespace_put(blwi->blwi_ns);
 	}
@@ -3107,7 +3063,7 @@ static unsigned
 ldlm_export_lock_hash(struct cfs_hash *hs, const void *key,
 		      const unsigned int bits)
 {
-	return cfs_hash_64(((struct lustre_handle *)key)->cookie, bits);
+	return hash_64(((struct lustre_handle *)key)->cookie, bits);
 }
 
 static void *
@@ -3210,11 +3166,38 @@ void ldlm_destroy_export(struct obd_export *exp)
 }
 EXPORT_SYMBOL(ldlm_destroy_export);
 
+static ssize_t dump_granted_max_show(struct kobject *kobj,
+				     struct attribute *attr,
+				     char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 ldlm_dump_granted_max);
+}
+
+static ssize_t dump_granted_max_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer,
+				      size_t count)
+{
+	unsigned int val;
+	int rc;
+
+	rc = kstrtouint(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	ldlm_dump_granted_max = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(dump_granted_max);
+
 static ssize_t cancel_unused_locks_before_replay_show(struct kobject *kobj,
 						      struct attribute *attr,
 						      char *buf)
 {
-	return sprintf(buf, "%d\n", ldlm_cancel_unused_locks_before_replay);
+	return scnprintf(buf, PAGE_SIZE, "%d\n",
+			 ldlm_cancel_unused_locks_before_replay);
 }
 
 static ssize_t cancel_unused_locks_before_replay_store(struct kobject *kobj,
@@ -3235,8 +3218,119 @@ static ssize_t cancel_unused_locks_before_replay_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(cancel_unused_locks_before_replay);
 
+#ifdef CONFIG_LUSTRE_FS_SERVER
+static ssize_t lock_reclaim_threshold_mb_show(struct kobject *kobj,
+					      struct attribute *attr,
+					      char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", ldlm_reclaim_threshold_mb);
+}
+
+static ssize_t lock_reclaim_threshold_mb_store(struct kobject *kobj,
+					       struct attribute *attr,
+					       const char *buffer,
+					       size_t count)
+{
+	u64 watermark, value;
+	int rc;
+
+	rc = sysfs_memparse(buffer, count, &value, "MiB");
+	if (rc < 0) {
+		CERROR("Failed to set lock_reclaim_threshold_mb, rc = %d.\n",
+		       rc);
+		return rc;
+	} else if (value != 0 && value < (1 << 20)) {
+		CERROR("lock_reclaim_threshold_mb should be greater than 1MB.\n");
+		return -EINVAL;
+	}
+	watermark = value >> 20;
+
+	ldlm_reclaim_threshold_mb = watermark;
+	if (watermark != 0) {
+		watermark <<= 20;
+		do_div(watermark, sizeof(struct ldlm_lock));
+	}
+	ldlm_reclaim_threshold = watermark;
+
+	return count;
+}
+LUSTRE_RW_ATTR(lock_reclaim_threshold_mb);
+
+static ssize_t lock_limit_mb_show(struct kobject *kobj,
+				  struct attribute *attr,
+				  char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", ldlm_lock_limit_mb);
+}
+
+static ssize_t lock_limit_mb_store(struct kobject *kobj,
+				   struct attribute *attr,
+				   const char *buffer,
+				   size_t count)
+{
+	u64 watermark, value;
+	int rc;
+
+	rc = sysfs_memparse(buffer, count, &value, "MiB");
+	if (rc < 0) {
+		CERROR("Failed to set lock_limit_mb, rc = %d.\n", rc);
+		return rc;
+	} else if (value != 0 && value < (1 << 20)) {
+		CERROR("lock_limit_mb should be greater than 1MB.\n");
+		return -EINVAL;
+	}
+	watermark = value >> 20;
+
+	if (ldlm_lock_limit_mb != 0 && watermark > ldlm_lock_limit_mb) {
+		CERROR("lock_reclaim_threshold_mb must be smaller than lock_limit_mb.\n");
+		return -EINVAL;
+	}
+
+	if (ldlm_reclaim_threshold_mb != 0 &&
+	    watermark < ldlm_reclaim_threshold_mb) {
+		CERROR("lock_limit_mb must be greater than lock_reclaim_threshold_mb.\n");
+		return -EINVAL;
+	}
+
+	ldlm_lock_limit_mb = watermark;
+	if (watermark != 0) {
+		watermark <<= 20;
+		do_div(watermark, sizeof(struct ldlm_lock));
+	}
+	ldlm_lock_limit = watermark;
+
+	return count;
+}
+LUSTRE_RW_ATTR(lock_limit_mb);
+
+static ssize_t lock_granted_count_show(struct kobject *kobj,
+				       struct attribute *attr,
+				       char *buf)
+{
+	u64 sum = percpu_counter_sum_positive(&ldlm_granted_total);
+
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", sum);
+}
+LUSTRE_RO_ATTR(lock_granted_count);
+#endif
+
+static ssize_t ldlm_enqueue_min_show(struct kobject *kobj,
+				     struct attribute *attr,
+				     char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", ldlm_enqueue_min);
+}
+LUSTRE_RO_ATTR(ldlm_enqueue_min);
+
 static struct attribute *ldlm_attrs[] = {
+	&lustre_attr_dump_granted_max.attr,
 	&lustre_attr_cancel_unused_locks_before_replay.attr,
+#ifdef CONFIG_LUSTRE_FS_SERVER
+	&lustre_attr_lock_reclaim_threshold_mb.attr,
+	&lustre_attr_lock_limit_mb.attr,
+	&lustre_attr_lock_granted_count.attr,
+#endif
+	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,
 };
 
@@ -3248,9 +3342,9 @@ static int ldlm_setup(void)
 {
 	static struct ptlrpc_service_conf	conf;
 	struct ldlm_bl_pool		       *blp = NULL;
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	struct task_struct *task;
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	int i;
 	int rc = 0;
 
@@ -3323,7 +3417,7 @@ static int ldlm_setup(void)
 		GOTO(out, rc);
 	}
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	memset(&conf, 0, sizeof(conf));
 	conf = (typeof(conf)) {
 		.psc_name		= "ldlm_canceld",
@@ -3367,7 +3461,7 @@ static int ldlm_setup(void)
 		ldlm_state->ldlm_cancel_service = NULL;
 		GOTO(out, rc);
 	}
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 	OBD_ALLOC(blp, sizeof(*blp));
 	if (blp == NULL)
@@ -3398,7 +3492,7 @@ static int ldlm_setup(void)
 			GOTO(out, rc);
 	}
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	task = kthread_run(expired_lock_main, NULL, "ldlm_elt");
 	if (IS_ERR(task)) {
 		rc = PTR_ERR(task);
@@ -3408,7 +3502,7 @@ static int ldlm_setup(void)
 
 	wait_event(expired_lock_wait_queue,
 		   expired_lock_thread_state == ELT_READY);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 	rc = ldlm_pools_init();
 	if (rc) {
@@ -3464,7 +3558,7 @@ static int ldlm_cleanup(void)
 
 	if (ldlm_state->ldlm_cb_service != NULL)
 		ptlrpc_unregister_service(ldlm_state->ldlm_cb_service);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	if (ldlm_state->ldlm_cancel_service != NULL)
 		ptlrpc_unregister_service(ldlm_state->ldlm_cancel_service);
 #endif
@@ -3480,7 +3574,7 @@ static int ldlm_cleanup(void)
 
 	ldlm_debugfs_cleanup();
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	if (expired_lock_thread_state != ELT_STOPPED) {
 		expired_lock_thread_state = ELT_TERMINATE;
 		wake_up(&expired_lock_wait_queue);
@@ -3497,9 +3591,9 @@ static int ldlm_cleanup(void)
 
 int ldlm_init(void)
 {
-	BUILD_BUG_ON(LDLM_MAX_TYPE > (1 << 4 /* lr_type bits */));
+	BUILD_BUG_ON(LDLM_TYPE_END  > (1 << 4 /* lr_type bits */));
 	BUILD_BUG_ON(LVB_T_END      > (1 << 3 /* l_lvb_type bits */));
-	BUILD_BUG_ON(LCK_MAXMODE   > (1 << 9 /* l_req_mode/l_granted_mode */));
+	BUILD_BUG_ON(LCK_MODE_END   > (1 << 9 /* l_req_mode/l_granted_mode */));
 
 	ldlm_resource_slab = kmem_cache_create("ldlm_resources",
 					       sizeof(struct ldlm_resource), 0,
@@ -3519,7 +3613,7 @@ int ldlm_init(void)
 	if (ldlm_interval_tree_slab == NULL)
 		goto out_lock_slab;
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	ldlm_inodebits_slab = kmem_cache_create("ldlm_ibits_node",
 						sizeof(struct ldlm_ibits_node),
 						0, SLAB_HWCACHE_ALIGN, NULL);
@@ -3537,7 +3631,7 @@ int ldlm_init(void)
 	class_export_dump_hook = ldlm_dump_export_locks;
 #endif
 	return 0;
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 out_inodebits:
 	kmem_cache_destroy(ldlm_inodebits_slab);
 out_interval_tree:
@@ -3565,7 +3659,7 @@ void ldlm_exit(void)
 	rcu_barrier();
 	kmem_cache_destroy(ldlm_lock_slab);
 	kmem_cache_destroy(ldlm_interval_tree_slab);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	kmem_cache_destroy(ldlm_inodebits_slab);
 	kmem_cache_destroy(ldlm_glimpse_work_kmem);
 #endif

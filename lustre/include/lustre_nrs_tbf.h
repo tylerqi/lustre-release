@@ -41,13 +41,17 @@ enum nrs_tbf_flag {
 	NRS_TBF_FLAG_OPCODE	= 0x0000004,
 	NRS_TBF_FLAG_UID	= 0x0000008,
 	NRS_TBF_FLAG_GID	= 0x0000010,
-	NRS_TBF_FLAG_GENERIC	= 0x0000020,
+	NRS_TBF_FLAG_PROJID	= 0x0000020,
+	NRS_TBF_FLAG_ALL	= NRS_TBF_FLAG_NID | NRS_TBF_FLAG_JOBID |
+				  NRS_TBF_FLAG_UID | NRS_TBF_FLAG_GID |
+				  NRS_TBF_FLAG_PROJID | NRS_TBF_FLAG_OPCODE,
 };
 
 struct tbf_id {
 	enum nrs_tbf_flag	ti_type;
 	u32			ti_uid;
 	u32			ti_gid;
+	u32			ti_projid;
 };
 
 struct nrs_tbf_id {
@@ -56,6 +60,7 @@ struct nrs_tbf_id {
 };
 
 struct nrs_tbf_key {
+	enum nrs_tbf_flag	tk_flags;
 	struct lnet_nid		tk_nid;
 	__u32			tk_opcode;
 	struct tbf_id		tk_id;	/* UID and GID */
@@ -140,19 +145,6 @@ struct nrs_tbf_rule {
 	struct list_head		 tr_nids;
 	/** Nid list string of the rule.*/
 	char				*tr_nids_str;
-	/** Jobid list of the rule. */
-	struct list_head		 tr_jobids;
-	/** Jobid list string of the rule.*/
-	char				*tr_jobids_str;
-	/** uid/gid list of the rule. */
-	struct list_head		tr_ids;
-	/** uid/gid list string of the rule. */
-	char				*tr_ids_str;
-	/** Opcode bitmap of the rule. */
-	unsigned long			*tr_opcodes;
-	u32				tr_opcodes_cnt;
-	/** Opcode list string of the rule.*/
-	char				*tr_opcodes_str;
 	/** Condition list of the rule.*/
 	struct list_head		tr_conds;
 	/** Generic condition string of the rule. */
@@ -170,7 +162,7 @@ struct nrs_tbf_rule {
 	/** Flags of the rule. */
 	enum nrs_rule_flags		 tr_flags;
 	/** Usage Reference count taken on the rule. */
-	atomic_t			 tr_ref;
+	struct kref			 tr_ref;
 	/** Generation of the rule. */
 	__u64				 tr_generation;
 };
@@ -199,6 +191,8 @@ struct nrs_tbf_ops {
 #define NRS_TBF_TYPE_GENERIC	"generic"
 #define NRS_TBF_TYPE_UID	"uid"
 #define NRS_TBF_TYPE_GID	"gid"
+#define NRS_TBF_TYPE_PROJID	"projid"
+#define NRS_TBF_TYPE_UNKNOWN	"unknown"
 #define NRS_TBF_TYPE_MAX_LEN	20
 
 struct nrs_tbf_type {
@@ -319,6 +313,7 @@ enum nrs_tbf_field {
 	NRS_TBF_FIELD_OPCODE,
 	NRS_TBF_FIELD_UID,
 	NRS_TBF_FIELD_GID,
+	NRS_TBF_FIELD_PROJID,
 	NRS_TBF_FIELD_MAX
 };
 

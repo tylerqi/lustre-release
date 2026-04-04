@@ -1,28 +1,7 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_restriper.c
  *
  * Lustre directory restripe and auto-split
  */
@@ -377,7 +356,7 @@ static int mdt_auto_split(struct mdt_thread_info *info)
 	info->mti_filename[lname->ln_namelen] = '\0';
 	lname->ln_name = info->mti_filename;
 	CDEBUG(D_INFO, "split "DFID"/"DNAME" to count %u (MDT count %d)\n",
-	       PFID(fid), PNAME(lname), lum_stripe_count,
+	       PFID(fid), encode_fn_luname(lname), lum_stripe_count,
 	       atomic_read(&mdt->mdt_mds_mds_conns) + 1);
 
 	parent = mdt_object_find(env, mdt, fid);
@@ -418,7 +397,7 @@ out:
 	if (rc && rc != -EALREADY && rc != -EBUSY && rc != -EREMOTE)
 		CERROR("%s: split "DFID"/"DNAME" to count %u failed: rc = %d\n",
 		       mdt_obd_name(mdt), PFID(mdt_object_fid(child)),
-		       PNAME(lname), lum_stripe_count, rc);
+		       encode_fn_luname(lname), lum_stripe_count, rc);
 
 	if (!IS_ERR_OR_NULL(child))
 		mdt_object_put(env, child);
@@ -541,6 +520,7 @@ static int mdt_restripe_migrate(struct mdt_thread_info *info)
 	struct lu_dirpage *dp;
 	struct lu_dirent *ent;
 	const char *name = NULL;
+	void *kaddr = NULL;
 	int namelen = 0;
 	__u16 type;
 	int idx = 0;
@@ -616,7 +596,8 @@ static int mdt_restripe_migrate(struct mdt_thread_info *info)
 	if (rc < 0)
 		GOTO(out, rc);
 
-	dp = page_address(restriper->mdr_page);
+	kaddr = kmap(restriper->mdr_page);
+	dp = kaddr;
 	for (ent = lu_dirent_start(dp); ent; ent = lu_dirent_next(ent)) {
 		LASSERT(le64_to_cpu(ent->lde_hash) >= rdpg->rp_hash);
 
@@ -651,7 +632,7 @@ static int mdt_restripe_migrate(struct mdt_thread_info *info)
 	lname->ln_namelen = namelen;
 
 	CDEBUG(D_INFO, "migrate "DFID"/"DNAME" type %ho\n",
-	       PFID(&fid1), PNAME(lname), type);
+	       PFID(&fid1), encode_fn_luname(lname), type);
 
 	master = mdt_object_find(env, mdt, &fid1);
 	if (IS_ERR(master))
@@ -687,14 +668,23 @@ static int mdt_restripe_migrate(struct mdt_thread_info *info)
 	else
 		stripe->mot_restripe_offset = le64_to_cpu(dp->ldp_hash_end);
 
+	if (kaddr) {
+		kunmap(kmap_to_page(kaddr));
+		kaddr = NULL;
+	}
+
 	EXIT;
 out:
+	if (kaddr) {
+		kunmap(kmap_to_page(kaddr));
+		kaddr = NULL;
+	}
 	if (rc) {
 		/* -EBUSY: file is opened by others */
 		if (rc != -EBUSY)
 			CERROR("%s: migrate "DFID"/"DNAME" failed: rc = %d\n",
-			       mdt_obd_name(mdt), PFID(&fid1), PNAME(lname),
-			       rc);
+			       mdt_obd_name(mdt), PFID(&fid1),
+			       encode_fn_luname(lname), rc);
 
 		spin_lock(&mdt->mdt_lock);
 		stripe->mot_restriping = 0;
@@ -929,6 +919,10 @@ int mdt_restriper_start(struct mdt_device *mdt)
 	uc->uc_rbac_chlg_ops = 1;
 	uc->uc_rbac_fscrypt_admin = 1;
 	uc->uc_rbac_server_upcall = 1;
+	uc->uc_rbac_ignore_root_prjquota = 1;
+	uc->uc_rbac_hsm_ops = 1;
+	uc->uc_rbac_local_admin = 1;
+	uc->uc_rbac_pool_quota_ops = 1;
 
 	task = kthread_create(mdt_restriper_main, info, "mdt_restriper_%03d",
 			      mdt_seq_site(mdt)->ss_node_id);

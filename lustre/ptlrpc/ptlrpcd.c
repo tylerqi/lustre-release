@@ -1,37 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ptlrpc/ptlrpcd.c
- */
-
-/** \defgroup ptlrpcd PortalRPC daemon
  *
  * ptlrpcd is a special thread with its own set where other user might add
  * requests when they don't want to wait for their completion.
@@ -44,15 +21,12 @@
  * during which time ptlrpcd is completely blocked, so e.g. if import
  * fails, recovery cannot progress because connection requests are also
  * sent by ptlrpcd.
- *
- * @{
  */
 
 #define DEBUG_SUBSYSTEM S_RPC
 
 #include <linux/fs_struct.h>
 #include <linux/kthread.h>
-#include <libcfs/libcfs.h>
 #include <lustre_net.h>
 #include <lustre_lib.h>
 #include <lustre_ha.h>
@@ -191,50 +165,7 @@ ptlrpcd_select_pc(struct ptlrpc_request *req)
 	return &pd->pd_threads[idx];
 }
 
-/**
- * Move all request from an existing request set to the ptlrpcd queue.
- * All requests from the set must be in phase RQ_PHASE_NEW.
- */
-void ptlrpcd_add_rqset(struct ptlrpc_request_set *set)
-{
-	struct list_head *tmp, *pos;
-	struct ptlrpcd_ctl *pc;
-	struct ptlrpc_request_set *new;
-	int count, i;
-
-	pc = ptlrpcd_select_pc(NULL);
-	new = pc->pc_set;
-
-	list_for_each_safe(pos, tmp, &set->set_requests) {
-		struct ptlrpc_request *req =
-			list_entry(pos, struct ptlrpc_request,
-				   rq_set_chain);
-
-		LASSERT(req->rq_phase == RQ_PHASE_NEW);
-		req->rq_set = new;
-		req->rq_queued_time = ktime_get_seconds();
-	}
-
-	spin_lock(&new->set_new_req_lock);
-	list_splice_init(&set->set_requests, &new->set_new_requests);
-	i = atomic_read(&set->set_remaining);
-	count = atomic_add_return(i, &new->set_new_count);
-	atomic_set(&set->set_remaining, 0);
-	spin_unlock(&new->set_new_req_lock);
-	if (count == i) {
-		wake_up(&new->set_waitq);
-
-		/*
-		 * XXX: It maybe unnecessary to wakeup all the partners. But to
-		 *      guarantee the async RPC can be processed ASAP, we have
-		 *      no other better choice. It maybe fixed in future.
-		 */
-		for (i = 0; i < pc->pc_npartners; i++)
-			wake_up(&pc->pc_partners[i]->pc_set->set_waitq);
-	}
-}
-
-/**
+/*
  * Return transferred RPCs count.
  */
 static int ptlrpcd_steal_rqset(struct ptlrpc_request_set *des,
@@ -259,6 +190,9 @@ static int ptlrpcd_steal_rqset(struct ptlrpc_request_set *des,
 }
 
 /**
+ * ptlrpcd_add_req() - Requests that are added to the ptlrpcd queue
+ * @req: request to add to ptlrpcd
+ *
  * Requests that are added to the ptlrpcd queue are sent via
  * ptlrpcd_check->ptlrpc_check_set().
  */
@@ -304,12 +238,7 @@ void ptlrpcd_add_req(struct ptlrpc_request *req)
 }
 EXPORT_SYMBOL(ptlrpcd_add_req);
 
-static inline void ptlrpc_reqset_get(struct ptlrpc_request_set *set)
-{
-	atomic_inc(&set->set_refcount);
-}
-
-/**
+/*
  * Check if there is more work to do on ptlrpcd set.
  * Returns 1 if yes.
  */
@@ -403,7 +332,7 @@ static int ptlrpcd_check(struct lu_env *env, struct ptlrpcd_ctl *pc)
 					continue;
 				}
 
-				ptlrpc_reqset_get(ps);
+				kref_get(&ps->set_refcount);
 				spin_unlock(&partner->pc_lock);
 
 				if (atomic_read(&ps->set_new_count)) {
@@ -414,7 +343,7 @@ static int ptlrpcd_check(struct lu_env *env, struct ptlrpcd_ctl *pc)
 						       rc, partner->pc_index,
 						       pc->pc_index);
 				}
-				ptlrpc_reqset_put(ps);
+				kref_put(&ps->set_refcount, ptlrpc_reqset_free);
 			} while (rc == 0 && pc->pc_cursor != first);
 		}
 	}
@@ -423,9 +352,15 @@ static int ptlrpcd_check(struct lu_env *env, struct ptlrpcd_ctl *pc)
 }
 
 /**
- * Main ptlrpcd thread.
+ * ptlrpcd() - Main ptlrpcd thread.
+ * @arg: pointer to struct ptlrpcd_ctl
+ *
  * ptlrpc's code paths like to execute in process context, so we have this
  * thread which spins on a set which contains the rpcs and sends them.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int ptlrpcd(void *arg)
 {
@@ -806,7 +741,6 @@ static int ptlrpcd_init(void)
 			ptlrpcds_cpt_idx[cpt] = i;
 		}
 
-		cfs_expr_list_values_free(cpts, rc);
 		ncpts = rc;
 	}
 	ptlrpcds_num = ncpts;
@@ -959,6 +893,8 @@ static int ptlrpcd_init(void)
 		}
 	}
 out:
+	if (cpts != NULL)
+		cfs_expr_list_values_free(cpts, ncpts);
 	if (rc != 0)
 		ptlrpcd_fini();
 

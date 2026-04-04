@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  *
  * Copyright (c) 2013, 2017, Intel Corporation.
  *
  *   This file is part of Lustre, https://wiki.whamcloud.com/
- *
- *   Portals is free software; you can redistribute it and/or
- *   modify it under the terms of version 2 of the GNU General Public
- *   License as published by the Free Software Foundation.
- *
- *   Portals is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with Portals; if not, write to the Free Software
- *   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *
  */
 #include <errno.h>
 #include <getopt.h>
@@ -296,7 +283,7 @@ int ptl_initialize(int argc, char **argv)
 	if (argc > 1)
 		g_net_interactive = true;
 
-	register_ioc_dev(LNET_DEV_ID, LNET_DEV_PATH);
+	llapi_register_ioc_dev(LNET_DEV_ID, LNET_DEV_PATH);
 
 	return 0;
 }
@@ -433,7 +420,7 @@ jt_ptl_list_nids(int argc, char **argv)
 	rc = yaml_parser_set_input_netlink(&reply, sk, false);
 	if (rc == 0) {
 		yaml_parser_log_error(&reply, stderr, NULL);
-		yaml_parser_delete(&reply);
+		yaml_parser_cleanup(&reply);
 		goto old_api;
 	}
 
@@ -441,7 +428,7 @@ jt_ptl_list_nids(int argc, char **argv)
 	rc = yaml_emitter_initialize(&request);
 	if (rc == 0) {
 		yaml_parser_log_error(&reply, stderr, NULL);
-		yaml_parser_delete(&reply);
+		yaml_parser_cleanup(&reply);
 		goto old_api;
 	}
 
@@ -449,8 +436,8 @@ jt_ptl_list_nids(int argc, char **argv)
 					     LNET_CMD_NETS, NLM_F_DUMP);
 	if (rc == 0) {
 		yaml_emitter_log_error(&request, stderr);
-		yaml_emitter_delete(&request);
-		yaml_parser_delete(&reply);
+		yaml_emitter_cleanup(&request);
+		yaml_parser_cleanup(&reply);
 		goto old_api;
 	}
 
@@ -547,7 +534,7 @@ emitter_error:
 		yaml_emitter_log_error(&request, stderr);
 		rc = -EINVAL;
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 
 	while (!done) {
 		rc = yaml_parser_parse(&reply, &event);
@@ -580,7 +567,7 @@ emitter_error:
 
 	if (rc == 0)
 		yaml_parser_log_error(&reply, stderr, NULL);
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 old_api: {
 #ifdef IOC_LIBCFS_GET_NI
 	int count;
@@ -742,7 +729,7 @@ emitter_error:
 		yaml_emitter_log_error(&request, stderr);
 		rc = -EINVAL;
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 
 	while (!done) {
 		rc = yaml_parser_parse(&reply, &event);
@@ -808,7 +795,7 @@ free_reply:
 		rc = 0;
 	}
 
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 	goto finished;
 
@@ -1493,7 +1480,7 @@ emitter_error:
 		rc = -EINVAL;
 		goto old_api;
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 
 	/* Now parse the reply results */
 	while (!done) {
@@ -1551,7 +1538,7 @@ free_reply:
 		/* yaml_* functions return 1 for success */
 		rc = 0;
 	}
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 	return rc;
 old_api:
@@ -1776,11 +1763,11 @@ emitter_error:
 		}
 		yaml_document_delete(&errmsg);
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 free_reply:
 	if (rc == 0)
 		yaml_parser_log_error(&reply, stderr, NULL);
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
@@ -1849,7 +1836,7 @@ static int ptl_yaml_route_display(yaml_parser_t *reply)
 		if (rc == 0)
 			break;
 
-		if (event.type == YAML_SEQUENCE_END_EVENT) {
+		if (event.type == YAML_MAPPING_END_EVENT && net[0]) {
 			printf("net %18s hops %d gw %32.128s %s pri %u\n",
 			       net, hops, gw, alive ? "up" : "down",
 			       prio);
@@ -2157,11 +2144,11 @@ emitter_error:
 		if (rc == 0)
 			msg = yaml_parser_get_reader_error(&reply);
 	}
-	yaml_emitter_delete(&output);
+	yaml_emitter_cleanup(&output);
 free_reply:
 	if (msg)
 		fprintf(stdout, "%s\n", msg);
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;

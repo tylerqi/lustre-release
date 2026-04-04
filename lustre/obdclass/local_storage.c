@@ -1,29 +1,11 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
+// SPDX-License-Identifier: GPL-2.0
 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License version 2 for more details.  A copy is
- * included in the COPYING file that accompanied this code.
-
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * GPL HEADER END
- */
 /*
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
- * lustre/obdclass/local_storage.c
+ * This file is part of Lustre, http://www.lustre.org/
  *
  * Local storage for file/objects with fid generation. Works on top of OSD.
  *
@@ -65,8 +47,7 @@ static void ls_object_free(const struct lu_env *env, struct lu_object *o)
 
 	dt_object_fini(&obj->ls_obj);
 	lu_object_header_fini(h);
-	OBD_FREE_PRE(obj, sizeof(*obj), "kfreed");
-	kfree_rcu(obj, ls_header.loh_rcu);
+	OBD_FREE_RCU(obj, sizeof(*obj), ls_header.loh_rcu);
 }
 
 static const struct lu_object_operations ls_lu_obj_ops = {
@@ -94,7 +75,7 @@ static struct lu_object *ls_object_alloc(const struct lu_env *env,
 		lu_object_add_top(h, l);
 
 		l->lo_ops = &ls_lu_obj_ops;
-
+		set_bit(LU_OBJECT_DFREE, &h->loh_flags);
 		return l;
 	} else {
 		return NULL;
@@ -190,7 +171,7 @@ void ls_device_put(const struct lu_env *env, struct ls_device *ls)
 	}
 }
 
-/**
+/*
  * local file fid generation
  */
 int local_object_fid_generate(const struct lu_env *env,
@@ -243,7 +224,8 @@ int local_object_declare_create(const struct lu_env *env,
 
 	dti->dti_lb.lb_buf = NULL;
 	dti->dti_lb.lb_len = sizeof(dti->dti_lma);
-	rc = dt_declare_xattr_set(env, o, &dti->dti_lb, XATTR_NAME_LMA, 0, th);
+	rc = dt_declare_xattr_set(env, o, NULL, &dti->dti_lb, XATTR_NAME_LMA, 0,
+				  th);
 
 	RETURN(rc);
 }
@@ -729,10 +711,10 @@ struct local_oid_storage *dt_los_find(struct ls_device *ls, __u64 seq)
 
 void dt_los_put(struct local_oid_storage *los)
 {
-	if (atomic_dec_and_test(&los->los_refcount))
-		/* should never happen, only local_oid_storage_fini should
-		 * drop refcount to zero */
-		LBUG();
+	/* should never happen, only local_oid_storage_fini should
+	 * drop refcount to zero
+	 */
+	LASSERT(!atomic_dec_and_test(&los->los_refcount));
 }
 
 /* after Lustre 2.3 release there may be old file to store last generated FID
@@ -811,7 +793,12 @@ static int lastid_compat_check(const struct lu_env *env, struct dt_device *dev,
 
 
 /**
- * Initialize local OID storage for required sequence.
+ * local_oid_storage_init() - Initialize local OID storage for required sequence
+ * @env: current lustre environment
+ * @dev: on which the OID storage file will be created
+ * @first_fid: fid OID sequence is being initialized
+ * @los: populated with initialize OID [out]
+ *
  * That may be needed for services that uses local files and requires
  * dynamic OID allocation for them.
  *

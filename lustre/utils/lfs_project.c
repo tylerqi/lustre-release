@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2017, DataDirect Networks Storage.
  * Copyright (c) 2017, Intel Corporation.
@@ -93,7 +73,7 @@ static int project_get_fsxattr(const char *pathname, struct fsxattr *fsx,
 
 	ret = lstat(pathname, st);
 	if (ret) {
-		fprintf(stderr, "%s: failed to stat '%s': %s\n",
+		fprintf(stderr, "%s: failed to lstat '%s': %s\n",
 			progname, pathname, strerror(errno));
 		ret = -errno;
 		goto out;
@@ -123,7 +103,7 @@ new_api:
 	strncpy(bname_path, pathname, PATH_MAX);
 	dname = dirname(dname_path);
 	bname = basename(bname_path);
-	fd = open(dname, O_RDONLY | O_NOCTTY | O_NDELAY);
+	fd = open(dname, O_RDONLY | O_NOCTTY | O_NDELAY | O_NOFOLLOW);
 	if (fd < 0) {
 		ret = -errno;
 		goto out;
@@ -353,9 +333,9 @@ static int lfs_project_iterate(const char *pathname,
 	int ret = 0;
 	int rc = 0;
 
-	ret = stat(pathname, &st);
+	ret = lstat(pathname, &st);
 	if (ret) {
-		fprintf(stderr, "%s: failed to stat '%s': %s\n",
+		fprintf(stderr, "%s: failed to lstat '%s': %s\n",
 			progname, pathname, strerror(errno));
 		return ret;
 	}

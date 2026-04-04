@@ -1,36 +1,18 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
 
 #define DEBUG_SUBSYSTEM S_RPC
-#include <libcfs/linux/linux-mem.h>
+
 #include <obd_support.h>
 #include <lustre_net.h>
 #include <lustre_lib.h>
@@ -39,9 +21,33 @@
 #include "ptlrpc_internal.h"
 #include <lnet/lib-lnet.h> /* for CFS_FAIL_PTLRPC_OST_BULK_CB2 */
 
+/* whether we should use PM-QoS to lower CPUs resume latency during I/O */
+bool ptlrpc_enable_pmqos = true;
+
+/* max CPUs power resume latency to be used during I/O */
+int ptlrpc_pmqos_latency_max_usec = CPU_MAX_RESUME_LATENCY_US;
+
+/* default timeout to end CPUs resume latency constraint */
+u64 ptlrpc_pmqos_default_duration_usec = DEFAULT_CPU_LATENCY_TIMEOUT_US;
+
+/* whether we should use OBD stats to determine best low latency duration */
+bool ptlrpc_pmqos_use_stats_for_duration = true;
+
 /**
- * Helper function. Sends \a len bytes from \a base at offset \a offset
- * over \a conn connection to portal \a portal.
+ * ptl_send_buf() - Helper function. Sends @len bytes from @base at
+ * offset @offset over @conn connection to @portal
+ * @mdh: pointer to struct lnet_handle_md (mem descriptor handle)
+ * @base: pointer to buffer
+ * @len: length of buffer
+ * @ack: If acknowledgement is required or not
+ * @cbid: Callback id
+ * @self: Source NID (network identifier)
+ * @peer_id: Destination ID
+ * @portal: Destination where bulk is to be sent
+ * @xid: Transaction ID
+ * @offset: start offset of buffer
+ * @bulk_cookie: cookie
+ *
  * Returns 0 on success or error code.
  */
 static int ptl_send_buf(struct lnet_handle_md *mdh, void *base, int len,
@@ -51,23 +57,24 @@ static int ptl_send_buf(struct lnet_handle_md *mdh, void *base, int len,
 			struct lnet_handle_md *bulk_cookie)
 {
 	int rc;
-	struct lnet_md md;
+	struct lnet_md md = {
+		.umd_start     = base,
+		.umd_length    = len,
+		.umd_threshold = (ack == LNET_ACK_REQ) ? 2 : 1,
+		.umd_options   = PTLRPC_MD_OPTIONS,
+		.umd_user_ptr  = cbid,
+		.umd_handler   = ptlrpc_handler,
+	};
 
 	ENTRY;
 
 	LASSERT(portal != 0);
 	CDEBUG(D_INFO, "peer_id %s\n", libcfs_idstr(peer_id));
-	md.start     = base;
-	md.length    = len;
-	md.threshold = (ack == LNET_ACK_REQ) ? 2 : 1;
-	md.options   = PTLRPC_MD_OPTIONS;
-	md.user_ptr  = cbid;
-	md.handler   = ptlrpc_handler;
-	LNetInvalidateMDHandle(&md.bulk_handle);
+	LNetInvalidateMDHandle(&md.umd_bulk_handle);
 
 	if (bulk_cookie) {
-		md.bulk_handle = *bulk_cookie;
-		md.options |= LNET_MD_BULK_HANDLE;
+		md.umd_bulk_handle = *bulk_cookie;
+		md.umd_options |= LNET_MD_BULK_HANDLE;
 	}
 
 	if (CFS_FAIL_CHECK_ORSET(OBD_FAIL_PTLRPC_ACK, CFS_FAIL_ONCE) &&
@@ -112,12 +119,18 @@ static void mdunlink_iterate_helper(struct lnet_handle_md *bd_mds, int count)
 		LNetMDUnlink(bd_mds[i]);
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 /**
- * Prepare bulk descriptor for specified incoming request \a req that
- * can fit \a nfrags * pages. \a type is bulk type. \a portal is where
- * the bulk to be sent. Used on server-side after request was already
- * received.
+ * ptlrpc_prep_bulk_exp() - Prepare bulk descriptor for specified incoming @req
+ * @req: PTLRPC request linked to bulk buffer
+ * @nfrags: Count of fragments (in pages)
+ * @max_brw: Max size (in pages)
+ * @type: operation type (read/write)
+ * @portal: Destination where bulk is to be sent
+ * @ops: callback
+ *
+ * Used on server-side after request was already received.
+ *
  * Returns pointer to newly allocatrd initialized bulk descriptor or NULL on
  * error.
  */
@@ -138,6 +151,7 @@ struct ptlrpc_bulk_desc *ptlrpc_prep_bulk_exp(struct ptlrpc_request *req,
 
 	desc->bd_export = class_export_get(exp);
 	desc->bd_req = req;
+	desc->bd_is_srv = 1;
 
 	desc->bd_cbid.cbid_fn  = server_bulk_callback;
 	desc->bd_cbid.cbid_arg = desc;
@@ -151,19 +165,21 @@ struct ptlrpc_bulk_desc *ptlrpc_prep_bulk_exp(struct ptlrpc_request *req,
 EXPORT_SYMBOL(ptlrpc_prep_bulk_exp);
 
 /**
- * Starts bulk transfer for descriptor \a desc on the server.
+ * ptlrpc_start_bulk_transfer() - Start bulk transfer for @desc on the server
+ * @desc: bulk data layout descriptor
+ *
  * Returns 0 on success or error code.
  */
 int ptlrpc_start_bulk_transfer(struct ptlrpc_bulk_desc *desc)
 {
-	struct obd_export	*exp = desc->bd_export;
-	struct lnet_nid		 self_nid;
-	struct lnet_processid	 peer_id;
-	int			 rc = 0;
-	__u64			 mbits;
-	int			 posted_md;
-	int			 total_md;
-	struct lnet_md		 md;
+	struct obd_export *exp = desc->bd_export;
+	struct lnet_nid self_nid;
+	struct lnet_processid peer_id;
+	int rc = 0;
+	__u64 mbits;
+	int posted_md;
+	int total_md;
+	struct lnet_md md = { NULL };
 
 	ENTRY;
 
@@ -194,12 +210,12 @@ int ptlrpc_start_bulk_transfer(struct ptlrpc_bulk_desc *desc)
 	desc->bd_refs = total_md;
 	desc->bd_failure = 0;
 
-	md.user_ptr = &desc->bd_cbid;
-	md.handler = ptlrpc_handler;
-	md.threshold = 2; /* SENT and ACK/REPLY */
+	md.umd_user_ptr = &desc->bd_cbid;
+	md.umd_handler = ptlrpc_handler;
+	md.umd_threshold = 2; /* SENT and ACK/REPLY */
 
 	for (posted_md = 0; posted_md < total_md; mbits++) {
-		md.options = PTLRPC_MD_OPTIONS;
+		md.umd_options = PTLRPC_MD_OPTIONS;
 
 		/* Note. source and sink buf frags are page-aligned. Else send
 		 * client bulk sizes over and split server buffer accordingly
@@ -266,6 +282,9 @@ int ptlrpc_start_bulk_transfer(struct ptlrpc_bulk_desc *desc)
 }
 
 /**
+ * ptlrpc_abort_bulk() - Server side bulk abort
+ * @desc: pointer to bulk data layout
+ *
  * Server side bulk abort. Idempotent. Not thread-safe (i.e. only
  * serialises with completion callback)
  */
@@ -305,10 +324,12 @@ void ptlrpc_abort_bulk(struct ptlrpc_bulk_desc *desc)
 		CWARN("Unexpectedly long timeout: desc %p\n", desc);
 	}
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 /**
- * Register bulk at the sender for later transfer.
+ * ptlrpc_register_bulk() - Register bulk at the sender for later transfer.
+ * @req: Request where to register bulk buffer
+ *
  * Returns 0 on success or error code.
  */
 int ptlrpc_register_bulk(struct ptlrpc_request *req)
@@ -320,7 +341,7 @@ int ptlrpc_register_bulk(struct ptlrpc_request *req)
 	int total_md;
 	__u64 mbits;
 	struct lnet_me *me;
-	struct lnet_md md;
+	struct lnet_md md = { NULL };
 
 	ENTRY;
 
@@ -366,13 +387,13 @@ int ptlrpc_register_bulk(struct ptlrpc_request *req)
 	desc->bd_registered = 1;
 	desc->bd_last_mbits = mbits;
 	desc->bd_refs = total_md;
-	md.user_ptr = &desc->bd_cbid;
-	md.handler = ptlrpc_handler;
-	md.threshold = 1;                       /* PUT or GET */
+	md.umd_user_ptr = &desc->bd_cbid;
+	md.umd_handler = ptlrpc_handler;
+	md.umd_threshold = 1;                       /* PUT or GET */
 
 	for (posted_md = 0; posted_md < desc->bd_md_count;
 	     posted_md++, mbits++) {
-		md.options = PTLRPC_MD_OPTIONS |
+		md.umd_options = PTLRPC_MD_OPTIONS |
 			     (ptlrpc_is_bulk_op_get(desc->bd_type) ?
 			      LNET_MD_OP_GET : LNET_MD_OP_PUT);
 		ptlrpc_fill_bulk_md(&md, desc, posted_md);
@@ -435,8 +456,13 @@ int ptlrpc_register_bulk(struct ptlrpc_request *req)
 }
 
 /**
+ * ptlrpc_unregister_bulk() - Unregister bulk buffers linked to @req
+ * @req: Request to unlink bulk buffers
+ * @async: If 0 do any sync unregister. Else do a async unregister
+ *
  * Disconnect a bulk desc from the network. Idempotent. Not
  * thread-safe (i.e. only interlocks with completion callback).
+ *
  * Returns 1 on success or 0 if network unregistration failed for whatever
  * reason.
  */
@@ -575,9 +601,114 @@ static void ptlrpc_at_set_reply(struct ptlrpc_request *req, int flags)
 	}
 }
 
+/* lower CPU latency on all logical CPUs in the cpt partition that will
+ * handle replies from the target NID server
+ */
+static void kick_cpu_latency(struct ptlrpc_connection *conn,
+			     struct obd_device *obd)
+{
+	cpumask_t *cpt_cpumask;
+	int cpu;
+	struct cpu_latency_qos *latency_qos;
+	u64 time = 0;
+
+	if (unlikely(ptlrpc_enable_pmqos == false) ||
+	    unlikely(cpus_latency_qos == NULL))
+		return;
+
+#ifdef CONFIG_PROC_FS
+	if (ptlrpc_pmqos_use_stats_for_duration == true && obd != NULL) {
+		/* prevent racing with OBD cleanup (umount !) */
+		spin_lock(&obd->obd_dev_lock);
+		if (!obd->obd_stopping && obd->obd_svc_stats != NULL) {
+			struct lprocfs_counter ret;
+
+			lprocfs_stats_collect(obd->obd_svc_stats,
+					      PTLRPC_REQWAIT_CNTR, &ret);
+			/* use 125% of average wait time (lc_sum/lc_count)
+			 * instead of lc_max
+			 */
+			if (ret.lc_count != 0)
+				time = (ret.lc_sum / ret.lc_count) * 5 / 4;
+			CDEBUG(D_INFO, "%s: using a timeout of %llu usecs (%lu jiffies)\n",
+			       obd->obd_name, time, usecs_to_jiffies(time));
+		}
+		spin_unlock(&obd->obd_dev_lock);
+	}
+#endif
+
+	cpt_cpumask = *cfs_cpt_cpumask(lnet_cpt_table(),
+				       lnet_cpt_of_nid(lnet_nid_to_nid4(&conn->c_peer.nid),
+				       NULL));
+	for_each_cpu(cpu, cpt_cpumask) {
+		u64 this_cpu_time, new_deadline;
+		bool new_work = true;
+
+		latency_qos = &cpus_latency_qos[cpu];
+
+		if (ptlrpc_pmqos_use_stats_for_duration == false) {
+			/* XXX should we use latency_qos->max_time if greater ? */
+			this_cpu_time = ptlrpc_pmqos_default_duration_usec;
+		} else if (time == 0) {
+			this_cpu_time = latency_qos->max_time;
+		} else {
+			this_cpu_time = time;
+			if (time > latency_qos->max_time)
+				latency_qos->max_time = time;
+		}
+
+		new_deadline = jiffies_64 + usecs_to_jiffies(this_cpu_time);
+		CDEBUG(D_TRACE, "%s: PM QoS new deadline estimation for cpu %d is %llu\n",
+		       obd->obd_name, cpu, new_deadline);
+		mutex_lock(&latency_qos->lock);
+		if (latency_qos->pm_qos_req == NULL) {
+			OBD_ALLOC_PTR(latency_qos->pm_qos_req);
+			if (latency_qos->pm_qos_req == NULL) {
+				CWARN("%s: Failed to allocate a PM-QoS request for cpu %d\n",
+				      obd->obd_name, cpu);
+				return;
+			}
+			dev_pm_qos_add_request(get_cpu_device(cpu),
+					       latency_qos->pm_qos_req,
+					       DEV_PM_QOS_RESUME_LATENCY,
+					       ptlrpc_pmqos_latency_max_usec);
+			latency_qos->deadline = new_deadline;
+			CDEBUG(D_TRACE, "%s: PM QoS request now active for cpu %d\n",
+			       obd->obd_name, cpu);
+		} else if (dev_pm_qos_request_active(latency_qos->pm_qos_req)) {
+			if (new_deadline > latency_qos->deadline) {
+				cancel_delayed_work(&latency_qos->delayed_work);
+				CDEBUG(D_TRACE,
+				       "%s: PM QoS request active for cpu %d, simply extend its deadline from %llu\n",
+				       obd->obd_name, cpu,
+				       latency_qos->deadline);
+				latency_qos->deadline = new_deadline;
+			} else {
+				new_work = false;
+				CDEBUG(D_TRACE,
+				       "%s: PM QoS request active for cpu %d, keep current deadline %llu\n",
+				       obd->obd_name, cpu,
+				       latency_qos->deadline);
+			}
+		} else {
+			/* should not happen ? */
+			CDEBUG(D_INFO,
+			       "%s: Inactive PM QoS request for cpu %d, has been found unexpectedly...\n",
+			       obd->obd_name, cpu);
+		}
+		if (new_work == true)
+			schedule_delayed_work_on(cpu,
+						 &latency_qos->delayed_work,
+						 usecs_to_jiffies(this_cpu_time));
+		mutex_unlock(&latency_qos->lock);
+	}
+}
+
 /**
- * Send request reply from request \a req reply buffer.
- * \a flags defines reply types
+ * ptlrpc_send_reply() - Send request reply from request @req reply buffer.
+ * @req: PTLRPC request
+ * @flags: defines reply types
+ *
  * Returns 0 on success or error code
  */
 int ptlrpc_send_reply(struct ptlrpc_request *req, int flags)
@@ -636,11 +767,17 @@ int ptlrpc_send_reply(struct ptlrpc_request *req, int flags)
 		CERROR("not replying on NULL connection\n"); /* bug 9635 */
 		return -ENOTCONN;
 	}
-	ptlrpc_rs_addref(rs);  /* +1 ref for the network */
+	kref_get(&rs->rs_refcount); /* +1 ref for the network */
 
 	rc = sptlrpc_svc_wrap_reply(req);
 	if (unlikely(rc))
 		goto out;
+
+	/*
+	 * remove from the export list so quick
+	 * resend won't find the original one.
+	 */
+	ptlrpc_del_exp_list(req);
 
 	req->rq_sent = ktime_get_real_seconds();
 
@@ -667,8 +804,8 @@ int ptlrpc_reply(struct ptlrpc_request *req)
 		return (ptlrpc_send_reply(req, 0));
 }
 
-/**
- * For request \a req send an error reply back. Create empty
+/*
+ * For request @req send an error reply back. Create empty
  * reply buffers if necessary.
  */
 int ptlrpc_send_error(struct ptlrpc_request *req, int may_be_difficult)
@@ -692,6 +829,9 @@ int ptlrpc_send_error(struct ptlrpc_request *req, int may_be_difficult)
 	    req->rq_status != -EROFS)
 		req->rq_type = PTL_RPC_MSG_ERR;
 
+	if (req->rq_export && req->rq_export->exp_banned)
+		lustre_msg_add_flags(req->rq_repmsg, MSG_CLIENT_BANNED);
+
 	rc = ptlrpc_send_reply(req, may_be_difficult);
 	RETURN(rc);
 }
@@ -702,9 +842,10 @@ int ptlrpc_error(struct ptlrpc_request *req)
 }
 
 /**
- * Send request \a request.
- * if \a noreply is set, don't expect any reply back and don't set up
- * reply buffers.
+ * ptl_send_rpc() - Send request @request.
+ * @request: Request to send
+ * @noreply: If set, don't expect any reply back and don't set up reply buffers
+ *
  * Returns 0 on success or error code.
  */
 int ptl_send_rpc(struct ptlrpc_request *request, int noreply)
@@ -725,8 +866,10 @@ int ptl_send_rpc(struct ptlrpc_request *request, int noreply)
 
 	LNetInvalidateMDHandle(&bulk_cookie);
 
-	if (CFS_FAIL_CHECK(OBD_FAIL_PTLRPC_DROP_RPC))
+	if (CFS_FAIL_CHECK(OBD_FAIL_PTLRPC_DROP_RPC)) {
+		request->rq_sent = ktime_get_real_seconds();
 		RETURN(0);
+	}
 
 	if (unlikely(CFS_FAIL_CHECK(OBD_FAIL_PTLRPC_DELAY_RECOV) &&
 		     lustre_msg_get_opc(request->rq_reqmsg) == MDS_CONNECT &&
@@ -769,6 +912,8 @@ int ptl_send_rpc(struct ptlrpc_request *request, int noreply)
 	    imp->imp_state == LUSTRE_IMP_CONNECTING) {
 		spin_unlock(&imp->imp_lock);
 		request->rq_sent = ktime_get_real_seconds();
+		request->rq_timeout = 1;
+		request->rq_deadline = request->rq_sent + 1;
 		RETURN(0);
 	}
 	spin_unlock(&imp->imp_lock);
@@ -918,16 +1063,16 @@ int ptl_send_rpc(struct ptlrpc_request *request, int noreply)
 	spin_unlock(&request->rq_lock);
 
 	if (!noreply) {
-		reply_md.start     = request->rq_repbuf;
-		reply_md.length    = request->rq_repbuf_len;
+		reply_md.umd_start = request->rq_repbuf;
+		reply_md.umd_length = request->rq_repbuf_len;
 		/* Allow multiple early replies */
-		reply_md.threshold = LNET_MD_THRESH_INF;
+		reply_md.umd_threshold = LNET_MD_THRESH_INF;
 		/* Manage remote for early replies */
-		reply_md.options   = PTLRPC_MD_OPTIONS | LNET_MD_OP_PUT |
+		reply_md.umd_options = PTLRPC_MD_OPTIONS | LNET_MD_OP_PUT |
 			LNET_MD_MANAGE_REMOTE |
 			LNET_MD_TRUNCATE; /* allow to make EOVERFLOW error */;
-		reply_md.user_ptr  = &request->rq_reply_cbid;
-		reply_md.handler = ptlrpc_handler;
+		reply_md.umd_user_ptr = &request->rq_reply_cbid;
+		reply_md.umd_handler = ptlrpc_handler;
 
 		/* We must see the unlink callback to set rq_reply_unlinked,
 		 * so we can't auto-unlink
@@ -983,8 +1128,11 @@ int ptl_send_rpc(struct ptlrpc_request *request, int noreply)
 			  &connection->c_peer,
 			  request->rq_request_portal,
 			  request->rq_xid, 0, &bulk_cookie);
-	if (likely(rc == 0))
+	if (likely(rc == 0)) {
+		/* lower CPU latency when in-flight RPCs */
+		kick_cpu_latency(connection, obd);
 		GOTO(out, rc);
+	}
 
 skip_send:
 	request->rq_req_unlinked = 1;
@@ -1025,8 +1173,17 @@ int ptlrpc_register_rqbd(struct ptlrpc_request_buffer_desc *rqbd)
 		.nid = LNET_ANY_NID,
 		.pid = LNET_PID_ANY
 	};
+	struct lnet_md md = {
+		.umd_start     = rqbd->rqbd_buffer,
+		.umd_length    = service->srv_buf_size,
+		.umd_max_size  = service->srv_max_req_size,
+		.umd_threshold = LNET_MD_THRESH_INF,
+		.umd_options   = PTLRPC_MD_OPTIONS | LNET_MD_OP_PUT |
+		             LNET_MD_MAX_SIZE,
+		.umd_user_ptr  = &rqbd->rqbd_cbid,
+		.umd_handler   = ptlrpc_handler,
+	};
 	int rc;
-	struct lnet_md md;
 	struct lnet_me *me;
 
 	CDEBUG(D_NET, "%s: registering portal %d\n", service->srv_name,
@@ -1051,14 +1208,6 @@ int ptlrpc_register_rqbd(struct ptlrpc_request_buffer_desc *rqbd)
 
 	LASSERT(rqbd->rqbd_refcount == 0);
 	rqbd->rqbd_refcount = 1;
-
-	md.start     = rqbd->rqbd_buffer;
-	md.length    = service->srv_buf_size;
-	md.max_size  = service->srv_max_req_size;
-	md.threshold = LNET_MD_THRESH_INF;
-	md.options   = PTLRPC_MD_OPTIONS | LNET_MD_OP_PUT | LNET_MD_MAX_SIZE;
-	md.user_ptr  = &rqbd->rqbd_cbid;
-	md.handler   = ptlrpc_handler;
 
 	rc = LNetMDAttach(me, &md, LNET_UNLINK, &rqbd->rqbd_md_h);
 	if (rc == 0) {

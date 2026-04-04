@@ -1,30 +1,13 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2018, DataDirect Networks Storage.
- * Author: Li Xi.
  *
  * General data integrity functions
+ *
+ * Author: Li Xi.
  */
+
 #include <linux/blkdev.h>
 #include <linux/crc-t10dif.h>
 #include <asm/checksum.h>
@@ -44,21 +27,23 @@ __be16 obd_dif_ip_fn(void *data, unsigned int len)
 }
 EXPORT_SYMBOL(obd_dif_ip_fn);
 
-int obd_page_dif_generate_buffer(const char *obd_name, struct page *page,
-				 __u32 start, __u32 length,
+int obd_page_dif_generate_buffer(const char *obd_name, struct folio *folio,
+				 __s32 pgno, __u32 start, __u32 length,
 				 __be16 *guard_start, int guard_number,
 				 int *used_number, int sector_size,
 				 obd_dif_csum_fn *fn)
 {
 	unsigned int off = start;
 	unsigned int end = start + length;
+	void *addr;
 	char *data_buf;
 	__be16 *guard_buf = guard_start;
 	unsigned int data_size;
 	int guard_used = 0;
 	int rc = 0;
 
-	data_buf = kmap(page) + start;
+	addr = kmap_local_folio(folio, (pgno > 0 ? pgno : 0) * PAGE_SIZE);
+	data_buf = addr + start;
 	while (off < end) {
 		if (guard_used >= guard_number) {
 			rc = -E2BIG;
@@ -76,7 +61,7 @@ int obd_page_dif_generate_buffer(const char *obd_name, struct page *page,
 	}
 	*used_number = guard_used;
 out:
-	kunmap(page);
+	kunmap_local(addr);
 
 	return rc;
 }
@@ -84,7 +69,7 @@ EXPORT_SYMBOL(obd_page_dif_generate_buffer);
 
 static int __obd_t10_performance_test(const char *obd_name,
 				      enum cksum_types cksum_type,
-				      struct page *data_page,
+				      struct folio *data_page,
 				      int repeat_number)
 {
 	unsigned char cfs_alg = cksum_obd2cfs(OBD_CKSUM_T10_TOP);
@@ -92,7 +77,7 @@ static int __obd_t10_performance_test(const char *obd_name,
 	obd_dif_csum_fn *fn = NULL;
 	unsigned int bufsize = 0;
 	unsigned char *buffer;
-	struct page *__page;
+	struct folio *__folio;
 	__be16 *guard_start;
 	int guard_number;
 	int used_number = 0;
@@ -107,8 +92,8 @@ static int __obd_t10_performance_test(const char *obd_name,
 	if (!fn)
 		return -EINVAL;
 
-	__page = alloc_page(GFP_KERNEL);
-	if (__page == NULL)
+	__folio = folio_alloc(GFP_KERNEL, 0);
+	if (IS_ERR_OR_NULL(__folio))
 		return -ENOMEM;
 
 	req = cfs_crypto_hash_init(cfs_alg, NULL, 0);
@@ -119,7 +104,7 @@ static int __obd_t10_performance_test(const char *obd_name,
 		GOTO(out, rc);
 	}
 
-	buffer = kmap(__page);
+	buffer = kmap_local_folio(__folio, 0);
 	guard_start = (__be16 *)buffer;
 	guard_number = PAGE_SIZE / sizeof(*guard_start);
 	for (i = 0; i < repeat_number; i++) {
@@ -127,7 +112,7 @@ static int __obd_t10_performance_test(const char *obd_name,
 		 * whole page
 		 */
 		rc = obd_page_dif_generate_buffer(obd_name, data_page, 0,
-						  PAGE_SIZE,
+						  0, PAGE_SIZE,
 						  guard_start + used_number,
 						  guard_number - used_number,
 						  &used, sector_size, fn);
@@ -136,17 +121,17 @@ static int __obd_t10_performance_test(const char *obd_name,
 
 		used_number += used;
 		if (used_number == guard_number) {
-			cfs_crypto_hash_update_page(req, __page, 0,
+			cfs_crypto_hash_update_page(req, fpgptr(__folio), 0,
 				used_number * sizeof(*guard_start));
 			used_number = 0;
 		}
 	}
-	kunmap(__page);
+	kunmap_local(buffer);
 	if (rc)
 		GOTO(out_final, rc);
 
 	if (used_number != 0)
-		cfs_crypto_hash_update_page(req, __page, 0,
+		cfs_crypto_hash_update_page(req, fpgptr(__folio), 0,
 			used_number * sizeof(*guard_start));
 
 	bufsize = sizeof(cksum);
@@ -154,7 +139,7 @@ out_final:
 	rc2 = cfs_crypto_hash_final(req, (unsigned char *)&cksum, &bufsize);
 	rc = rc ? rc : rc2;
 out:
-	__free_page(__page);
+	folio_put(__folio);
 
 	return rc;
 }
@@ -183,8 +168,6 @@ obd_t10_cksum2type(enum cksum_types cksum_type)
 
 static const char *obd_t10_cksum_name(enum obd_t10_cksum_type index)
 {
-	DECLARE_CKSUM_NAME;
-
 	/* Need to skip "crc32", "adler", "crc32c", "reserved" */
 	return cksum_name[3 + index];
 }
@@ -214,29 +197,29 @@ static void obd_t10_performance_test(const char *obd_name,
 	unsigned long bcount;
 	unsigned long start;
 	unsigned long end;
-	struct page *page;
+	struct folio *folio;
 	int rc = 0;
 	void *buf;
 
-	page = alloc_page(GFP_KERNEL);
-	if (page == NULL) {
+	folio = folio_alloc(GFP_KERNEL, 0);
+	if (IS_ERR_OR_NULL(folio)) {
 		rc = -ENOMEM;
 		goto out;
 	}
 
-	buf = kmap(page);
+	buf = kmap_local_folio(folio, 0);
 	memset(buf, 0xAD, PAGE_SIZE);
-	kunmap(page);
+	kunmap_local(buf);
 
 	for (start = jiffies, end = start + cfs_time_seconds(1) / 4,
 	     bcount = 0; time_before(jiffies, end) && rc == 0; bcount++) {
-		rc = __obd_t10_performance_test(obd_name, cksum_type, page,
+		rc = __obd_t10_performance_test(obd_name, cksum_type, folio,
 						buf_len >> PAGE_SHIFT);
 		if (rc)
 			break;
 	}
 	end = jiffies;
-	__free_page(page);
+	folio_put(folio);
 out:
 	if (rc) {
 		obd_t10_cksum_speeds[index] = rc;

@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -59,6 +39,7 @@
 #include <linux/lustre/lustre_idl.h>
 #include <linux/lustre/lustre_disk.h>
 #endif
+#include <linux/lustre/lustre_user.h>
 
 extern char *progname;
 extern int verbose;
@@ -109,6 +90,7 @@ struct mount_opts {
 	char	*mo_orig_options;
 	char	*mo_usource;		/* user-specified mount device */
 	char	*mo_source;		/* our mount device name */
+	char	*mo_fsname;		/* file system name */
 	char	 mo_target[PATH_MAX];	/* mount directory */
 #ifdef HAVE_GSS
 	char	 mo_skpath[PATH_MAX];	/* shared key file/directory */
@@ -120,7 +102,6 @@ struct mount_opts {
 	int	 mo_have_mgsnid;
 	int	 mo_md_stripe_cache_size;
 	int	 mo_nosvc;
-	int	 mo_max_sectors_kb;
 };
 
 #ifdef HAVE_SERVER_SUPPORT
@@ -128,6 +109,9 @@ int get_mountdata(char *, struct lustre_disk_data *);
 
 static inline const char *mt_str(enum ldd_mount_type mt)
 {
+	if (mt >= LDD_MT_LAST || mt < 0)
+		return NULL;
+
 	static const char * const mount_type_string[] = {
 		"ext3",
 		"ldiskfs",
@@ -135,12 +119,17 @@ static inline const char *mt_str(enum ldd_mount_type mt)
 		"reiserfs",
 		"ldiskfs2",
 		"zfs",
+		"wbcfs",
 	};
+
 	return mount_type_string[mt];
 }
 
 static inline const char *mt_type(enum ldd_mount_type mt)
 {
+	if (mt >= LDD_MT_LAST || mt < 0)
+		return NULL;
+
 	static const char * const mount_type_string[] = {
 		"osd-ldiskfs",
 		"osd-ldiskfs",
@@ -148,9 +137,13 @@ static inline const char *mt_type(enum ldd_mount_type mt)
 		"osd-reiserfs",
 		"osd-ldiskfs",
 		"osd-zfs",
+		"osd-wbcfs",
 	};
+
 	return mount_type_string[mt];
 }
+
+#define OSD_WBCFS_DEV "lustre-wbcfs"
 #endif /* HAVE_SERVER_SUPPORT */
 
 #define MT_STR(data)   mt_str((data)->ldd_mount_type)
@@ -179,6 +172,9 @@ int update_utab_entry(struct mount_opts *mop);
 int check_mountfsoptions(char *mountopts, char *wanted_mountopts);
 void trim_mountfsoptions(char *s);
 char *convert_hostnames(char *buf, bool mount);
+char *convert_fsname(char *s1);
+int set_client_params(char *fs_name);
+int parse_param_file(char *path);
 #ifdef HAVE_SERVER_SUPPORT
 __u64 get_device_size(char* device);
 int lustre_rename_fsname(struct mkfs_opts *mop, const char *mntpt,
@@ -202,7 +198,9 @@ int osd_prepare_lustre(struct mkfs_opts *mop,
 int osd_fix_mountopts(struct mkfs_opts *mop, char *mountopts, size_t len);
 int osd_tune_lustre(char *dev, struct mount_opts *mop);
 int osd_label_lustre(struct mount_opts *mop);
+int osd_label_read(char *dev, struct lustre_disk_data *ldd);
 int osd_rename_fsname(struct mkfs_opts *mop, const char *oldname);
+int osd_mountdata_reset(struct mkfs_opts *mop, char *mountdata_arg);
 int osd_enable_quota(struct mkfs_opts *mop);
 int osd_init(void);
 void osd_fini(void);
@@ -222,6 +220,7 @@ struct module_backfs_ops {
 				 char *mountopts, size_t len);
 	int	(*tune_lustre)(char *dev, struct mount_opts *mop);
 	int	(*label_lustre)(struct mount_opts *mop);
+	int	(*label_read)(char *dev, struct lustre_disk_data *ldd);
 	int	(*enable_quota)(struct mkfs_opts *mop);
 	int	(*rename_fsname)(struct mkfs_opts *mop, const char *oldname);
 	void   *dl_handle;
@@ -229,15 +228,17 @@ struct module_backfs_ops {
 
 extern struct module_backfs_ops zfs_ops;
 extern struct module_backfs_ops ldiskfs_ops;
+extern struct module_backfs_ops wbcfs_ops;
 
 struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type);
 void unload_backfs_ops(struct module_backfs_ops *ops);
+bool backfs_mount_type_loaded(enum ldd_mount_type mt);
 #endif
 
 #ifdef HAVE_OPENSSL_SSK
-int load_shared_keys(struct mount_opts *mop);
+int load_shared_keys(struct mount_opts *mop, bool client);
 #else
-static inline int load_shared_keys(struct mount_opts *mop)
+static inline int load_shared_keys(struct mount_opts *mop, bool client)
 {
 	return EOPNOTSUPP;
 }

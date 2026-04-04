@@ -16,10 +16,7 @@
 #ifndef _LUSTRE_USER_H
 #define _LUSTRE_USER_H
 
-/** \defgroup lustreuser lustreuser
- *
- * @{
- */
+/* lustreuser */
 #ifndef __KERNEL__
 # define __USE_ISOC99	1
 # include <stdbool.h>
@@ -31,6 +28,7 @@
 # define __USE_GNU      1
 # define __USE_XOPEN2K8  1
 # define FILEID_LUSTRE 0x97 /* for name_to_handle_at() (and llapi_fd2fid()) */
+# define U32_MAX	UINT32_MAX
 #endif /* !__KERNEL__ */
 
 #include <linux/fs.h>
@@ -59,11 +57,11 @@ extern "C" {
 #define LL_MAXQUOTAS 3
 #undef INITQFNAMES
 #define INITQFNAMES { \
-    "user",	/* USRQUOTA */ \
-    "group",	/* GRPQUOTA */ \
-    "project",	/* PRJQUOTA */ \
-    "undefined", \
-};
+	"user",		/* USRQUOTA */ \
+	"group",	/* GRPQUOTA */ \
+	"project",	/* PRJQUOTA */ \
+	"undefined", \
+}
 #ifndef USRQUOTA
 #define USRQUOTA 0
 #endif
@@ -276,6 +274,53 @@ enum obd_statfs_state {
 	OS_STATFS_ENOINO	= 0x00000040, /**< not enough inodes */
 	OS_STATFS_SUM		= 0x00000100, /**< aggregated for all tagrets */
 	OS_STATFS_NONROT	= 0x00000200, /**< non-rotational device */
+	OS_STATFS_DOWNGRADE	= OS_STATFS_DEGRADED | OS_STATFS_READONLY |
+				  OS_STATFS_NOCREATE | OS_STATFS_ENOSPC |
+				  OS_STATFS_ENOINO,
+	OS_STATFS_UPGRADE	= OS_STATFS_NONROT,
+};
+
+struct obd_statfs_state_name {
+	enum obd_statfs_state	osn_state;
+	const char		osn_name;
+	bool			osn_err;
+};
+
+/*
+ * Return the obd_statfs state info that matches the first set bit in @state.
+ *
+ * This is to identify various states returned by the OST_STATFS RPC.
+ *
+ * If .osn_err = true, then this is an error state indicating the target
+ * is degraded, read-only, full, or should otherwise not be used.
+ * If .osn_err = false, then this is an informational state and uses a
+ * lower-case name to distinguish it from error conditions.
+ *
+ * The UNUSED[12] bits were part of os_state=EROFS=30=0x1e until Lustre 1.6.
+ */
+static inline const
+struct obd_statfs_state_name *obd_statfs_state_name_find(__u32 state)
+{
+	static struct obd_statfs_state_name oss_names[] = {
+	  { .osn_state = OS_STATFS_DEGRADED, .osn_name = 'D', .osn_err = true },
+	  { .osn_state = OS_STATFS_READONLY, .osn_name = 'R', .osn_err = true },
+	  { .osn_state = OS_STATFS_NOCREATE, .osn_name = 'N', .osn_err = true },
+	  { .osn_state = OS_STATFS_UNUSED1,  .osn_name = '?', .osn_err = true },
+	  { .osn_state = OS_STATFS_UNUSED2,  .osn_name = '?', .osn_err = true },
+	  { .osn_state = OS_STATFS_ENOSPC,   .osn_name = 'S', .osn_err = true },
+	  { .osn_state = OS_STATFS_ENOINO,   .osn_name = 'I', .osn_err = true },
+	  { .osn_state = OS_STATFS_SUM,      .osn_name = 'a', /* aggregate */ },
+	  { .osn_state = OS_STATFS_NONROT,   .osn_name = 'f', /* flash */     },
+	  { .osn_state = 0, }
+	};
+	int i;
+
+	for (i = 0; oss_names[i].osn_state; i++) {
+		if (state & oss_names[i].osn_state)
+			return &oss_names[i];
+	}
+
+	return NULL;
 };
 #if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 20, 53, 0)
 #define OS_STATFS_NOPRECREATE OS_STATFS_NOCREATE
@@ -306,13 +351,6 @@ struct obd_statfs {
 	__u32           os_spare7;
 	__u32           os_spare8;
 	__u32           os_spare9;
-};
-
-/** additional filesystem attributes for target device */
-struct obd_statfs_info {
-	__u32		os_reserved_mb_low;	/* reserved mb low */
-	__u32		os_reserved_mb_high;	/* reserved mb high */
-	bool		os_enable_pre;		/* enable pre create logic */
 };
 
 /**
@@ -444,7 +482,7 @@ enum lma_incompat {
 	LMAI_STRIPED		= 0x00000008, /* striped directory inode */
 	LMAI_ORPHAN		= 0x00000010, /* inode is orphan */
 	LMAI_ENCRYPT		= 0x00000020, /* inode is encrypted */
-	LMA_INCOMPAT_SUPP	= (LMAI_AGENT | LMAI_REMOTE_PARENT | \
+	LMA_INCOMPAT_SUPP	= (LMAI_AGENT | LMAI_REMOTE_PARENT |
 				   LMAI_STRIPED | LMAI_ORPHAN | LMAI_ENCRYPT)
 };
 
@@ -550,7 +588,8 @@ struct ll_futimes_3 {
 };
 
 /*
- * Maximum number of mirrors currently implemented.
+ * Arbitrary upper bound on mirrors per file. This does not reflect a limit in
+ * the layout format, nor does it limit the mirror IDs assigned to a component.
  */
 #define LUSTRE_MIRROR_COUNT_MAX		16
 
@@ -599,28 +638,28 @@ struct ll_ioc_lease_id {
  */
 /*	lustre_ioctl.h			101-150 */
 /* ioctl codes 128-143 are reserved for fsverity */
-#define LL_IOC_GETFLAGS                 _IOR ('f', 151, long)
-#define LL_IOC_SETFLAGS                 _IOW ('f', 152, long)
-#define LL_IOC_CLRFLAGS                 _IOW ('f', 153, long)
-#define LL_IOC_LOV_SETSTRIPE            _IOW ('f', 154, long)
+#define LL_IOC_GETFLAGS			_IOR('f', 151, long)
+#define LL_IOC_SETFLAGS			_IOW('f', 152, long)
+#define LL_IOC_CLRFLAGS			_IOW('f', 153, long)
+#define LL_IOC_LOV_SETSTRIPE		_IOW('f', 154, long)
 #define LL_IOC_LOV_SETSTRIPE_NEW	_IOWR('f', 154, struct lov_user_md)
-#define LL_IOC_LOV_GETSTRIPE            _IOW ('f', 155, long)
+#define LL_IOC_LOV_GETSTRIPE		_IOW('f', 155, long)
 #define LL_IOC_LOV_GETSTRIPE_NEW	_IOR('f', 155, struct lov_user_md)
-#define LL_IOC_LOV_SETEA                _IOW ('f', 156, long)
-#define LL_IOC_GROUP_LOCK               _IOW ('f', 158, long)
-#define LL_IOC_GROUP_UNLOCK             _IOW ('f', 159, long)
-#define IOC_OBD_STATFS                  _IOWR('f', 164, struct obd_statfs *)
-#define LL_IOC_FLUSHCTX                 _IOW ('f', 166, long)
-#define LL_IOC_GETOBDCOUNT              _IOR ('f', 168, long)
-#define LL_IOC_LLOOP_ATTACH             _IOWR('f', 169, long)
-#define LL_IOC_LLOOP_DETACH             _IOWR('f', 170, long)
-#define LL_IOC_LLOOP_INFO               _IOWR('f', 171, struct lu_fid)
-#define LL_IOC_LLOOP_DETACH_BYDEV       _IOWR('f', 172, long)
-#define LL_IOC_PATH2FID                 _IOR ('f', 173, long)
-#define LL_IOC_GET_CONNECT_FLAGS        _IOWR('f', 174, __u64 *)
-#define LL_IOC_GET_MDTIDX               _IOR ('f', 175, int)
+#define LL_IOC_LOV_SETEA		_IOW('f', 156, long)
+#define LL_IOC_GROUP_LOCK		_IOW('f', 158, long)
+#define LL_IOC_GROUP_UNLOCK		_IOW('f', 159, long)
+#define IOC_OBD_STATFS			_IOWR('f', 164, struct obd_statfs *)
+#define LL_IOC_FLUSHCTX			_IOW('f', 166, long)
+#define LL_IOC_GETOBDCOUNT		_IOR('f', 168, long)
+#define LL_IOC_LLOOP_ATTACH		_IOWR('f', 169, long)
+#define LL_IOC_LLOOP_DETACH		_IOWR('f', 170, long)
+#define LL_IOC_LLOOP_INFO		_IOWR('f', 171, struct lu_fid)
+#define LL_IOC_LLOOP_DETACH_BYDEV	_IOWR('f', 172, long)
+#define LL_IOC_PATH2FID			_IOR('f', 173, long)
+#define LL_IOC_GET_CONNECT_FLAGS	_IOWR('f', 174, __u64 *)
+#define LL_IOC_GET_MDTIDX		_IOR('f', 175, int)
 #define LL_IOC_FUTIMES_3		_IOWR('f', 176, struct ll_futimes_3)
-#define LL_IOC_FLR_SET_MIRROR		_IOW ('f', 177, long)
+#define LL_IOC_FLR_SET_MIRROR		_IOW('f', 177, long)
 /*	lustre_ioctl.h			177-210 */
 #define LL_IOC_HSM_STATE_GET		_IOR('f', 211, struct hsm_user_state)
 #define LL_IOC_HSM_STATE_SET		_IOW('f', 212, struct hsm_state_set)
@@ -665,11 +704,11 @@ struct ll_ioc_lease_id {
  * Structure for FS_IOC_FSGETXATTR and FS_IOC_FSSETXATTR.
  */
 struct fsxattr {
-	__u32           fsx_xflags;     /* xflags field value (get/set) */
-	__u32           fsx_extsize;    /* extsize field value (get/set)*/
-	__u32           fsx_nextents;   /* nextents field value (get)   */
-	__u32           fsx_projid;     /* project identifier (get/set) */
-	unsigned char   fsx_pad[12];
+	__u32		fsx_xflags;     /* xflags field value (get/set) */
+	__u32		fsx_extsize;    /* extsize field value (get/set)*/
+	__u32		fsx_nextents;   /* nextents field value (get)   */
+	__u32		fsx_projid;     /* project identifier (get/set) */
+	unsigned char	fsx_pad[12];
 };
 #define FS_IOC_FSGETXATTR		_IOR('X', 31, struct fsxattr)
 #define FS_IOC_FSSETXATTR		_IOW('X', 32, struct fsxattr)
@@ -678,6 +717,9 @@ struct fsxattr {
 #define FS_XFLAG_PROJINHERIT		0x00000200
 #endif
 
+#define MDT_INVALID_UID		U32_MAX
+#define MDT_INVALID_GID		U32_MAX
+#define MDT_INVALID_PROJID	U32_MAX
 
 #define LL_STATFS_LMV		1
 #define LL_STATFS_LOV		2
@@ -703,23 +745,25 @@ struct fsxattr {
 /* To be compatible with old statically linked binary we keep the check for
  * the older 0100000000 flag.  This is already removed upstream.  LU-812.
  */
-#define O_LOV_DELAY_CREATE_1_8	0100000000 /* FMODE_NONOTIFY masked in 2.6.36 */
 #ifndef FASYNC
 #define FASYNC			00020000   /* fcntl, for BSD compatibility */
 #endif
-#define O_LOV_DELAY_CREATE_MASK	(O_NOCTTY | FASYNC)
-#define O_LOV_DELAY_CREATE		(O_LOV_DELAY_CREATE_1_8 | \
-					 O_LOV_DELAY_CREATE_MASK)
+/* This is Lustre-specific flag that defines O_LOV_DELAY_CREATE. There is no
+ * clash anywhere with these value and can be used safely
+ */
+#define O_LOV_DELAY_CREATE		(O_NOCTTY | FASYNC)
 /* O_CIPHERTEXT principle is similar to O_LOV_DELAY_CREATE above,
  * for access to encrypted files without the encryption key.
  */
 #define O_CIPHERTEXT		(O_NOCTTY | O_NDELAY | O_DSYNC)
 
-#define LL_FILE_IGNORE_LOCK     0x00000001
-#define LL_FILE_GROUP_LOCKED    0x00000002
-#define LL_FILE_READAHEA        0x00000004
-#define LL_FILE_LOCKED_DIRECTIO 0x00000008 /* client-side locks with dio */
-#define LL_FILE_FLOCK_WARNING   0x00000020 /* warned about disabled flock */
+enum ll_file_flags {
+	LL_FILE_IGNORE_LOCK     = 0x00000001,
+	LL_FILE_GROUP_LOCKED    = 0x00000002,
+	LL_FILE_READAHEA        = 0x00000004,
+	LL_FILE_LOCKED_DIRECTIO = 0x00000008, /* client-side locks with dio */
+	LL_FILE_FLOCK_WARNING   = 0x00000020, /* warned about disabled flock */
+};
 
 #define LOV_USER_MAGIC_V1	0x0BD10BD0
 #define LOV_USER_MAGIC		LOV_USER_MAGIC_V1
@@ -735,32 +779,49 @@ struct fsxattr {
 #define LMV_USER_MAGIC_V0	0x0CD20CD0    /* old default lmv magic*/
 #define LMV_USER_MAGIC_SPECIFIC	0x0CD40CD0
 
-#define LOV_PATTERN_NONE		0x000
-#define LOV_PATTERN_RAID0		0x001
-#define LOV_PATTERN_RAID1		0x002
-#define LOV_PATTERN_MDT			0x100
-#define LOV_PATTERN_OVERSTRIPING	0x200
-#define LOV_PATTERN_FOREIGN		0x400
-#define LOV_PATTERN_COMPRESS		0x800
+enum lov_pattern {
+	LOV_PATTERN_NONE =		0x000,
+	LOV_PATTERN_RAID0 =		0x001,
+	LOV_PATTERN_RAID1 =		0x002,
+	LOV_PATTERN_PARITY	 =	0x004,
+	LOV_PATTERN_MDT =		0x100,
+	LOV_PATTERN_OVERSTRIPING =	0x200,
+	LOV_PATTERN_FOREIGN =		0x400,
+	LOV_PATTERN_COMPRESS =		0x800,
 
-/* combine exclusive patterns as a bad pattern */
-#define LOV_PATTERN_BAD		(LOV_PATTERN_RAID1 | LOV_PATTERN_MDT | \
-				 LOV_PATTERN_FOREIGN)
+	/* combine exclusive patterns as a bad pattern */
+	LOV_PATTERN_BAD =		(LOV_PATTERN_RAID1 | LOV_PATTERN_MDT |
+					 LOV_PATTERN_FOREIGN),
 
-#define LOV_PATTERN_F_MASK	0xffff0000
-#define LOV_PATTERN_F_HOLE	0x40000000 /* there is hole in LOV EA */
-#define LOV_PATTERN_F_RELEASED	0x80000000 /* HSM released file */
-#define LOV_PATTERN_DEFAULT	0xffffffff
+	LOV_PATTERN_F_MASK =		0xffff0000,
+	LOV_PATTERN_F_HOLE =		0x40000000, /* hole in LOV EA objects */
+	LOV_PATTERN_F_RELEASED =	0x80000000, /* HSM released file */
+	LOV_PATTERN_DEFAULT =		0xffffffff
+};
 
 #define LOV_OFFSET_DEFAULT      ((__u16)-1)
 #define LMV_OFFSET_DEFAULT      ((__u32)-1)
 
-static inline bool lov_pattern_supported(__u32 pattern)
+/* current client IO only understand these patterns */
+static inline bool lov_pattern_supported(enum lov_pattern pattern)
 {
-	__u32 pattern_base = pattern & ~LOV_PATTERN_F_RELEASED;
+	enum lov_pattern pattern_base = pattern & ~(LOV_PATTERN_F_RELEASED |
+						    LOV_PATTERN_F_MASK);
 
 	return pattern_base == LOV_PATTERN_RAID0 ||
 	       pattern_base == (LOV_PATTERN_RAID0 | LOV_PATTERN_OVERSTRIPING) ||
+	       pattern_base == LOV_PATTERN_MDT;
+}
+
+/* but we can set and server allows for these patterns */
+static inline bool lov_pattern_available(enum lov_pattern pattern)
+{
+	enum lov_pattern pattern_base = pattern & ~(LOV_PATTERN_F_RELEASED |
+						    LOV_PATTERN_F_MASK);
+
+	return pattern_base == LOV_PATTERN_RAID0 ||
+	       pattern_base == (LOV_PATTERN_RAID0 | LOV_PATTERN_OVERSTRIPING) ||
+	       pattern_base == (LOV_PATTERN_RAID0 | LOV_PATTERN_PARITY) ||
 	       pattern_base == LOV_PATTERN_MDT;
 }
 
@@ -768,7 +829,7 @@ static inline bool lov_pattern_supported(__u32 pattern)
  * having many extra checks on lov_pattern_supported, we have this separate
  * check for non-released, non-readonly, non-DOM components
  */
-static inline bool lov_pattern_supported_normal_comp(__u32 pattern)
+static inline bool lov_pattern_supported_normal_comp(enum lov_pattern pattern)
 {
 	return pattern == LOV_PATTERN_RAID0 ||
 	       pattern == (LOV_PATTERN_RAID0 | LOV_PATTERN_OVERSTRIPING);
@@ -823,7 +884,12 @@ static inline bool lov_pool_is_reserved(const char *pool)
 #define LOV_V1_INSANE_STRIPE_INDEX (LOV_ALL_STRIPES_WIDE - 1) /* max index */
 #define LOV_V1_INSANE_STRIPE_COUNT LOV_V1_INSANE_STRIPE_INDEX /* deprecated */
 
+/* EC (Erasure Coding) stripe count limits */
+#define LOV_EC_MAX_DATA_STRIPES   255  /* max data stripes for EC */
+#define LOV_EC_MAX_CODING_STRIPES 15   /* max coding/parity stripes for EC */
+
 #define XATTR_LUSTRE_PREFIX	"lustre."
+#define XATTR_LUSTRE_PIN	XATTR_LUSTRE_PREFIX"pin"
 #define XATTR_LUSTRE_LOV	XATTR_LUSTRE_PREFIX"lov"
 
 /* Please update if XATTR_LUSTRE_LOV".set" groks more flags in the future */
@@ -834,8 +900,11 @@ static inline bool lov_pool_is_reserved(const char *pool)
 
 #define lov_user_ost_data lov_user_ost_data_v1
 struct lov_user_ost_data_v1 {     /* per-stripe data structure */
-	struct ost_id l_ost_oi;	  /* OST object ID */
-	__u32 l_ost_gen;          /* generation of this OST index */
+	struct ost_id l_ost_oi;   /* OST object ID */
+	union {
+		__u32 l_ost_type; /* type of data stored in OST object */
+		__u32 l_ost_gen;  /* generation of this OST index */
+	};
 	__u32 l_ost_idx;          /* OST index in LOV */
 } __attribute__((packed));
 
@@ -843,7 +912,7 @@ struct lov_user_ost_data_v1 {     /* per-stripe data structure */
 struct lov_user_md_v1 {           /* LOV EA user data (host-endian) */
 	__u32 lmm_magic;          /* magic number = LOV_USER_MAGIC_V1 */
 	__u32 lmm_pattern;        /* LOV_PATTERN_RAID0, LOV_PATTERN_RAID1 */
-	struct ost_id lmm_oi;	  /* MDT parent inode id/seq (id/0 for 1.x) */
+	struct ost_id lmm_oi;     /* MDT parent inode id/seq (id/0 for 1.x) */
 	__u32 lmm_stripe_size;    /* size of stripe in bytes */
 	__u16 lmm_stripe_count;   /* num stripes in use for this object */
 	union {
@@ -860,7 +929,7 @@ struct lov_user_md_v1 {           /* LOV EA user data (host-endian) */
 struct lov_user_md_v3 {           /* LOV EA user data (host-endian) */
 	__u32 lmm_magic;          /* magic number = LOV_USER_MAGIC_V3 */
 	__u32 lmm_pattern;        /* LOV_PATTERN_RAID0, LOV_PATTERN_RAID1 */
-	struct ost_id lmm_oi;	  /* MDT parent inode id/seq (id/0 for 1.x) */
+	struct ost_id lmm_oi;     /* MDT parent inode id/seq (id/0 for 1.x) */
 	__u32 lmm_stripe_size;    /* size of stripe in bytes */
 	__u16 lmm_stripe_count;   /* num stripes in use for this object */
 	union {
@@ -910,6 +979,12 @@ static inline bool lu_extent_is_overlapped(struct lu_extent *e1,
 	return e1->e_start < e2->e_end && e2->e_start < e1->e_end;
 }
 
+static inline bool lu_extent_is_equal(struct lu_extent *e1,
+				      struct lu_extent *e2)
+{
+	return e1->e_start == e2->e_start && e1->e_end == e2->e_end;
+}
+
 static inline bool lu_extent_is_whole(struct lu_extent *e)
 {
 	return e->e_start == 0 && e->e_end == LUSTRE_EOF;
@@ -932,6 +1007,9 @@ enum lov_comp_md_entry_flags {
 	LCME_FL_NOCOMPR   = 0x00000400, /* the component should not be
 					 * compressed
 					 */
+	LCME_FL_IS_LINK_ID = 0x40000000, /* EC: llc_protected_ref is link ID
+					  * (transient, not stored on disk)
+					  */
 	LCME_FL_NEG	  = 0x80000000	/* used to indicate a negative flag,
 					 * won't be stored on disk
 					 */
@@ -939,17 +1017,19 @@ enum lov_comp_md_entry_flags {
 
 #define LCME_KNOWN_FLAGS	(LCME_FL_NEG | LCME_FL_INIT | LCME_FL_STALE | \
 				 LCME_FL_PREF_RW | LCME_FL_NOSYNC | \
-				 LCME_FL_EXTENSION)
+				 LCME_FL_EXTENSION | LCME_FL_PARITY | \
+				 LCME_FL_IS_LINK_ID)
 
 /* The component flags can be set by users at creation/modification time. */
 #define LCME_USER_COMP_FLAGS	(LCME_FL_PREF_RW | LCME_FL_NOSYNC | \
-				 LCME_FL_EXTENSION)
+				 LCME_FL_EXTENSION | LCME_FL_PARITY)
 
 /* The mirror flags can be set by users at creation time. */
 #define LCME_USER_MIRROR_FLAGS	(LCME_FL_PREF_RW | LCME_FL_NOCOMPR)
 
 /* The allowed flags obtained from the client at component creation time. */
-#define LCME_CL_COMP_FLAGS	(LCME_USER_MIRROR_FLAGS | LCME_FL_EXTENSION)
+#define LCME_CL_COMP_FLAGS	(LCME_USER_MIRROR_FLAGS | LCME_FL_EXTENSION | \
+				 LCME_FL_PARITY | LCME_FL_IS_LINK_ID)
 
 /* The mirror flags sent by client */
 #define LCME_MIRROR_FLAGS	(LCME_FL_NOSYNC)
@@ -958,9 +1038,9 @@ enum lov_comp_md_entry_flags {
  * from the default/template layout set on a directory.
  */
 #define LCME_TEMPLATE_FLAGS	(LCME_FL_PREF_RW | LCME_FL_NOSYNC | \
-				 LCME_FL_EXTENSION)
+				 LCME_FL_EXTENSION | LCME_FL_PARITY)
 
-/* lcme_id can be specified as certain flags, and the the first
+/* lcme_id can be specified as certain flags, and the first
  * bit of lcme_id is used to indicate that the ID is representing
  * certain LCME_FL_* but not a real ID. Which implies we can have
  * at most 31 flags (see LCME_FL_XXX).
@@ -984,6 +1064,18 @@ enum layout_version_flags {
 
 #define LCME_ID_MASK	LCME_ID_MAX
 
+#define LCME_TIMESTAMP_ID_SHIFT		48
+#define LCME_TIMESTAMP_TIME_MASK	((1ULL << LCME_TIMESTAMP_ID_SHIFT) - 1)
+#define LCME_TIMESTAMP_ID_MASK		((1ULL << (64 - LCME_TIMESTAMP_ID_SHIFT)) - 1)
+
+#define lcme_timestamp_and_id_pack(time, id) \
+	((__u64)((((id) & LCME_TIMESTAMP_ID_MASK) << LCME_TIMESTAMP_ID_SHIFT) | \
+		 ((time) & LCME_TIMESTAMP_TIME_MASK)))
+#define lcme_timestamp_time_unpack(time_id) \
+	((time_id) & LCME_TIMESTAMP_TIME_MASK)
+#define lcme_timestamp_id_unpack(time_id) \
+	(((time_id) >> LCME_TIMESTAMP_ID_SHIFT) & LCME_TIMESTAMP_ID_MASK)
+
 struct lov_comp_md_entry_v1 {
 	__u32			lcme_id;        /* unique id of component */
 	__u32			lcme_flags;     /* LCME_FL_XXX */
@@ -997,7 +1089,14 @@ struct lov_comp_md_entry_v1 {
 						 */
 	__u32			lcme_size;      /* size of component blob */
 	__u32			lcme_layout_gen;
-	__u64			lcme_timestamp;	/* snapshot time if applicable*/
+	union {
+		__u64		lcme_time_and_id;
+		struct {
+			__u64	lcme_timestamp:48;
+			/* mirror link id for data and parity components */
+			__u16	lcme_mirror_link_id;
+		};
+	};
 	__u8			lcme_dstripe_count;	/* data stripe count,
 							 * k value in EC
 							 */
@@ -1223,6 +1322,13 @@ enum lustre_foreign_types {
 
 extern struct lustre_foreign_type lu_foreign_types[];
 
+/**
+ * When specified or returned as the value for stripe count, all
+ * available MDTs will be used.
+ */
+#define LMV_OVERSTRIPE_COUNT_MIN    ((__s16)0xffff) /* -1 */
+#define LMV_OVERSTRIPE_COUNT_MAX    ((__s16)0xfffb) /* -5 */
+
 /* Got this according to how get LOV_MAX_STRIPE_COUNT, see above,
  * (max buffer size - lmv+rpc header) / sizeof(struct lmv_user_mds_data)
  */
@@ -1304,9 +1410,10 @@ enum {
 	LMV_INHERIT_RR_UNLIMITED	= 255,
 };
 
-static inline int lmv_user_md_size(int stripes, int lmm_magic)
+static inline unsigned int lmv_user_md_size(unsigned int stripes,
+					    unsigned int lmm_magic)
 {
-	int size = sizeof(struct lmv_user_md);
+	unsigned int size = sizeof(struct lmv_user_md);
 
 	if (lmm_magic == LMV_USER_MAGIC_SPECIFIC)
 		size += stripes * sizeof(struct lmv_user_mds_data);
@@ -1335,7 +1442,7 @@ struct obd_uuid {
 static inline bool obd_uuid_equals(const struct obd_uuid *u1,
 				   const struct obd_uuid *u2)
 {
-	return strcmp((char *)u1->uuid, (char *)u2->uuid) == 0;
+	return strncmp(u1->uuid, u2->uuid, sizeof(u1->uuid)) == 0;
 }
 
 static inline int obd_uuid_empty(struct obd_uuid *uuid)
@@ -1345,28 +1452,27 @@ static inline int obd_uuid_empty(struct obd_uuid *uuid)
 
 static inline void obd_str2uuid(struct obd_uuid *uuid, const char *tmp)
 {
-	strncpy((char *)uuid->uuid, tmp, sizeof(*uuid));
-	uuid->uuid[sizeof(*uuid) - 1] = '\0';
+	strncpy(uuid->uuid, tmp, sizeof(uuid->uuid));
+	uuid->uuid[sizeof(uuid->uuid) - 1] = '\0';
 }
 
 /* For printf's only, make sure uuid is terminated */
-static inline char *obd_uuid2str(const struct obd_uuid *uuid)
+static inline const char *obd_uuid2str(const struct obd_uuid *uuid)
 {
 	if (uuid == NULL)
 		return NULL;
 
-	if (uuid->uuid[sizeof(*uuid) - 1] != '\0') {
+	if (strnlen(uuid->uuid, sizeof(uuid->uuid)) >= sizeof(uuid->uuid)) {
 		/* Obviously not safe, but for printfs, no real harm done...
 		 * we're always null-terminated, even in a ce.
 		 */
-		static char temp[sizeof(*uuid->uuid)];
+		static char temp[sizeof(uuid->uuid)];
 
-		memcpy(temp, uuid->uuid, sizeof(*uuid->uuid) - 1);
-		temp[sizeof(*uuid->uuid) - 1] = '\0';
-
+		strncpy(temp, uuid->uuid, sizeof(temp));
+		temp[sizeof(temp) - 1] = '\0';
 		return temp;
 	}
-	return (char *)(uuid->uuid);
+	return uuid->uuid;
 }
 
 #define LUSTRE_MAXFSNAME 8
@@ -1376,9 +1482,13 @@ static inline char *obd_uuid2str(const struct obd_uuid *uuid)
  * e.g. (myfs-OST0007_UUID -> myfs)
  * see also deuuidify.
  */
-static inline void obd_uuid2fsname(char *buf, char *uuid, int buflen)
+static inline void obd_uuid2fsname(char *buf, char *uuid,
+				   unsigned int buflen)
 {
 	char *p;
+
+	if (buflen == 0)
+		return;
 
 	strncpy(buf, uuid, buflen - 1);
 	buf[buflen - 1] = '\0';
@@ -1407,7 +1517,7 @@ static inline void obd_uuid2fsname(char *buf, char *uuid, int buflen)
 /********* Quotas **********/
 
 /* From linux/fs/quota/quota.c */
-static inline __u64 toqb(__kernel_size_t space)
+static inline __u64 stoqb(__kernel_size_t space)
 {
 	return (space + QIF_DQBLKSIZE - 1) >> QIF_DQBLKSIZE_BITS;
 }
@@ -1441,6 +1551,10 @@ static inline __u64 toqb(__kernel_size_t space)
 #define LUSTRE_Q_ITERQUOTA	0x800017  /* iterate quota information */
 #define LUSTRE_Q_ITEROQUOTA	0x800018  /* iterate obd quota information */
 #define LUSTRE_Q_GETALLQUOTA	0x800019  /* get all quota information */
+#define LUSTRE_Q_GETQUOTALQA	0x80001a  /* get LQA quota */
+#define LUSTRE_Q_SETQUOTALQA	0x80001b  /* set LQA quota */
+#define LUSTRE_Q_GETINFOLQA	0x80001c  /* get LQA quota info */
+#define LUSTRE_Q_SETINFOLQA	0x80001d  /* set LQA quota info */
 /* In the current Lustre implementation, the grace time is either the time
  * or the timestamp to be used after some quota ID exceeds the soft limt,
  * 48 bits should be enough, its high 16 bits can be used as quota flags.
@@ -1478,6 +1592,12 @@ static inline __u64 toqb(__kernel_size_t space)
 	 cmd == LUSTRE_Q_SETDEFAULT_POOL ||	\
 	 cmd == LUSTRE_Q_GETDEFAULT_POOL)
 
+#define LUSTRE_Q_CMD_IS_LQA(cmd)		\
+	(cmd == LUSTRE_Q_GETQUOTALQA ||		\
+	 cmd == LUSTRE_Q_SETQUOTALQA ||		\
+	 cmd == LUSTRE_Q_SETINFOLQA ||		\
+	 cmd == LUSTRE_Q_GETINFOLQA)
+
 #define ALLQUOTA 255       /* set all quota */
 static inline const char *qtype_name(int qtype)
 {
@@ -1504,14 +1624,14 @@ struct perm_downcall_data {
 };
 
 struct identity_downcall_data {
-	__u32                            idd_magic;
-	__u32                            idd_err;
-	__u32                            idd_uid;
-	__u32                            idd_gid;
-	__u32                            idd_nperms;
-	__u32                            idd_ngroups;
-	struct perm_downcall_data idd_perms[N_PERMS_MAX];
-	__u32                            idd_groups[];
+	__u32				idd_magic;
+	__u32				idd_err;
+	__u32				idd_uid;
+	__u32				idd_gid;
+	__u32				idd_nperms;
+	__u32				idd_ngroups;
+	struct perm_downcall_data	idd_perms[N_PERMS_MAX];
+	__u32				idd_groups[];
 };
 
 #if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 16, 53, 0)
@@ -1549,6 +1669,17 @@ struct sepol_downcall_data {
 #endif
 
 #endif /* !__KERNEL__ */
+
+/* these are not defined in the kernel */
+#ifndef QIF_BSOFTLIMIT
+#define QIF_BSOFTLIMIT	1024
+#define QIF_BHARDLIMIT	QIF_BLIMITS
+#define QIF_ISOFTLIMIT	2048
+#define QIF_IHARDLIMIT	QIF_ILIMITS
+#define QIF_FILESYSTEM	4096
+#define QIF_ALL_DETAIL	(QIF_ALL | QIF_BSOFTLIMIT | QIF_ISOFTLIMIT | \
+QIF_FILESYSTEM)
+#endif
 
 /* lustre volatile file support
  * file name header: ".^L^S^T^R:volatile"
@@ -1590,16 +1721,16 @@ enum {
 };
 
 struct if_quotactl {
-	__u32                   qc_cmd;
-	__u32                   qc_type;
-	__u32                   qc_id;
-	__u32                   qc_stat;
-	__u32                   qc_valid;
-	__u32                   qc_idx;
-	struct obd_dqinfo       qc_dqinfo;
-	struct obd_dqblk        qc_dqblk;
-	char                    obd_type[16];
-	struct obd_uuid         obd_uuid;
+	__u32			qc_cmd;
+	__u32			qc_type;
+	__u32			qc_id;
+	__u32			qc_stat;
+	__u32			qc_valid;
+	__u32			qc_idx;
+	struct obd_dqinfo	qc_dqinfo;
+	struct obd_dqblk	qc_dqblk;
+	char			obd_type[16];
+	struct obd_uuid		obd_uuid;
 	char			qc_poolname[];
 };
 
@@ -1610,15 +1741,40 @@ struct if_quotactl {
 #define qc_allquota_qid_end	qc_dqblk.dqb_btime
 #define qc_allquota_mark	qc_dqblk.dqb_itime
 
-/* swap layout flags */
-#define SWAP_LAYOUTS_CHECK_DV1		(1 << 0)
-#define SWAP_LAYOUTS_CHECK_DV2		(1 << 1)
-#define SWAP_LAYOUTS_KEEP_MTIME		(1 << 2)
-#define SWAP_LAYOUTS_KEEP_ATIME		(1 << 3)
-#define SWAP_LAYOUTS_CLOSE		(1 << 4)
+enum lqa_cmd_type {
+	LQA_NEW = 1, /* create an LQA by name */
+	LQA_ADD = 2, /* add a range to LQA */
+	LQA_REM = 3, /* remove a range from an LQA */
+	LQA_DEL = 4, /* destroy an LQA */
+	LQA_LIST = 5 /* list ranges per LQA */
+};
 
-/* Skip the UID/GID check before a swap layout for a release (server only) */
-#define SWAP_LAYOUTS_MDS_RELEASE	(1 << 31)
+struct lqa_id_range {
+	__u32	 lir_start;
+	__u32	 lir_end;
+};
+
+#define LQA_NAME_MAX LOV_MAXPOOLNAME /* Maximum lqa name length */
+#define LQA_RANGE_SIZE (sizeof(struct lqa_id_range)) /* LQA range size: %u%u */
+
+/* swap layout flags */
+enum lustre_swap_layouts_flags {
+	SWAP_LAYOUTS_CHECK_DV1		= 0x00000001,
+	SWAP_LAYOUTS_CHECK_DV2		= 0x00000002,
+	SWAP_LAYOUTS_KEEP_MTIME		= 0x00000004,
+	SWAP_LAYOUTS_KEEP_ATIME		= 0x00000008,
+	SWAP_LAYOUTS_CLOSE		= 0x00000010,
+
+	/* Sent to the MDT through mdc_swap_layouts::msl_flags to indicate that
+	 * mdc_swap_layouts contains valid msl_dv1 and msl_dv2.
+	 */
+	SWAP_LAYOUTS_WITH_DV12		= 0x00000020,
+
+	/* Skip the UID/GID check before a swap layout for a release
+	 * (server only)
+	 */
+	SWAP_LAYOUTS_MDS_RELEASE	= 0x80000000,
+};
 
 struct lustre_swap_layouts {
 	__u64	sl_flags;
@@ -1665,15 +1821,25 @@ enum mds_open_flags {
 	MDS_FMODE_CLOSED	=	          00000000,
 	MDS_FMODE_READ		=	          00000001,
 	MDS_FMODE_WRITE		=	          00000002,
+	/* MAY_EXEC checks for permission eg inode_permission(). Different from
+	 * MDS_FMODE_EXECUTE which is permission check via execve
+	 */
 	MDS_FMODE_EXEC		=	          00000004,
 	MDS_OPEN_CREATED	=	          00000010,
 /*	MDS_OPEN_CROSS		=	          00000020, obsolete in 2.12, internal use only */
+	/* open for execution via execve */
+	MDS_FMODE_EXECUTE	=	          00000020,
 	MDS_OPEN_CREAT		=	          00000100,
 	MDS_OPEN_EXCL		=	          00000200,
+	MDS_OPEN_NOCTTY		=	          00000400,
 	MDS_OPEN_TRUNC		=	          00001000,
 	MDS_OPEN_APPEND		=	          00002000,
+	MDS_OPEN_NONBLOCK	=	          00004000,
 	MDS_OPEN_SYNC		=	          00010000,
+	MDS_OPEN_FASYNC		=	          00020000,
+	MDS_OPEN_LARGEFILE	=	          00100000,
 	MDS_OPEN_DIRECTORY	=	          00200000,
+	MDS_OPEN_NOFOLLOW	=	          00400000,
 /*	MDS_FMODE_EPOCH		=	          01000000, obsolete in 2.8.0 */
 /*	MDS_FMODE_TRUNC		=	          02000000, obsolete in 2.8.0 */
 /*	MDS_FMODE_SOM		=	          04000000, obsolete in 2.8.0 */
@@ -1834,7 +2000,7 @@ static inline void hsm_set_cl_event(enum changelog_rec_flags *clf_flags,
 				    enum hsm_event he)
 {
 	*clf_flags = (enum changelog_rec_flags)
-		(*clf_flags | (he << CLF_HSM_EVENT_L));
+		((__u32)*clf_flags | ((__u32)he << CLF_HSM_EVENT_L));
 }
 
 static inline __u16 hsm_get_cl_flags(enum changelog_rec_flags clf_flags)
@@ -1846,7 +2012,7 @@ static inline void hsm_set_cl_flags(enum changelog_rec_flags *clf_flags,
 				    unsigned int bits)
 {
 	*clf_flags = (enum changelog_rec_flags)
-		(*clf_flags | (bits << CLF_HSM_FLAG_L));
+		((__u32)*clf_flags | (__u32)(bits << CLF_HSM_FLAG_L));
 }
 
 static inline int hsm_get_cl_error(enum changelog_rec_flags clf_flags)
@@ -1959,12 +2125,20 @@ struct changelog_ext_nid {
 
 /* Changelog extra extension to include low 32 bits of MDS_OPEN_* flags. */
 struct changelog_ext_openmode {
-	__u32 cr_openflags;
+	__u32 cr_openflags; /* enum mds_open_flags */
 };
 
 /* Changelog extra extension to include xattr */
 struct changelog_ext_xattr {
 	char cr_xattr[XATTR_NAME_MAX + 1]; /**< zero-terminated string. */
+};
+
+/* Changelog filter for kernel-side filtering */
+struct changelog_filter {
+	__u64 cf_mask;
+	__u32 cf_user_id;
+	__u32 cf_padding;
+	char  cf_username[30]; /* CHANGELOG_USER_NAMELEN_FULL */
 };
 
 static inline struct changelog_ext_extra_flags *changelog_rec_extra_flags(
@@ -2150,8 +2324,12 @@ static inline char *changelog_rec_sname(const struct changelog_rec *rec)
 static
 inline __kernel_size_t changelog_rec_snamelen(const struct changelog_rec *rec)
 {
-	return rec->cr_namelen -
-	       (changelog_rec_sname(rec) - changelog_rec_name(rec));
+	size_t snamelen;
+
+	/* always positive but < cr_namelen,(see changelog_rec_sname() code */
+	snamelen = (size_t)(changelog_rec_sname(rec) - changelog_rec_name(rec));
+
+	return rec->cr_namelen - snamelen;
 }
 
 enum changelog_message_type {
@@ -2353,6 +2531,12 @@ static inline const char *hsm_user_action2name(enum hsm_user_action  a)
 /* used by CT, cannot be set by user */
 #define HSM_GHOST_COPY   0x0002
 
+/*
+ * To indicate that the action has been triggered by the
+ * kernel and a user process is currently blocked on it.
+ */
+#define	HSM_REQ_BLOCKING 0x0004
+
 /**
  * Contains all the fixed part of struct hsm_user_request.
  */
@@ -2384,23 +2568,25 @@ static inline void *hur_data(struct hsm_user_request *hur)
 }
 
 /**
- * Compute the current length of the provided hsm_user_request.  This returns -1
- * instead of an errno because __kernel_ssize_t is defined to be only
- * [ -1, SSIZE_MAX ]
+ * Compute the current length of the provided hsm_user_request. This returns
+ * ~0UL (-1 for 32-bit arches) instead of an errno because __kernel_ssize_t
+ * is defined to be only [ -1, SSIZE_MAX ] there.  On 64-bit architectures
+ * the max return value is 2^32 * (sizeof(hur_user_item) + 1) ~= 2^37 bytes.
  *
- * return -1 on bounds check error.
+ * return -1 on bounds check error (32-bit only).
  */
 static inline __kernel_size_t hur_len(struct hsm_user_request *hur)
 {
-	__u64	size;
+	__u64 size;
 
 	/* can't overflow a __u64 since hr_itemcount is only __u32 */
 	size = offsetof(struct hsm_user_request, hur_user_item[0]) +
 		(__u64)hur->hur_request.hr_itemcount *
 		sizeof(hur->hur_user_item[0]) + hur->hur_request.hr_data_len;
 
-	if ((__kernel_ssize_t)size < 0)
-		return -1;
+	/* this "if (0 && ..)" is removed by the compiler on 64-bit */
+	if (sizeof(__kernel_size_t) == 4 && (__kernel_ssize_t)size < 0)
+		return ~0UL;
 
 	return size;
 }
@@ -2943,6 +3129,104 @@ struct ll_foreign_symlink_upcall_item {
  * foreign_symlink_upcall_info_store()
  */
 #define MAX_NB_UPCALL_ITEMS 32
+
+/**
+ * The data stripes in a comp is split into smaller chunks for the purpose
+ * of ec calculations. The total number of stripes may not always be
+ * evenly divisible with by 'k' so we may need to divide it up into two
+ * different sets of k0 and k1 sized chunks.
+ *
+ * The total stripes are divided into c0 number of k0 sized chunks
+ * followed by c1 number of k1 sized chunks.
+ */
+struct ec_split_comp {
+	int esc_n0, esc_k0;
+	int esc_n1, esc_k1;
+};
+
+/*
+ * Arbitrary limit on the minimum size we will attempt to split up into
+ * smaller chunks for ec computation.
+ */
+#define EC_MIN_SPLIT_SIZE 5
+/*
+ * We have data consisting of 'total' stripes. Create a mapping where
+ * we split this into smaller chunks based on what the
+ * suggested / requested hint is.
+ * Try to keep the sizes of the different buckets as equal as possible
+ * even if it means we will sometimes use smaller bucket size
+ * than what the hint suggested.
+ *
+ * A pathological example could be a data comp with 15 stripes and
+ * we request to split this into buckets for 7,m EC encoding.
+ * For best fit this would then find a configuration of 3 buckets
+ * of size 5 and thus the chunk size is 2 less than the requested hint.
+ */
+static inline void
+ec_split_stripes(int total, int suggested, struct ec_split_comp *sc)
+{
+	int num_buckets;
+
+	/* If total is very small then just map it into a single chunk */
+	if (suggested >= total || total < EC_MIN_SPLIT_SIZE) {
+		sc->esc_k0 = total;
+		sc->esc_n0 = 1;
+		sc->esc_k1 = 0;
+		sc->esc_n1 = 0;
+		return;
+	}
+
+	/* If the total is evenly divisible by the suggested chunk size */
+	if (total % suggested == 0) {
+		sc->esc_k0 = suggested;
+		sc->esc_n0 = total / suggested;
+		sc->esc_k1 = 0;
+		sc->esc_n1 = 0;
+		return;
+	}
+
+	/* We need one extra bucket because there was a residual */
+	num_buckets = total / suggested + 1;
+
+	/*
+	 * If we can split the total evenly in the new number of buckets.
+	 * For this case we end up with num_bucket chunks that are all
+	 * suggested-1 or suggested-2 in size.
+	 */
+	if (total % num_buckets == 0) {
+		sc->esc_k0 = total / num_buckets;
+		sc->esc_n0 = num_buckets;
+		sc->esc_k1 = 0;
+		sc->esc_n1 = 0;
+		return;
+	}
+
+	/*
+	 * Split the total stripes into num_buckets chunks and with the first
+	 * block of chunks being one larger to consume the residual.
+	 *
+	 * We can describe any number as :
+	 *
+	 * total = nb * bs + r
+	 *
+	 * where
+	 * nb is number of buckets
+	 * bs is bucket size
+	 * r is the residual,  r < bs.
+	 *
+	 * This can then be rearranged as :
+	 *
+	 * total = r * (bs + 1) + (nb - r) * bs
+	 * =>
+	 * total = r * bs + r + nb * bs - r * bs
+	 * =>
+	 * total = nb * bs + r
+	 */
+	sc->esc_n0 = total % num_buckets;      /* r      */
+	sc->esc_k0 = total / num_buckets + 1;  /* bs + 1 */
+	sc->esc_n1 = num_buckets - sc->esc_n0; /* nb - r */
+	sc->esc_k1 = total / num_buckets;      /* bs     */
+}
 
 #if defined(__cplusplus)
 }

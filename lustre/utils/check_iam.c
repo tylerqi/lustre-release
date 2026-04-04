@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * User-level tool to check iam files sanity.
@@ -848,14 +828,16 @@ static int print_nodemap(const void *key, size_t keys,
 		}
 		break;
 	case NODEMAP_RANGE_IDX:
-		printf(" }\t{ start_nid: %s, end_nid: %s }",
+		printf(" }\t{ start_nid: %s, end_nid: %s, type 0x%x }",
 		       libcfs_nid2str(__le64_to_cpu(nr->nrr.nrr_start_nid)),
-		       libcfs_nid2str(__le64_to_cpu(nr->nrr.nrr_end_nid)));
+		       libcfs_nid2str(__le64_to_cpu(nr->nrr.nrr_end_nid)),
+		       nm_idx_get_type(__le32_to_cpu(nk->nk_range_id)));
 		break;
 	case NODEMAP_NID_MASK_IDX:
-		printf(" }\t{ subnet: %s/%hhd }",
+		printf(" }\t{ subnet: %s/%hhd, type: 0x%x }",
 		       libcfs_nidstr(&nr->nrr2.nrr_nid_prefix),
-		       nr->nrr2.nrr_netmask);
+		       nr->nrr2.nrr_netmask,
+		       nm_idx_get_type(__le32_to_cpu(nk->nk_range_id)));
 		break;
 	case NODEMAP_UIDMAP_IDX:
 	case NODEMAP_GIDMAP_IDX:

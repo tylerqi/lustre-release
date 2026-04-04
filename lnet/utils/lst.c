@@ -34,6 +34,8 @@
 #include <linux/lnet/nidstr.h>
 #include "lnetconfig/liblnetconfig.h"
 
+static int lst_print_usage(char *cmd);
+
 static int lst_info_batch_ioctl(char *batch, int test, int server,
 		       struct lstcon_test_batch_ent *entp, int *idxp,
 		       int *ndentp, struct lstcon_node_ent *dentsp);
@@ -326,14 +328,6 @@ lst_test_name2type(char *name)
 		return LST_TEST_BULK;
 
 	return -1;
-}
-
-static void
-lst_print_usage(char *cmd)
-{
-	char *argv[] = { "help", cmd };
-
-	cfs_parser(2, argv, NULL);
 }
 
 static void
@@ -637,11 +631,11 @@ skip_params:
 	if (rc == 0) {
 emitter_error:
 		yaml_emitter_log_error(&request, stderr);
-		yaml_emitter_delete(&request);
+		yaml_emitter_cleanup(&request);
 		errmsg = NULL;
 		goto parser_error;
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 
 	while (!done) {
 		rc = yaml_parser_parse(&reply, &event);
@@ -725,7 +719,7 @@ emitter_error:
 parser_error:
 	if (rc == 0 && errmsg)
 		yaml_parser_log_error(&reply, stderr, errmsg);
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	if (((nlflags & NLM_F_DUMP) == NLM_F_DUMP) && rc != 0) {
@@ -787,8 +781,7 @@ jt_lst_new_session(int argc, char **argv)
 			timeout_s = optarg;
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
@@ -824,8 +817,7 @@ jt_lst_new_session(int argc, char **argv)
 		snprintf(buf, sizeof(buf), "%s@%s", user, host);
 		name = buf;
 	} else {
-		lst_print_usage(argv[0]);
-		return -1;
+		return lst_print_usage(argv[0]);
 	}
 
 	rc = lst_yaml_session(name, timeout_s, nlflags, "new session");
@@ -1320,11 +1312,11 @@ static int lst_yaml_groups(int nlflags, char *name, int states, bool print)
 	if (rc == 0) {
 emitter_error:
 		yaml_emitter_log_error(&request, stderr);
-		yaml_emitter_delete(&request);
+		yaml_emitter_cleanup(&request);
 		rc = -EINVAL;
 		goto parser_error;
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 
 	/* display output */
 	if (nlflags == NLM_F_DUMP)
@@ -1365,7 +1357,7 @@ lst_get_node_count(int type, char *str, int *countp,
 		   struct lnet_process_id **idspp)
 {
 	char buf[LST_NAME_SIZE];
-	struct lstcon_test_batch_ent ent;
+	struct lstcon_test_batch_ent ent = {0};
 	struct lstcon_ndlist_ent *entp = &ent.tbe_cli_nle;
 	struct lst_sid sid;
 	unsigned int feats;
@@ -1473,15 +1465,12 @@ jt_lst_ping(int argc,  char **argv)
 			break;
 
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
-	if (type == 0 || timeout <= 0 || optind != argc) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (type == 0 || timeout <= 0 || optind != argc)
+		return lst_print_usage(argv[0]);
 
 	if (type == LST_OPC_BATCHCLI && server)
 		type = LST_OPC_BATCHSRV;
@@ -1632,10 +1621,8 @@ jt_lst_add_group(int argc, char **argv)
 		return -1;
 	}
 
-	if (argc < 3) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (argc < 3)
+		return lst_print_usage(argv[0]);
 
 	name = argv[1];
 	if (strlen(name) >= LST_NAME_SIZE) {
@@ -1752,10 +1739,8 @@ jt_lst_del_group(int argc, char **argv)
 		return -1;
 	}
 
-	if (argc != 2) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (argc != 2)
+		return lst_print_usage(argv[0]);
 
 	rc = lst_del_group(argv[1]);
 
@@ -1816,42 +1801,36 @@ jt_lst_update_group(int argc, char **argv)
 
 		switch (c) {
 		case 'f':
-			if (opc != 0) {
-				lst_print_usage(argv[0]);
-				return -1;
-			}
+			if (opc != 0)
+				return lst_print_usage(argv[0]);
+
 			opc = LST_GROUP_REFRESH;
 			break;
 
 		case 'r':
-			if (opc != 0) {
-				lst_print_usage(argv[0]);
-				return -1;
-			}
+			if (opc != 0)
+				return lst_print_usage(argv[0]);
+
 			opc = LST_GROUP_RMND;
 			str = optarg;
 			break;
 
 		case 'c':
 			clean = lst_node_str2state(optarg);
-			if (opc != 0 || clean <= 0) {
-				lst_print_usage(argv[0]);
-				return -1;
-			}
+			if (opc != 0 || clean <= 0)
+				return lst_print_usage(argv[0]);
+
 			opc = LST_GROUP_CLEAN;
 			break;
 
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
 	/* no OPC or group is specified */
-	if (opc == 0 || optind != argc - 1) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (opc == 0 || optind != argc - 1)
+		return lst_print_usage(argv[0]);
 
 	grp = argv[optind];
 
@@ -2024,8 +2003,7 @@ jt_lst_list_group(int argc, char **argv)
 			verbose = all = 1;
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
@@ -2590,14 +2568,12 @@ jt_lst_stat(int argc, char **argv)
 			break;
 
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
 	if (optind == argc) {
-		lst_print_usage(argv[0]);
-		return -1;
+		return lst_print_usage(argv[0]);
 	}
 
 	if (timeout <= 0 || delay <= 0) {
@@ -2702,15 +2678,12 @@ jt_lst_show_error(int argc, char **argv)
 			break;
 
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
-	if (optind == argc) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (optind == argc)
+		return lst_print_usage(argv[0]);
 
 	INIT_LIST_HEAD(&head);
 
@@ -2821,10 +2794,8 @@ jt_lst_add_batch(int argc, char **argv)
 		return -1;
 	}
 
-	if (argc != 2) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (argc != 2)
+		return lst_print_usage(argv[0]);
 
 	name = argv[1];
 	if (strlen(name) >= LST_NAME_SIZE) {
@@ -2891,8 +2862,7 @@ jt_lst_start_batch(int argc, char **argv)
 			timeout = atoi(optarg);
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
@@ -2903,8 +2873,7 @@ jt_lst_start_batch(int argc, char **argv)
 		batch = argv[optind];
 
 	} else {
-		lst_print_usage(argv[0]);
-		return -1;
+		return lst_print_usage(argv[0]);
 	}
 
 	rc = lst_get_node_count(LST_OPC_BATCHCLI, batch, &count, NULL);
@@ -2989,8 +2958,7 @@ jt_lst_stop_batch(int argc, char **argv)
 			force = 1;
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
@@ -3001,8 +2969,7 @@ jt_lst_stop_batch(int argc, char **argv)
 		batch = argv[optind];
 
 	} else {
-		lst_print_usage(argv[0]);
-		return -1;
+		return lst_print_usage(argv[0]);
 	}
 
 	rc = lst_get_node_count(LST_OPC_BATCHCLI, batch, &count, NULL);
@@ -3095,7 +3062,7 @@ lst_info_batch_ioctl(char *batch, int test, int server,
 static int
 lst_list_batch_all(void)
 {
-	char name[LST_NAME_SIZE];
+	char name[LST_NAME_SIZE] = {0};
 	int rc, i;
 
 	for (i = 0; ; i++) {
@@ -3218,8 +3185,7 @@ jt_lst_list_batch(int argc, char **argv)
 			ntest = 1;
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
@@ -3234,10 +3200,8 @@ jt_lst_list_batch(int argc, char **argv)
 		return -1;
 	}
 
-	if (optind != argc - 1) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (optind != argc - 1)
+		return lst_print_usage(argv[0]);
 
 	batch = argv[optind];
 
@@ -3416,23 +3380,19 @@ jt_lst_query_batch(int argc, char **argv)
 			verbose = 1;
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
-	if (test < 0 || timeout <= 0 || delay <= 0 || loop <= 0) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (test < 0 || timeout <= 0 || delay <= 0 || loop <= 0)
+		return lst_print_usage(argv[0]);
 
 	if (optind == argc) {
 		batch = LST_DEFAULT_BATCH;
 	} else if (optind == argc - 1) {
 		batch = argv[optind];
 	} else {
-		lst_print_usage(argv[0]);
-		return -1;
+		return lst_print_usage(argv[0]);
 	}
 
 
@@ -3772,15 +3732,12 @@ jt_lst_add_test(int argc, char **argv)
 			to = optarg;
 			break;
 		default:
-			lst_print_usage(argv[0]);
-			return -1;
+			return lst_print_usage(argv[0]);
 		}
 	}
 
-	if (optind == argc || from == NULL || to == NULL) {
-		lst_print_usage(argv[0]);
-		return -1;
-	}
+	if (optind == argc || from == NULL || to == NULL)
+		return lst_print_usage(argv[0]);
 
 	if (concur <= 0 || concur > LST_MAX_CONCUR) {
 		fprintf(stderr, "Invalid concurrency of test: %d\n", concur);
@@ -3928,6 +3885,14 @@ lst_initialize(void)
 	session_key = atoi(key);
 
 	return 0;
+}
+
+static int
+lst_print_usage(char *cmd)
+{
+	char *argv[] = { "help", cmd };
+
+	return cfs_parser(2, argv, lst_cmdlist);
 }
 
 int main(int argc, char **argv)

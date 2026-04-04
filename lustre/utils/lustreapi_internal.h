@@ -1,26 +1,9 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
- * LGPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
  * (C) Copyright 2012 Commissariat a l'energie atomique et aux energies
  *     alternatives
  *
  * Copyright (c) 2016, 2017, Intel Corporation.
- *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 or (at your discretion) any later version.
- * (LGPL) version 2.1 accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
- *
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * LGPL HEADER END
  */
 /*
  *
@@ -34,20 +17,19 @@
 #ifndef _LUSTREAPI_INTERNAL_H_
 #define _LUSTREAPI_INTERNAL_H_
 
+#include <dirent.h>
 #include <limits.h>
 #include <stdint.h>
-#include <dirent.h>
+#include <time.h>
 
 #include <libcfs/util/ioctl.h>
 #include <libcfs/util/param.h>
 
-#include <linux/lustre/lustre_ioctl.h>
 #include <linux/lustre/lustre_kernelcomm.h>
 
 #include <lustre/lustreapi.h>
 
 #define MAX_IOC_BUFLEN	8192
-#define MAX_LINE_LEN	 256
 #define MAX_INSTANCE_LEN  32
 
 #define WANT_PATH   0x1
@@ -63,13 +45,16 @@
 #define LUSTRE_ENCRYPTION_UNIT_SIZE   ((size_t)1 << LUSTRE_ENCRYPTION_BLOCKBITS)
 #define LUSTRE_ENCRYPTION_MASK        (~(LUSTRE_ENCRYPTION_UNIT_SIZE - 1))
 
+#define OBD_NOT_FOUND	(-1)
+
 /* mount point listings in /proc/mounts */
 #ifndef PROC_MOUNTS
 #define PROC_MOUNTS "/proc/mounts"
 #endif
 
 int get_root_path(int want, char *fsname, int *outfd, char *path, int index,
-		  dev_t *dev, char *nid);
+		  dev_t *dev, char **out_nid);
+struct obd_ioctl_data;
 int llapi_ioctl_pack(struct obd_ioctl_data *data, char **pbuf, int max_len);
 int llapi_ioctl_dev(int dev_id, unsigned int cmd, void *buf);
 int llapi_ioctl_unpack(struct obd_ioctl_data *data, char *pbuf, int max_len);
@@ -159,13 +144,10 @@ static inline bool llapi_pool_name_is_valid(const char **pool_name)
 	return true;
 }
 
-/* Compatibility macro for legacy llapi functions that use "offset"
- * terminology instead of the preferred "index". */
-#define llapi_stripe_offset_is_valid(os) llapi_stripe_index_is_valid(os)
-
 static inline bool llapi_dir_stripe_count_is_valid(int64_t count)
 {
-	return count >= -1 && count <= LMV_MAX_STRIPE_COUNT;
+	return count >= LMV_OVERSTRIPE_COUNT_MAX &&
+	       count <= LMV_MAX_STRIPE_COUNT;
 }
 
 static inline bool llapi_dir_stripe_index_is_valid(int64_t index)
@@ -193,6 +175,7 @@ enum lctl_param_flags {
 	PARAM_FLAGS_YAML_FORMAT		= 0x0001,
 	PARAM_FLAGS_SHOW_SOURCE		= 0x0002,
 	PARAM_FLAGS_EXTRA_DETAILS	= 0x0004,
+	PARAM_FLAGS_EXTRA_IGNORE_ERROR	= 0x0008,
 };
 
 int llapi_param_display_value(char *path, int version,
@@ -211,4 +194,108 @@ int get_lmd_info_fd(const char *path, int parentfd, int dirfd,
 int lov_comp_md_size(struct lov_comp_md_v1 *lcm);
 
 int open_parent(const char *path);
+
+static inline bool is_mgs(void)
+{
+	glob_t path;
+	int rc;
+
+	rc = cfs_get_param_paths(&path, "mgs/MGS/exports");
+	if (!rc) {
+		cfs_free_param_data(&path);
+		return true;
+	}
+
+	return false;
+}
+
+static inline bool is_mds(void)
+{
+	glob_t path;
+	int rc;
+
+	rc = cfs_get_param_paths(&path, "mdt/*-MDT*/exports");
+	if (!rc) {
+		cfs_free_param_data(&path);
+		return true;
+	}
+
+	return false;
+}
+
+static inline bool is_oss(void)
+{
+	glob_t path;
+	int rc;
+
+	rc = cfs_get_param_paths(&path, "obdfilter/*-OST*/exports");
+	if (!rc) {
+		cfs_free_param_data(&path);
+		return true;
+	}
+
+	return false;
+}
+
+typedef int (semantic_func_t)(char *path, int p, int *d,
+			      void *data, struct dirent64 *de);
+
+void validate_printf_str(struct find_param *param);
+int param_callback(char *path, semantic_func_t sem_init,
+		   semantic_func_t sem_fini, struct find_param *param);
+int cb_find_init(char *path, int p, int *dp,
+		 void *data, struct dirent64 *de);
+int cb_common_fini(char *path, int p, int *dp, void *data,
+		   struct dirent64 *de);
+int common_param_init(struct find_param *param, char *path);
+void find_param_fini(struct find_param *param);
+int parallel_find(char *path, struct find_param *param);
+int work_unit_create_and_add(const char *path, struct find_param *param,
+			     struct dirent64 *dent);
+int llapi_semantic_traverse(char *path, int size, int parent,
+			    semantic_func_t sem_init,
+			    semantic_func_t sem_fini, void *data,
+			    struct dirent64 *de);
+
+#ifndef NSEC_PER_SEC
+#define NSEC_PER_SEC 1000000000UL
+#endif
+#ifndef ONE_MB
+#define ONE_MB (1024 * 1024)
+#endif
+#define DEFAULT_IO_BUFLEN (64 * ONE_MB)
+
+static inline struct timespec timespec_sub(struct timespec *before,
+					   struct timespec *after)
+{
+	struct timespec ret;
+
+	ret.tv_sec = after->tv_sec - before->tv_sec;
+	if (after->tv_nsec < before->tv_nsec) {
+		ret.tv_sec--;
+		ret.tv_nsec = NSEC_PER_SEC + after->tv_nsec - before->tv_nsec;
+	} else {
+		ret.tv_nsec = after->tv_nsec - before->tv_nsec;
+	}
+
+	return ret;
+}
+
+/* not ready to expose as official APIs yet, but want to share code */
+void llapi_bandwidth_throttle(struct timespec *now, struct timespec *start_time,
+			      uint64_t bandwidth_bytes_sec,
+			      uint64_t total_bytes_written);
+void llapi_stats_log(struct timespec *now, struct timespec *start_time,
+		     struct timespec *last_print, int stats_interval_sec,
+		     uint64_t read_bytes, uint64_t write_bytes,
+		     uint64_t offset, uint64_t file_size_bytes);
+
+#ifndef BIT
+#define BIT(nr) (1ULL << (nr))
+#endif
+int llapi_convert_mask2str(char *str, int size, __u64 mask,
+			   const char *(*bit2str)(int), char sep);
+int llapi_convert_str2mask(const char *str, const char *(*bit2str)(int bit),
+			   __u64 *oldmask, __u64 minmask, __u64 allmask,
+			   __u64 defmask);
 #endif /* _LUSTREAPI_INTERNAL_H_ */

@@ -13,8 +13,12 @@
 #include <linux/ctype.h>
 #include <linux/nsproxy.h>
 #include <linux/ethtool.h>
+#include <linux/rtnetlink.h>
 #include <net/net_namespace.h>
+
 #include <lnet/lib-lnet.h>
+
+#include <lustre_compat/net/netdev_lock.h>
 
 /* tmp struct for parsing routes */
 struct lnet_text_buf {
@@ -118,6 +122,7 @@ lnet_net_append_cpts(__u32 *cpts, __u32 ncpts, struct lnet_net *net)
 {
 	__u32 *added_cpts = NULL;
 	int i, j = 0, rc = 0;
+	bool was_restricted = (net->net_cpts != NULL);
 
 	/*
 	 * no need to go futher since a subset of the NIs already exist on
@@ -131,6 +136,9 @@ lnet_net_append_cpts(__u32 *cpts, __u32 ncpts, struct lnet_net *net)
 		CFS_FREE_PTR_ARRAY(net->net_cpts, net->net_ncpts);
 		net->net_cpts = NULL;
 		net->net_ncpts = LNET_CPT_NUMBER;
+		/* Transition from restricted to unrestricted */
+		if (was_restricted)
+			atomic_dec(&the_lnet.ln_cpt_restricted_count);
 		return 0;
 	}
 
@@ -140,6 +148,8 @@ lnet_net_append_cpts(__u32 *cpts, __u32 ncpts, struct lnet_net *net)
 			return -ENOMEM;
 		memcpy(net->net_cpts, cpts, ncpts * sizeof(*net->net_cpts));
 		net->net_ncpts = ncpts;
+		/* Transition from unrestricted to restricted */
+		atomic_inc(&the_lnet.ln_cpt_restricted_count);
 		return 0;
 	}
 
@@ -229,6 +239,8 @@ lnet_net_remove_cpts(__u32 *cpts, __u32 ncpts, struct lnet_net *net)
 	if (net->net_cpts != NULL) {
 		CFS_FREE_PTR_ARRAY(net->net_cpts, net->net_ncpts);
 		net->net_cpts = NULL;
+		/* Net was restricted, now temporarily unrestricted */
+		atomic_dec(&the_lnet.ln_cpt_restricted_count);
 	}
 
 	list_for_each_entry(ni, &net->net_ni_list, ni_netlist) {
@@ -248,6 +260,8 @@ lnet_net_remove_cpts(__u32 *cpts, __u32 ncpts, struct lnet_net *net)
 						   net->net_ncpts);
 				net->net_cpts = NULL;
 				net->net_ncpts = LNET_CPT_NUMBER;
+				/* Undo the increment from append_cpts */
+				atomic_dec(&the_lnet.ln_cpt_restricted_count);
 			}
 			return;
 		}
@@ -309,6 +323,8 @@ lnet_net_free(struct lnet_net *net)
 		CFS_FREE_PTR_ARRAY(net->net_cpts, net->net_ncpts);
 		net->net_ncpts = LNET_CPT_NUMBER;
 		net->net_cpts = NULL;
+		/* Net was restricted, decrement counter */
+		atomic_dec(&the_lnet.ln_cpt_restricted_count);
 	}
 
 	LIBCFS_FREE(net, sizeof(*net));
@@ -517,7 +533,10 @@ lnet_ni_alloc_w_cpt_array(struct lnet_net *net, struct lnet_nid *nid,
 	if (!ni)
 		return NULL;
 
-	if (ncpts == 0) {
+	if (ncpts == 0 || ncpts == LNET_CPT_NUMBER) {
+		/* No restriction, or all CPTs specified - use NULL for fast
+		 * path.
+		 */
 		ni->ni_cpts  = NULL;
 		ni->ni_ncpts = LNET_CPT_NUMBER;
 	} else {
@@ -1173,7 +1192,7 @@ lnet_parse_route(char *str, int *im_a_router)
 				continue;
 			}
 
-			rc = lnet_add_route(net, hops, &nid, priority, 1);
+			rc = lnet_add_route(net, hops, &nid, priority);
 			if (rc != 0 && rc != -EEXIST && rc != -EHOSTUNREACH) {
 				CERROR("Can't create route "
 				       "to %s via %s\n",
@@ -1221,6 +1240,9 @@ lnet_parse_routes(const char *routes, int *im_a_router)
 	int rc = 0;
 
 	*im_a_router = 0;
+
+	if (strlen(routes))
+		CWARN("Kernel parsing of LNet routes is deprecated. Consider converting to LNet YAML configuration.\n");
 
 	if (lnet_str2tbs_sep(&tbs, routes) < 0) {
 		CERROR("Error parsing routes\n");
@@ -1488,7 +1510,7 @@ __u32 lnet_set_link_fatal_state(struct lnet_ni *ni, unsigned int link_state)
 }
 EXPORT_SYMBOL(lnet_set_link_fatal_state);
 
-int lnet_get_link_status(struct net_device *dev)
+int lnet_get_link_status_locked(struct net_device *dev)
 {
 	int ret = -1;
 
@@ -1498,22 +1520,36 @@ int lnet_get_link_status(struct net_device *dev)
 	if (!netif_running(dev)) {
 		ret = 0;
 		CDEBUG(D_NET, "device idx %d not running\n", dev->ifindex);
-	}
-	/* Some devices may not be providing link settings */
-	else if (dev->ethtool_ops->get_link) {
+	} else if (dev->ethtool_ops->get_link) {
+		/* Some devices may not be providing link settings */
 		ret = dev->ethtool_ops->get_link(dev);
 		CDEBUG(D_NET, "device idx %d get_link %u\n",
-		       ret,
-		       dev->ifindex);
+		       ret, dev->ifindex);
 	}
+
+	return ret;
+}
+EXPORT_SYMBOL(lnet_get_link_status_locked);
+
+int lnet_get_link_status(struct net_device *dev)
+{
+	int ret = -1;
+
+	if (!dev)
+		return -1;
+
+	rtnl_lock();
+	netdev_lock_ops(dev);
+	ret = lnet_get_link_status_locked(dev);
+	netdev_unlock_ops(dev);
+	rtnl_unlock();
 
 	return ret;
 }
 EXPORT_SYMBOL(lnet_get_link_status);
 
-int lnet_inet_select(struct lnet_ni *ni,
-		     struct lnet_inetdev *ifaces,
-                     int num_ifaces)
+int lnet_inet_select(struct lnet_ni *ni, struct lnet_inetdev *ifaces,
+		     int num_ifaces)
 {
 	bool addr_set = nid_addr_is_set(&ni->ni_nid);
 	int if_idx;
@@ -1548,14 +1584,13 @@ int lnet_inet_select(struct lnet_ni *ni,
 		return if_idx;
 
 	if (addr_set)
-		CERROR("%s: failed to find IP address %s\n",
+		CERROR("%s: failed to find UP interface with IP address %s\n",
 		       libcfs_lnd2modname(ni->ni_nid.nid_type),
 		       libcfs_nidstr(&ni->ni_nid));
 	else if (ni->ni_interface)
-		CERROR("%s: failed to find interface %s%s%s\n",
+		CERROR("%s: failed to find UP interface %s\n",
 		       libcfs_lnd2modname(ni->ni_nid.nid_type),
-		       ni->ni_interface, addr_set ? "@" : "",
-		       addr_set ? libcfs_nidstr(&ni->ni_nid) : "");
+		       ni->ni_interface);
 
 	return -EINVAL;
 }
@@ -1569,6 +1604,8 @@ lnet_parse_ip2nets(const char **networksp, const char *ip2nets)
 	int nip;
 	int rc;
 	int i;
+
+	CWARN("Kernel parsing of ip2nets is deprecated. Consider converting to LNet YAML configuration.\n");
 
 	if (current->nsproxy && current->nsproxy->net_ns)
 		nip = lnet_inet_enumerate(&ifaces, current->nsproxy->net_ns,

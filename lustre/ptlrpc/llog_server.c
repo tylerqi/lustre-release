@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2015, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ptlrpc/llog_server.c
  *
  * remote api for llog - server side
  *
@@ -279,6 +259,9 @@ int llog_origin_handle_read_header(struct ptlrpc_request *req)
 
 	hdr = req_capsule_server_get(&req->rq_pill, &RMF_LLOG_LOG_HDR);
 	*hdr = *loghandle->lgh_hdr;
+	CDEBUG(D_OTHER, "%s: red llog header "DFID" count %d lgh_last_idx %d llh_cat_idx %d\n",
+	       ctxt->loc_obd->obd_name, PLOGID(&loghandle->lgh_id),
+	       hdr->llh_count, LLOG_HDR_TAIL(hdr)->lrt_index, hdr->llh_cat_idx);
 	EXIT;
 out_close:
 	llog_origin_close(req->rq_svc_thread->t_env, loghandle);

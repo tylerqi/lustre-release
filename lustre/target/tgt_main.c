@@ -36,8 +36,8 @@ static const char * const sync_lock_cancel_states[] = {
  * \retval		0 and buffer filled with data on success
  * \retval		negative value on error
  */
-ssize_t sync_lock_cancel_show(struct kobject *kobj,
-			      struct attribute *attr, char *buf)
+static ssize_t sync_lock_cancel_show(struct kobject *kobj,
+				     struct attribute *attr, char *buf)
 {
 	struct obd_device *obd = container_of(kobj, struct obd_device,
 					      obd_kset.kobj);
@@ -46,7 +46,6 @@ ssize_t sync_lock_cancel_show(struct kobject *kobj,
 	return sprintf(buf, "%s\n",
 		       sync_lock_cancel_states[tgt->lut_sync_lock_cancel]);
 }
-EXPORT_SYMBOL(sync_lock_cancel_show);
 
 /**
  * Change policy for handling dirty data under a lock being cancelled.
@@ -69,8 +68,9 @@ EXPORT_SYMBOL(sync_lock_cancel_show);
  * \retval		\a count on success
  * \retval		negative value on error
  */
-ssize_t sync_lock_cancel_store(struct kobject *kobj, struct attribute *attr,
-			       const char *buffer, size_t count)
+static ssize_t sync_lock_cancel_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer, size_t count)
 {
 	struct obd_device *obd = container_of(kobj, struct obd_device,
 					      obd_kset.kobj);
@@ -103,7 +103,6 @@ ssize_t sync_lock_cancel_store(struct kobject *kobj, struct attribute *attr,
 	spin_unlock(&tgt->lut_flags_lock);
 	return count;
 }
-EXPORT_SYMBOL(sync_lock_cancel_store);
 LUSTRE_RW_ATTR(sync_lock_cancel);
 
 /**
@@ -360,7 +359,7 @@ void tgt_save_slc_lock(struct lu_target *lut, struct ldlm_lock *lock,
 {
 	spin_lock(&lut->lut_slc_locks_guard);
 	lock_res_and_lock(lock);
-	if (ldlm_is_cbpending(lock)) {
+	if ((lock->l_flags & LDLM_FL_CBPENDING)) {
 		/* if it was canceld by server, don't save, because remote MDT
 		 * will do Sync-on-Cancel. */
 		ldlm_lock_put(lock);
@@ -395,7 +394,7 @@ void tgt_discard_slc_lock(struct lu_target *lut, struct ldlm_lock *lock)
 	/* may race with tgt_cancel_slc_locks() */
 	if (lock->l_transno != 0) {
 		LASSERT(!list_empty(&lock->l_slc_link));
-		LASSERT(ldlm_is_cbpending(lock));
+		LASSERT((lock->l_flags & LDLM_FL_CBPENDING));
 		list_del_init(&lock->l_slc_link);
 		lock->l_transno = 0;
 		ldlm_lock_put(lock);
@@ -434,7 +433,7 @@ void tgt_cancel_slc_locks(struct lu_target *lut, __u64 transno)
 			continue;
 		}
 		/* set CBPENDING so that this lock won't be used again */
-		ldlm_set_cbpending(lock);
+		(lock->l_flags |= LDLM_FL_CBPENDING);
 		lock->l_transno = 0;
 		list_move(&lock->l_slc_link, &list);
 		unlock_res_and_lock(lock);
@@ -472,10 +471,12 @@ int tgt_init(const struct lu_env *env, struct lu_target *lut,
 	lut->lut_last_rcvd = NULL;
 	lut->lut_client_bitmap = NULL;
 	atomic_set(&lut->lut_num_clients, 0);
+	atomic_set(&lut->lut_max_clients, 0);
 	atomic_set(&lut->lut_client_generation, 0);
 	lut->lut_reply_data = NULL;
 	lut->lut_reply_bitmap = NULL;
 	obt = obd_obt_init(obd);
+	obt->obt_jobstats.ojs_cntr_num = 0;
 	obt->obt_lut = lut;
 
 	/* set request handler slice and parameters */
@@ -492,12 +493,13 @@ int tgt_init(const struct lu_env *env, struct lu_target *lut,
 	lut->lut_cksum_t10pi_enforce = 0;
 	lut->lut_cksum_types_supported =
 		obd_cksum_types_supported_server(obd->obd_name);
+	lut->lut_enable_resource_id_check = 0;
 
 	spin_lock_init(&lut->lut_slc_locks_guard);
 	INIT_LIST_HEAD(&lut->lut_slc_locks);
 
 	/* last_rcvd initialization is needed by replayable targets only */
-	if (!obd->obd_replayable)
+	if (!test_bit(OBDF_REPLAYABLE, obd->obd_flags))
 		RETURN(0);
 
 	/* initialize grant and statfs data in target */

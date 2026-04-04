@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -124,9 +106,9 @@ static int llog_check_cb(const struct lu_env *env, struct llog_handle *handle,
 	if (ioc_data && ioc_data->ioc_inllen1 > 0) {
 		l = 0;
 		remains = ioc_data->ioc_inllen4 +
-			  round_up(ioc_data->ioc_inllen1, 8) +
-			  round_up(ioc_data->ioc_inllen2, 8) +
-			  round_up(ioc_data->ioc_inllen3, 8);
+			  ALIGN(ioc_data->ioc_inllen1, 8) +
+			  ALIGN(ioc_data->ioc_inllen2, 8) +
+			  ALIGN(ioc_data->ioc_inllen3, 8);
 
 		rc = kstrtol(ioc_data->ioc_inlbuf2, 0, &from);
 		if (rc)
@@ -319,13 +301,20 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 	       unsigned int cmd, struct obd_ioctl_data *data)
 {
 	struct llog_logid logid;
-	int rc = 0;
 	struct llog_handle *handle = NULL;
 	char *logname, start;
+	int rc = 0;
 
 	ENTRY;
 
 	logname = data->ioc_inlbuf1;
+	if (logname == NULL || logname[0] == '\0') {
+		rc = -EINVAL;
+		CDEBUG(D_INFO, "%s: missing log name: rc = %d\n",
+		       ctxt->loc_obd->obd_name, rc);
+		RETURN(rc);
+	}
+
 	start = logname[0];
 	if (start == '#' || start == '[') {
 		rc = str2logid(&logid, logname, data->ioc_inllen1);
@@ -357,10 +346,17 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 	switch (cmd) {
 	case OBD_IOC_LLOG_INFO: {
 		int l;
-		int remains = data->ioc_inllen2 +
-			      round_up(data->ioc_inllen1, 8);
-		char *out = data->ioc_bulk;
+		int remains;
+		char *out;
 
+		if (!data->ioc_inllen2) {
+			rc = -EINVAL;
+			CERROR("%s: no buffer for log header info: rc = %d\n",
+			       ctxt->loc_obd->obd_name, rc);
+			GOTO(out_close, rc);
+		}
+		remains = data->ioc_inllen2 + ALIGN(data->ioc_inllen1, 8);
+		out = data->ioc_bulk;
 		l = snprintf(out, remains,
 			     "logid:            "DFID"\n"
 			     "flags:            %x (%s)\n"
@@ -375,14 +371,19 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 		out += l;
 		remains -= l;
 		if (remains <= 0) {
-			CERROR("%s: not enough space for log header info\n",
-			       ctxt->loc_obd->obd_name);
 			rc = -ENOSPC;
+			CERROR("%s: no space for log header info: rc = %d\n",
+			       ctxt->loc_obd->obd_name, rc);
 		}
 		break;
 	}
 	case OBD_IOC_LLOG_CHECK:
-		LASSERT(data->ioc_inllen1 > 0);
+		if (!data->ioc_inllen1) {
+			rc = -EINVAL;
+			CERROR("%s: no buffer for log header info: rc = %d\n",
+			       ctxt->loc_obd->obd_name, rc);
+			GOTO(out_close, rc);
+		}
 		rc = llog_process(env, handle, llog_check_cb, data, NULL);
 		if (rc == -LLOG_EEMPTY)
 			rc = 0;
@@ -397,13 +398,23 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 			.lpcd_last_idx = 0,
 		};
 
-		if (!data->ioc_inllen2 || !data->ioc_inllen3)
-			GOTO(out_close, rc = -EINVAL);
+		if (!data->ioc_inllen2 || data->ioc_inlbuf2[0] == '\0') {
+			rc = -EINVAL;
+			CERROR("%s: no start index to print records: rc = %d\n",
+			       ctxt->loc_obd->obd_name, rc);
+			GOTO(out_close, rc);
+		}
+		if (!data->ioc_inllen3 || data->ioc_inlbuf3[0] == '\0') {
+			rc = -EINVAL;
+			CERROR("%s: no end index to print records: rc = %d\n",
+			       ctxt->loc_obd->obd_name, rc);
+			GOTO(out_close, rc);
+		}
 
 		bufs = data->ioc_inllen4 +
-			round_up(data->ioc_inllen1, 8) +
-			round_up(data->ioc_inllen2, 8) +
-			round_up(data->ioc_inllen3, 8);
+			ALIGN(data->ioc_inllen1, 8) +
+			ALIGN(data->ioc_inllen2, 8) +
+			ALIGN(data->ioc_inllen3, 8);
 
 		rc = kstrtol(data->ioc_inlbuf2, 0, &lprd.lprd_from);
 		if (rc)
@@ -439,6 +450,12 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 		struct llog_logid plain;
 		u32 lgc_index;
 
+		if (!data->ioc_inllen3 || data->ioc_inlbuf3[0] == '\0') {
+			rc = -EINVAL;
+			CERROR("%s: no index to cancel record: rc = %d\n",
+			       ctxt->loc_obd->obd_name, rc);
+			GOTO(out_close, rc);
+		}
 		rc = kstrtouint(data->ioc_inlbuf3, 0, &lgc_index);
 		if (rc)
 			GOTO(out_close, rc);
@@ -451,7 +468,8 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 			GOTO(out_close, rc = -EINVAL);
 		}
 
-		if (data->ioc_inlbuf2 == NULL) /* catalog but no logid */
+		/* catalog but no logid */
+		if (!data->ioc_inlbuf2 || data->ioc_inlbuf2[0] == '\0')
 			GOTO(out_close, rc = -ENOTTY);
 
 		rc = str2logid(&plain, data->ioc_inlbuf2, data->ioc_inllen2);
@@ -490,9 +508,10 @@ int llog_ioctl(const struct lu_env *env, struct llog_ctxt *ctxt,
 		break;
 	}
 	default:
-		CERROR("%s: Unknown ioctl cmd %#x\n",
-		       ctxt->loc_obd->obd_name, cmd);
-		GOTO(out_close, rc = -ENOTTY);
+		rc = -ENOTTY;
+		CERROR("%s: Unknown llog_ioctl cmd %#x: rc = %d\n",
+		       ctxt->loc_obd->obd_name, cmd, rc);
+		GOTO(out_close, rc);
 	}
 
 out_close:

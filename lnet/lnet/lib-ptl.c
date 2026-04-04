@@ -11,6 +11,7 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
+#include <linux/libcfs/libcfs_fail.h>
 #include <lnet/lib-lnet.h>
 
 /* NB: add /proc interfaces in upcoming patches */
@@ -375,7 +376,7 @@ lnet_mt_match_head(struct lnet_match_table *mtable,
 		unsigned long hash = mbits + nidhash(&id->nid) + id->pid;
 
 		LASSERT(lnet_ptl_is_unique(ptl));
-		hash = cfs_hash_long(hash, LNET_MT_HASH_BITS);
+		hash = hash_long(hash, LNET_MT_HASH_BITS);
 		return &mtable->mt_mhash[hash & LNET_MT_HASH_MASK];
 	}
 }

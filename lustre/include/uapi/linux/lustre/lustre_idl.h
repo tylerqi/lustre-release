@@ -632,6 +632,9 @@ enum lustre_msg_version {
 /* #define MSG_VERSION_REPLAY	0x0020 obsolete since 1.8.2, VBR always on */
 #define MSG_REQ_REPLAY_DONE	0x0040 /* request replay over, locks next */
 #define MSG_LOCK_REPLAY_DONE	0x0080 /* lock replay over, client done */
+#define MSG_CLIENT_BANNED	0x0100 /* client is banned by nodemap */
+#define MSG_PACK_UID_GID	0x0200 /* thread UID/GID in ptlrpc_body */
+#define MSG_PACK_PROJID		0x0400 /* thread PROJID in ptlrpc_body */
 
 /* pb_op_flags for connect opcodes: MDS_CONNECT, OST_CONNECT, MGS_CONNECT */
 #define MSG_CONNECT_RECOVERING	0x00000001 /* target is in recovery */
@@ -643,7 +646,6 @@ enum lustre_msg_version {
 /* #define MSG_CONNECT_ASYNC	0x00000040 obsolete since 1.5 */
 #define MSG_CONNECT_NEXT_VER	0x00000080 /* use next version of lustre_msg */
 #define MSG_CONNECT_TRANSNO	0x00000100 /* client sent transno in replay */
-#define MSG_PACK_UID_GID	0x00000200 /* thread UID/GID in ptlrpc_body */
 
 /* number of previous object versions in pb_pre_versions[] */
 #define PTLRPC_NUM_VERSIONS     4
@@ -657,7 +659,7 @@ struct ptlrpc_body_v3 {
 	__u64 pb_last_xid;	/* highest replied XID w/o lower unreplied XID*/
 	__u16 pb_tag;		/* multiple modifying RPCs virtual slot index */
 	__u16 pb_padding0;
-	__u32 pb_padding1;
+	__u32 pb_projid;	/* req: inode projid, use by tbf rules */
 	__u64 pb_last_committed;/* rep: highest pb_transno committed to disk */
 	__u64 pb_transno;	/* server-assigned transno for modifying RPCs */
 	__u32 pb_flags;		/* req: MSG_* flags */
@@ -688,7 +690,7 @@ struct ptlrpc_body_v2 {
 	__u64 pb_last_xid; /* highest replied XID without lower unreplied XID */
 	__u16 pb_tag;      /* virtual slot idx for multiple modifying RPCs */
 	__u16 pb_padding0;
-	__u32 pb_padding1;
+	__u32 pb_projid;   /* req: inode projid, use by tbf rules */
 	__u64 pb_last_committed;
 	__u64 pb_transno;
 	__u32 pb_flags;
@@ -738,7 +740,7 @@ struct ptlrpc_body_v2 {
 #define OBD_CONNECT_GRANT			0x8ULL /* fetch grant connect */
 #define OBD_CONNECT_SRVLOCK		       0x10ULL /* server lock for RPC */
 #define OBD_CONNECT_VERSION		       0x20ULL /* versions in OCD */
-#define OBD_CONNECT_REQPORTAL		       0x40ULL /* non-IO portal */
+#define OBD_CONNECT_MGS_NIDLIST		       0x40ULL /* MGS nidlist protocol */
 #define OBD_CONNECT_ACL			       0x80ULL /* access control list */
 #define OBD_CONNECT_XATTR		      0x100ULL /* extended attributes */
 #define OBD_CONNECT_LARGE_ACL		      0x200ULL /* over 32 ACL entries */
@@ -798,7 +800,7 @@ struct ptlrpc_body_v2 {
 							* RPCs in parallel
 							*/
 #define OBD_CONNECT_DIR_STRIPE	  0x400000000000000ULL /* striped DNE dir */
-#define OBD_CONNECT_SUBTREE	  0x800000000000000ULL /* fileset mount */
+#define OBD_CONNECT_SUBTREE	  0x800000000000000ULL /* fileset mount, deprecated since 2.17.0 */
 /* was OBD_CONNECT_LOCKAHEAD_OLD 0x1000000000000000ULL old lockahead 2.12-2.13*/
 #define OBD_CONNECT_BULK_MBITS	 0x2000000000000000ULL /* ptlrpc_body matchbit*/
 #define OBD_CONNECT_OBDOPACK	 0x4000000000000000ULL /* compact OUT obdo */
@@ -843,13 +845,19 @@ struct ptlrpc_body_v2 {
 /* only ZFS servers require a change to support unaligned DIO, so this flag is
  * ignored for ldiskfs servers
  */
-#define OBD_CONNECT2_UNALIGNED_DIO	0x400000000ULL /* unaligned DIO */
-#define OBD_CONNECT2_CONN_POLICY	0x800000000ULL /* server-side connection policy */
+#define OBD_CONNECT2_UNALIGNED_DIO      0x400000000ULL /* unaligned DIO */
+#define OBD_CONNECT2_CONN_POLICY        0x800000000ULL /* server-side connection policy */
+#define OBD_CONNECT2_SPARSE            0x1000000000ULL /* sparse LNet read */
 #define OBD_CONNECT2_MIRROR_ID_FIX     0x2000000000ULL /* rr_mirror_id move */
 #define OBD_CONNECT2_UPDATE_LAYOUT     0x4000000000ULL /* update compressibility */
+#define OBD_CONNECT2_READDIR_OPEN      0x8000000000ULL /* read first dir page on open */
+#define OBD_CONNECT2_FLR_EC           0x10000000000ULL /* parity support */
+#define OBD_CONNECT2_FLR_IMMED_MIRROR 0x20000000000ULL /* client writes mirror*/
+#define OBD_CONNECT2_NO_APPEND        0x40000000000ULL /* O_APPEND locking fix*/
 /* XXX README XXX README XXX README XXX README XXX README XXX README XXX
  * Please DO NOT add OBD_CONNECT flags before first ensuring that this value
- * is not in use by some other branch/patch.  Email adilger@whamcloud.com
+ * is not in use by some other branch/patch.
+ * Email adilger@thelustrecollective.com and lustre-devel@lists.lustre.org
  * to reserve the new OBD_CONNECT value for use by your feature. Then, submit
  * a small patch against master and LTS branches that ONLY adds the new flag,
  * updates obd_connect_names[], adds the flag to check_obd_connect_data(),
@@ -918,11 +926,11 @@ struct ptlrpc_body_v2 {
 				OBD_CONNECT2_DMV_IMP_INHERIT |\
 				OBD_CONNECT2_UNALIGNED_DIO | \
 				OBD_CONNECT2_PCCRO | \
-				OBD_CONNECT2_MIRROR_ID_FIX)
+				OBD_CONNECT2_MIRROR_ID_FIX |\
+				OBD_CONNECT2_READDIR_OPEN)
 
 #define OST_CONNECT_SUPPORTED  (OBD_CONNECT_SRVLOCK | OBD_CONNECT_GRANT | \
-				OBD_CONNECT_REQPORTAL | OBD_CONNECT_VERSION | \
-				OBD_CONNECT_INDEX | \
+				OBD_CONNECT_VERSION | OBD_CONNECT_INDEX | \
 				OBD_CONNECT_BRW_SIZE | OBD_CONNECT_CANCELSET | \
 				OBD_CONNECT_AT | LRU_RESIZE_CONNECT_FLAG | \
 				OBD_CONNECT_CKSUM | OBD_CONNECT_VBR | \
@@ -952,6 +960,7 @@ struct ptlrpc_body_v2 {
 				OBD_CONNECT_FULL20 | OBD_CONNECT_IMP_RECOV | \
 				OBD_CONNECT_PINGLESS |\
 				OBD_CONNECT_BULK_MBITS | OBD_CONNECT_BARRIER | \
+				OBD_CONNECT_MGS_NIDLIST | \
 				OBD_CONNECT_FLAGS2)
 
 #define MGS_CONNECT_SUPPORTED2	OBD_CONNECT2_REP_MBITS | \
@@ -961,6 +970,43 @@ struct ptlrpc_body_v2 {
 #define CLIENT_CONNECT_MDT_REQD (OBD_CONNECT_FID |	\
 				 OBD_CONNECT_ATTRFID |	\
 				 OBD_CONNECT_FULL20)
+
+/* INODE LOCK PARTS */
+enum mds_ibits_locks {
+	MDS_INODELOCK_NONE	= 0x000000000, /* no lock bits are used */
+	MDS_INODELOCK_LOOKUP	= 0x000000001, /* For namespace, dentry etc Was
+						* used to protect permission
+						* (mode, owner, group, etc)
+						* before 2.4.
+						*/
+	MDS_INODELOCK_UPDATE	= 0x000000002, /* size, links, timestamps */
+	MDS_INODELOCK_OPEN	= 0x000000004, /* For opened files */
+	MDS_INODELOCK_LAYOUT	= 0x000000008, /* for layout */
+
+	/* The PERM bit is added in 2.4, and is used to protect permission
+	 * (mode, owner, group, ACL, etc.) separate from LOOKUP lock.
+	 * For remote directories (in DNE) these locks will be granted by
+	 * different MDTs (different LDLM namespace).
+	 *
+	 * For local directory, the MDT always grants UPDATE|PERM together.
+	 * For remote directory, master MDT (where remote directory is) grants
+	 * UPDATE|PERM, and remote MDT (where name entry is) grants LOOKUP_LOCK.
+	 */
+	MDS_INODELOCK_PERM	= 0x000000010,
+	MDS_INODELOCK_XATTR	= 0x000000020, /* non-permission extended attrs */
+	MDS_INODELOCK_DOM	= 0x000000040, /* Data for Data-on-MDT files */
+	/* Do not forget to increase MDS_INODELOCK_NUMBITS when adding bits */
+
+	/* Reserve to make 64bit, not used anywhere, therefore
+	 * MDS_INODELOCK_NUMBITS is not increased for this member
+	 */
+	MDS_INODELOCK_64BIT	= 0x100000000,
+};
+#define MDS_INODELOCK_NUMBITS 7
+/* This FULL lock is useful to take on unlink sort of operations */
+#define MDS_INODELOCK_FULL ((1 << MDS_INODELOCK_NUMBITS) - 1)
+/* DOM lock shouldn't be canceled early, use this macro for ELC */
+#define MDS_INODELOCK_ELC (MDS_INODELOCK_FULL & ~MDS_INODELOCK_DOM)
 
 /* This structure is used for both request and reply.
  *
@@ -973,7 +1019,7 @@ struct obd_connect_data {
 	__u32 ocd_grant;	 /* initial cache grant amount (bytes) */
 	__u32 ocd_index;	 /* LOV index to connect to */
 	__u32 ocd_brw_size;	 /* Maximum BRW size in bytes */
-	__u64 ocd_ibits_known;	 /* inode bits this client understands */
+	enum mds_ibits_locks ocd_ibits_known; /* inode bits this client understands */
 	__u8  ocd_grant_blkbits; /* log2 of the backend filesystem blocksize */
 	__u8  ocd_grant_inobits; /* log2 of the per-inode space consumption */
 	__u16 ocd_grant_tax_kb;	 /* extent insertion overhead, in 1K blocks */
@@ -1191,20 +1237,22 @@ enum obdo_flags {
 #define lov_ost_data lov_ost_data_v1
 struct lov_ost_data_v1 {          /* per-stripe data structure (little-endian)*/
 	struct ost_id l_ost_oi;	  /* OST object ID */
-	__u32 l_ost_gen;          /* generation of this l_ost_idx */
+	union {
+		__u32 l_ost_type; /* type of data stored in OST object */
+		__u32 l_ost_gen;  /* generation of this l_ost_idx */
+	};
 	__u32 l_ost_idx;          /* OST index in LOV (lov_tgt_desc->tgts) */
 };
 
 #define lov_mds_md lov_mds_md_v1
 struct lov_mds_md_v1 {            /* LOV EA mds/wire data (little-endian) */
-	__u32 lmm_magic;          /* magic number = LOV_MAGIC_V1 */
-	__u32 lmm_pattern;        /* LOV_PATTERN_RAID0, LOV_PATTERN_RAID1 */
-	struct ost_id	lmm_oi;	  /* LOV object ID */
-	__u32 lmm_stripe_size;    /* size of stripe in bytes */
-	/* lmm_stripe_count used to be __u32 */
-	__u16 lmm_stripe_count;   /* num stripes in use for this object */
-	__u16 lmm_layout_gen;     /* layout generation number */
-	struct lov_ost_data_v1 lmm_objects[]; /* per-stripe data */
+	__u32			lmm_magic;        /* LOV_MAGIC_V1 */
+	enum lov_pattern	lmm_pattern;      /* LOV_PATTERN_RAID0, ... */
+	struct ost_id		lmm_oi;	          /* LOV object ID */
+	__u32			lmm_stripe_size;  /* size of stripe in bytes */
+	__u16			lmm_stripe_count; /* OST stripes in layout */
+	__u16			lmm_layout_gen;   /* layout generation number */
+	struct lov_ost_data_v1  lmm_objects[];    /* per-stripe data */
 };
 
 #define MAX_MD_SIZE_OLD (sizeof(struct lov_mds_md) +			\
@@ -1242,6 +1290,7 @@ struct lov_mds_md_v1 {            /* LOV EA mds/wire data (little-endian) */
 #define XATTR_NAME_DUMMY	"trusted.dummy"
 #define XATTR_NAME_PROJID	"trusted.projid"
 #define XATTR_NAME_DATAVER	"trusted.dataver"
+#define XATTR_NAME_PIN		"trusted.pin"
 
 #define LL_XATTR_NAME_ENCRYPTION_CONTEXT_OLD XATTR_SECURITY_PREFIX"c"
 #define LL_XATTR_NAME_ENCRYPTION_CONTEXT XATTR_ENCRYPTION_PREFIX"c"
@@ -1254,15 +1303,14 @@ struct lov_mds_md_v1 {            /* LOV EA mds/wire data (little-endian) */
 #define XATTR_JOB_MAX_LEN	13
 
 struct lov_mds_md_v3 {            /* LOV EA mds/wire data (little-endian) */
-	__u32 lmm_magic;          /* magic number = LOV_MAGIC_V3 */
-	__u32 lmm_pattern;        /* LOV_PATTERN_RAID0, LOV_PATTERN_RAID1 */
-	struct ost_id	lmm_oi;	  /* LOV object ID */
-	__u32 lmm_stripe_size;    /* size of stripe in bytes */
-	/* lmm_stripe_count used to be __u32 */
-	__u16 lmm_stripe_count;   /* num stripes in use for this object */
-	__u16 lmm_layout_gen;     /* layout generation number */
-	char  lmm_pool_name[LOV_MAXPOOLNAME + 1]; /* must be 32bit aligned */
-	struct lov_ost_data_v1 lmm_objects[]; /* per-stripe data */
+	__u32			lmm_magic;        /* LOV_MAGIC_V3 */
+	enum lov_pattern	lmm_pattern;      /* LOV_PATTERN_RAID0, ... */
+	struct ost_id		lmm_oi;	          /* LOV object ID */
+	__u32			lmm_stripe_size;  /* size of stripe in bytes */
+	__u16			lmm_stripe_count; /* OST stripes in layout */
+	__u16			lmm_layout_gen;   /* layout generation number */
+	char                    lmm_pool_name[LOV_MAXPOOLNAME + 1];
+	struct lov_ost_data_v1  lmm_objects[];    /* per-stripe data */
 };
 
 static inline __u32 lov_mds_md_size(__u16 stripes, __u32 lmm_magic)
@@ -1551,6 +1599,7 @@ struct obd_quotactl {
 	struct obd_dqblk	qc_dqblk;
 	char			qc_poolname[];
 };
+#define qc_lqaname qc_poolname
 
 #define qc_iter_md_offset	qc_dqblk.dqb_bhardlimit
 #define qc_iter_dt_offset	qc_dqblk.dqb_ihardlimit
@@ -1579,9 +1628,11 @@ do {									\
 #define QCTL_COPY(out, in)						\
 do {									\
 	QCTL_COPY_NO_PNAME(out, in);					\
-	if (LUSTRE_Q_CMD_IS_POOL(in->qc_cmd)) {				\
+	if (LUSTRE_Q_CMD_IS_POOL(in->qc_cmd) ||				\
+	    LUSTRE_Q_CMD_IS_LQA(in->qc_cmd)) {				\
 		size_t len = strnlen(in->qc_poolname, LOV_MAXPOOLNAME);	\
 									\
+		BUILD_BUG_ON(LQA_NAME_MAX != LOV_MAXPOOLNAME);		\
 		memcpy(out->qc_poolname, in->qc_poolname, len);		\
 		out->qc_poolname[len] = '\0';				\
 	}								\
@@ -1603,7 +1654,8 @@ struct quota_body {
 	__u64		qb_slv_ver; /* slave index file version */
 	struct lustre_handle	qb_lockh;     /* per-ID lock handle */
 	struct lustre_handle	qb_glb_lockh; /* global lock handle */
-	__u64		qb_padding1[4];
+	__u64		qb_glb_ver; /* global index file version */
+	__u64		qb_padding1[3];
 };
 
 /* When the quota_body is used in the reply of quota global intent
@@ -1797,36 +1849,6 @@ enum mds_reint_op {
 #define DISP_OPEN_STRIPE     0x08000000
 #define DISP_OPEN_DENY	     0x10000000
 
-/* INODE LOCK PARTS */
-enum mds_ibits_locks {
-	MDS_INODELOCK_LOOKUP	= 0x000001, /* For namespace, dentry etc.  Was
-					     * used to protect permission (mode,
-					     * owner, group, etc) before 2.4.
-					     */
-	MDS_INODELOCK_UPDATE	= 0x000002, /* size, links, timestamps */
-	MDS_INODELOCK_OPEN	= 0x000004, /* For opened files */
-	MDS_INODELOCK_LAYOUT	= 0x000008, /* for layout */
-
-	/* The PERM bit is added in 2.4, and is used to protect permission
-	 * (mode, owner, group, ACL, etc.) separate from LOOKUP lock.
-	 * For remote directories (in DNE) these locks will be granted by
-	 * different MDTs (different LDLM namespace).
-	 *
-	 * For local directory, the MDT always grants UPDATE|PERM together.
-	 * For remote directory, master MDT (where remote directory is) grants
-	 * UPDATE|PERM, and remote MDT (where name entry is) grants LOOKUP_LOCK.
-	 */
-	MDS_INODELOCK_PERM	= 0x000010,
-	MDS_INODELOCK_XATTR	= 0x000020, /* non-permission extended attrs */
-	MDS_INODELOCK_DOM	= 0x000040, /* Data for Data-on-MDT files */
-	/* Do not forget to increase MDS_INODELOCK_NUMBITS when adding bits */
-};
-#define MDS_INODELOCK_NUMBITS 7
-/* This FULL lock is useful to take on unlink sort of operations */
-#define MDS_INODELOCK_FULL ((1 << MDS_INODELOCK_NUMBITS) - 1)
-/* DOM lock shouldn't be canceled early, use this macro for ELC */
-#define MDS_INODELOCK_ELC (MDS_INODELOCK_FULL & ~MDS_INODELOCK_DOM)
-
 /* NOTE: until Lustre 1.8.7/2.1.1 the fid_ver() was packed into name[2],
  * but was moved into name[1] along with the OID to avoid consuming the
  * name[2,3] fields that need to be used for the quota id (also a FID).
@@ -1847,16 +1869,24 @@ enum {
 	/* these should be identical to their EXT4_*_FL counterparts, they are
 	 * redefined here only to avoid dragging in fs/ext4/ext4.h
 	 */
+	LUSTRE_UNRM_FL		= 0x00000002, /* Undelete */
+	LUSTRE_COMPR_FL		= 0x00000004, /* Compress file */
 	LUSTRE_SYNC_FL		= 0x00000008, /* Synchronous updates */
 	LUSTRE_IMMUTABLE_FL	= 0x00000010, /* Immutable file */
 	LUSTRE_APPEND_FL	= 0x00000020, /* file writes may only append */
 	LUSTRE_NODUMP_FL	= 0x00000040, /* do not dump file */
 	LUSTRE_NOATIME_FL	= 0x00000080, /* do not update atime */
+	LUSTRE_NOCOMPR_FL	= 0x00000400, /* Don't compress */
+	COMPAT_ENCRYPT_FL	= 0x00000800, /* filter out FS_ENCRYPT_FL */
 	LUSTRE_INDEX_FL		= 0x00001000, /* hash-indexed directory */
+	LUSTRE_EXTENTS_FL	= 0x00080000, /* Inode uses extents */
+	LUSTRE_JOURNAL_DATA_FL	= 0x00004000, /* file should be journaled */
 	LUSTRE_DIRSYNC_FL	= 0x00010000, /* dirsync behaviour (dir only) */
 	LUSTRE_TOPDIR_FL	= 0x00020000, /* Top of directory hierarchies*/
+	LUSTRE_VERITY_FL	= 0x00100000, /* Verity protected inode */
 	LUSTRE_INLINE_DATA_FL	= 0x10000000, /* Inode has inline data. */
 	LUSTRE_PROJINHERIT_FL	= 0x20000000, /* Create with parents projid */
+	LUSTRE_CASEFOLD_FL	= 0x40000000, /* Casefolded directory */
 
 	/* These flags will not be identical to any EXT4_*_FL counterparts,
 	 * and only reserved for lustre purpose. Note: these flags might
@@ -1872,6 +1902,30 @@ enum {
 
 	LUSTRE_LMA_FL_MASKS	= LUSTRE_ENCRYPT_FL | LUSTRE_ORPHAN_FL,
 };
+
+#define LUSTRE_FL_USER_MODIFIABLE (LUSTRE_SYNC_FL	| \
+				   LUSTRE_IMMUTABLE_FL	| \
+				   LUSTRE_APPEND_FL	| \
+				   LUSTRE_NODUMP_FL	| \
+				   LUSTRE_NOATIME_FL	| \
+				   LUSTRE_NOCOMPR_FL	| \
+				   LUSTRE_NOATIME_FL	| \
+				   LUSTRE_DIRSYNC_FL	| \
+				   LUSTRE_TOPDIR_FL	| \
+				   LUSTRE_PROJINHERIT_FL)
+
+#define LUSTRE_FL_USER_VISIBLE (LUSTRE_FL_USER_MODIFIABLE | \
+				LUSTRE_UNRM_FL		  | \
+				COMPAT_ENCRYPT_FL	  | \
+				LUSTRE_COMPR_FL		  | \
+				LUSTRE_NOCOMPR_FL	  | \
+				LUSTRE_ENCRYPT_FL	  | \
+				LUSTRE_INDEX_FL		  | \
+				LUSTRE_JOURNAL_DATA_FL    | \
+				LUSTRE_EXTENTS_FL	  | \
+				LUSTRE_VERITY_FL	  | \
+				LUSTRE_INLINE_DATA_FL	  | \
+				LUSTRE_CASEFOLD_FL)
 
 #ifndef FS_XFLAG_SYNC
 #define FS_XFLAG_SYNC		0x00000020	/* all writes synchronous */
@@ -2046,6 +2100,9 @@ enum mds_op_bias {
 	/* Compat flag with clients that do not send old and new data version
 	 * after swap layout */
 	MDS_CLOSE_LAYOUT_SWAP_HSM	= 1 << 25,
+	/* rename must retry again with target ACLs */
+	MDS_RENAME_AGAIN	= 1 << 26,
+	MDS_NAMEHASH		= 1 << 27,
 };
 
 #define MDS_CLOSE_INTENT (MDS_HSM_RELEASE | MDS_CLOSE_LAYOUT_SWAP |         \
@@ -2471,7 +2528,7 @@ struct lov_desc {
 	__u32 ld_tgt_count;		/* how many OBD's */
 	__u32 ld_active_tgt_count;	/* how many active */
 	__s32 ld_default_stripe_count;	/* how many objects are used */
-	__u32 ld_pattern;		/* default PATTERN_RAID0 */
+	enum lov_pattern ld_pattern;	/* default LOV_PATTERN_RAID0 */
 	__u64 ld_default_stripe_size;	/* in bytes */
 	__s64 ld_default_stripe_offset;	/* starting OST index */
 	__u32 ld_padding_0;		/* unused */
@@ -2512,7 +2569,7 @@ struct ldlm_res_id {
 
 /* lock types */
 enum ldlm_mode {
-	LCK_MINMODE	= 0,
+	LCK_MODE_MIN	= 0,
 	LCK_EX		= 1,
 	LCK_PW		= 2,
 	LCK_PR		= 4,
@@ -2522,9 +2579,11 @@ enum ldlm_mode {
 	LCK_GROUP	= 64,
 	LCK_COS		= 128,
 	LCK_TXN		= 256,
-	LCK_MAXMODE
+	LCK_MODE_END
 };
 
+#define LCK_MINMODE	LCK_MODE_MIN /* deprecated since 2.16.0 */
+#define LCK_MAXMODE	LCK_MODE_MAX /* deprecated since 2.16.0 */
 #define LCK_MODE_NUM    9
 
 enum ldlm_type {
@@ -2532,10 +2591,12 @@ enum ldlm_type {
 	LDLM_EXTENT	= 11,
 	LDLM_FLOCK	= 12,
 	LDLM_IBITS	= 13,
-	LDLM_MAX_TYPE
+	LDLM_TYPE_END,
+	LDLM_TYPE_MIN   = LDLM_PLAIN
 };
 
-#define LDLM_MIN_TYPE LDLM_PLAIN
+#define LDLM_TYPE_MAX	LDLM_TYPE_END /* deprecated since 2.16.0 */
+
 
 struct ldlm_extent {
 	__u64 start;
@@ -2550,10 +2611,10 @@ static inline bool ldlm_extent_equal(const struct ldlm_extent *ex1,
 }
 
 struct ldlm_inodebits {
-	__u64 bits;
+	enum mds_ibits_locks bits;
 	union {
-		__u64 try_bits; /* optional bits to try */
-		__u64 cancel_bits; /* for lock convert */
+		enum mds_ibits_locks try_bits; /* optional bits to try */
+		enum mds_ibits_locks cancel_bits; /* for lock convert */
 	};
 	__u64 li_gid;
 	__u32 li_padding;
@@ -2699,6 +2760,22 @@ struct mgs_target_info {
 	__u64		mti_nids[MTI_NIDS_MAX]; /* host nids (lnet_nid_t) */
 	char		mti_params[MTI_PARAM_MAXLEN];
 	char		mti_nidlist[][LNET_NIDSTR_SIZE];
+} __attribute__((packed));
+
+enum mgs_nidlist_flags {
+	NIDLIST_APPEND		= 0x00000001, /* append NIDs to nidtable */
+	NIDLIST_IN_BULK		= 0x00000002, /* nidlist in bulk */
+	NIDLIST_COMPRESSED	= 0x00000004, /* nidlist is compressed */
+};
+
+#define MTN_NIDSTR_SIZE LNET_NIDSTR_SIZE
+#define NIDLIST_SIZE(count) (MTN_NIDSTR_SIZE * count)
+#define NETDEL_TOKEN '#'
+
+struct mgs_target_nidlist {
+	__u32	mtn_flags; /* flags from mgs_nids_info_flags */
+	__u32	mtn_nids;  /* amount of nids in list */
+	char	mtn_inline_list[][MTN_NIDSTR_SIZE];
 } __attribute__((packed));
 
 struct mgs_nidtbl_entry {
@@ -2869,6 +2946,12 @@ struct llog_rec_tail {
 	__u32	lrt_index;
 } __attribute__((packed));
 
+static inline struct llog_rec_tail *llog_get_rec_tail(struct llog_rec_hdr *rec)
+{
+	return (struct llog_rec_tail *)((char *)rec + rec->lrh_len -
+					sizeof(struct llog_rec_tail));
+}
+
 /* Where data follow just after header */
 #define REC_DATA(ptr)						\
 	((void *)((char *)ptr + sizeof(struct llog_rec_hdr)))
@@ -2876,6 +2959,10 @@ struct llog_rec_tail {
 #define REC_DATA_LEN(rec)					\
 	(rec->lrh_len - sizeof(struct llog_rec_hdr) -		\
 	 sizeof(struct llog_rec_tail))
+
+#define REC_TAIL(rec)						\
+	((struct llog_rec_tail *)((char *)rec + rec->lrh_len -	\
+			sizeof(struct llog_rec_tail)))
 
 struct llog_logid_rec {
 	struct llog_rec_hdr	lid_hdr;
@@ -3070,6 +3157,7 @@ enum llog_flag {
 	LLOG_F_RM_ON_ERR	= 0x400,
 	LLOG_F_MAX_AGE		= 0x800,
 	LLOG_F_EXT_X_NID_BE	= 0x1000,
+	LLOG_F_UNLCK_SEM	= 0x2000,
 
 	/* Note: Flags covered by LLOG_F_EXT_MASK will be inherited from
 	 * catlog to plain log, so do not add LLOG_F_IS_FIXSIZE here,
@@ -3079,7 +3167,7 @@ enum llog_flag {
 	LLOG_F_EXT_MASK = LLOG_F_EXT_JOBID | LLOG_F_EXT_EXTRA_FLAGS |
 			  LLOG_F_EXT_X_UIDGID | LLOG_F_EXT_X_NID |
 			  LLOG_F_EXT_X_OMODE | LLOG_F_EXT_X_XATTR |
-			  LLOG_F_EXT_X_NID_BE,
+			  LLOG_F_EXT_X_NID_BE | LLOG_F_UNLCK_SEM,
 };
 
 /* On-disk header structure of each log object, stored in little endian order */
@@ -3691,10 +3779,15 @@ enum batch_update_cmd {
 
 /** layout swap request structure
  * fid1 and fid2 are in mdt_body
+ *
+ * /!\ msl_dv1 and msl_dv2 are valid only if msl_flags contains
+ *     SWAP_LAYOUTS_WITH_DV12
  */
 struct mdc_swap_layouts {
 	__u64           msl_flags;
-} __attribute__((packed));
+	__u64		msl_dv1; /* data version of file 1 */
+	__u64		msl_dv2; /* data version of file 2 */
+};
 
 #define INLINE_RESYNC_ARRAY_SIZE	15
 struct close_data_resync_done {
@@ -3794,14 +3887,14 @@ struct llog_update_record {
  * of search easily
  */
 enum nodemap_id_type {
-	NODEMAP_UID,
-	NODEMAP_GID,
-	NODEMAP_PROJID,
+	NODEMAP_UID		= 0,
+	NODEMAP_GID		= 1,
+	NODEMAP_PROJID		= 2,
 };
 
 enum nodemap_tree_type {
-	NODEMAP_FS_TO_CLIENT,
-	NODEMAP_CLIENT_TO_FS,
+	NODEMAP_FS_TO_CLIENT	= 0,
+	NODEMAP_CLIENT_TO_FS	= 1,
 };
 
 enum nodemap_mapping_modes {
@@ -3823,15 +3916,52 @@ enum nodemap_rbac_roles {
 	NODEMAP_RBAC_CHLG_OPS		= 0x00000010,
 	NODEMAP_RBAC_FSCRYPT_ADMIN	= 0x00000020,
 	NODEMAP_RBAC_SERVER_UPCALL	= 0x00000040,
+	NODEMAP_RBAC_IGN_ROOT_PRJQUOTA	= 0x00000080,
+	NODEMAP_RBAC_HSM_OPS		= 0x00000100,
+	NODEMAP_RBAC_LOCAL_ADMIN	= 0x00000200,
+	NODEMAP_RBAC_POOL_QUOTA_OPS	= 0x00000400,
 	NODEMAP_RBAC_NONE	= (__u32)~(NODEMAP_RBAC_FILE_PERMS	|
 					   NODEMAP_RBAC_DNE_OPS	|
 					   NODEMAP_RBAC_QUOTA_OPS	|
 					   NODEMAP_RBAC_BYFID_OPS	|
 					   NODEMAP_RBAC_CHLG_OPS	|
 					   NODEMAP_RBAC_FSCRYPT_ADMIN	|
-					   NODEMAP_RBAC_SERVER_UPCALL),
+					   NODEMAP_RBAC_SERVER_UPCALL	|
+					   NODEMAP_RBAC_IGN_ROOT_PRJQUOTA |
+					   NODEMAP_RBAC_HSM_OPS		|
+					   NODEMAP_RBAC_LOCAL_ADMIN	|
+					   NODEMAP_RBAC_POOL_QUOTA_OPS),
 	NODEMAP_RBAC_ALL	= 0xFFFFFFFF, /* future caps ON by default */
 };
+
+enum nodemap_raise_privs {
+	NODEMAP_RAISE_PRIV_RAISE	= 0x00000001,
+	NODEMAP_RAISE_PRIV_ADMIN	= 0x00000002,
+	NODEMAP_RAISE_PRIV_TRUSTED	= 0x00000004,
+	NODEMAP_RAISE_PRIV_DENY_UNKN	= 0x00000008,
+	NODEMAP_RAISE_PRIV_RO		= 0x00000010,
+	NODEMAP_RAISE_PRIV_RBAC		= 0x00000020,
+	NODEMAP_RAISE_PRIV_FORBID_ENC	= 0x00000040,
+	NODEMAP_RAISE_PRIV_CAPS		= 0x00000080,
+	NODEMAP_RAISE_PRIV_DENY_MNT	= 0x00000100,
+	NODEMAP_RAISE_PRIV_NONE	= (__u32)~(NODEMAP_RAISE_PRIV_RAISE	|
+					   NODEMAP_RAISE_PRIV_ADMIN	|
+					   NODEMAP_RAISE_PRIV_TRUSTED	|
+					   NODEMAP_RAISE_PRIV_DENY_UNKN	|
+					   NODEMAP_RAISE_PRIV_RO	|
+					   NODEMAP_RAISE_PRIV_RBAC	|
+					   NODEMAP_RAISE_PRIV_FORBID_ENC|
+					   NODEMAP_RAISE_PRIV_CAPS	|
+					   NODEMAP_RAISE_PRIV_DENY_MNT),
+	NODEMAP_RAISE_PRIV_ALL	= 0xFFFFFFFF, /* future privs RAISED by def */
+};
+
+enum nodemap_cap_type {
+	NODEMAP_CAP_OFF		= 0,
+	NODEMAP_CAP_MASK	= 1,
+	NODEMAP_CAP_SET		= 2,
+};
+
 
 /*
  * rawobj stuff for GSS

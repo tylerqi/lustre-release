@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -79,7 +61,7 @@ int class_add_uuid(const char *uuid, struct lnet_nid *nid)
 {
 	struct uuid_nid_data *data, *entry;
 	int found = 0;
-	int rc;
+	int rc = 0;
 
 	LASSERT(nid->nid_type != 0);  /* valid newconfig NID is never zero */
 
@@ -105,7 +87,10 @@ int class_add_uuid(const char *uuid, struct lnet_nid *nid)
 					break;
 
 			if (i == entry->un_nid_count) {
-				LASSERT(entry->un_nid_count < MTI_NIDS_MAX);
+				if (i == MTI_NIDS_MAX) {
+					rc = -EOVERFLOW;
+					break;
+				}
 				entry->un_nids[entry->un_nid_count++] = *nid;
 			}
 			break;
@@ -115,18 +100,20 @@ int class_add_uuid(const char *uuid, struct lnet_nid *nid)
 		list_add(&data->un_list, &g_uuid_list);
 	spin_unlock(&g_uuid_lock);
 
+	if (rc) {
+		CWARN("%s: can't add NID %s: rc = %d\n", uuid,
+		       libcfs_nidstr(nid), rc);
+		/* continue with already added NIDs */
+	}
+
 	if (found) {
 		CDEBUG(D_INFO, "found uuid %s %s cnt=%d\n", uuid,
 		       libcfs_nidstr(nid), entry->un_nid_count);
-		rc = LNetAddPeer(entry->un_nids, entry->un_nid_count);
-		CDEBUG(D_INFO, "Add peer %s rc = %d\n",
-		       libcfs_nidstr(&data->un_nids[0]), rc);
+		LNetAddPeer(entry->un_nids, entry->un_nid_count);
 		OBD_FREE(data, sizeof(*data));
 	} else {
 		CDEBUG(D_INFO, "add uuid %s %s\n", uuid, libcfs_nidstr(nid));
-		rc = LNetAddPeer(data->un_nids, data->un_nid_count);
-		CDEBUG(D_INFO, "Add peer %s rc = %d\n",
-		       libcfs_nidstr(&data->un_nids[0]), rc);
+		LNetAddPeer(data->un_nids, data->un_nid_count);
 	}
 
 	return 0;
@@ -174,19 +161,13 @@ int class_del_uuid(const char *uuid)
 }
 
 int class_add_nids_to_uuid(struct obd_uuid *uuid, struct lnet_nid *nidlist,
-			   int nid_count, int nid_size)
+			   int nid_count)
 {
 	struct uuid_nid_data *entry;
-	int i, rc;
+	int i;
 	bool matched = false;
 
 	ENTRY;
-
-	if (nid_count > MTI_NIDS_MAX) {
-		CDEBUG(D_NET, "too many NIDs (%d) for UUID '%s'\n",
-			nid_count, obd_uuid2str(uuid));
-		return -ENOSPC;
-	}
 
 	spin_lock(&g_uuid_lock);
 	list_for_each_entry(entry, &g_uuid_list, un_list) {
@@ -200,23 +181,21 @@ int class_add_nids_to_uuid(struct obd_uuid *uuid, struct lnet_nid *nidlist,
 		entry->un_nid_count = 0;
 		CDEBUG(D_NET, "Updating UUID '%s'\n", obd_uuid2str(uuid));
 		for (i = 0; i < nid_count; i++) {
-			if (NID_BYTES(&nidlist[i]) > nid_size)
-				continue;
-
-			memset(&entry->un_nids[entry->un_nid_count], 0,
-			       sizeof(entry->un_nids[entry->un_nid_count]));
-			memcpy(&entry->un_nids[entry->un_nid_count],
-			       &nidlist[i], nid_size);
+			entry->un_nids[entry->un_nid_count] = nidlist[i];
 			entry->un_nid_count++;
+			if (entry->un_nid_count >= MTI_NIDS_MAX) {
+				CDEBUG(D_NET,
+				      "fill only %d from %d NIDs for '%s'\n",
+				      MTI_NIDS_MAX, nid_count,
+				      obd_uuid2str(uuid));
+				break;
+			}
 		}
 		break;
 	}
 	spin_unlock(&g_uuid_lock);
-	if (matched) {
-		rc = LNetAddPeer(entry->un_nids, entry->un_nid_count);
-		CDEBUG(D_INFO, "Add peer %s rc = %d\n",
-		       libcfs_nidstr(&entry->un_nids[0]), rc);
-	}
+	if (matched)
+		LNetAddPeer(entry->un_nids, entry->un_nid_count);
 
 	RETURN(0);
 }

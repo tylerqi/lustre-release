@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 
 #
@@ -17,7 +17,7 @@
 # $5 : $arch
 # $6 : $source_tree
 # $7 : $dkms_tree
-# $8 : $kmoddir [lustre-client either 'extra|updates']
+#
 
 case $1 in
     lustre-client)
@@ -25,24 +25,11 @@ case $1 in
 	ksrc="$(dirname $4)/source"
 	KERNEL_STUFF="--with-linux=$(realpath $ksrc) --with-linux-obj=$(realpath $4)"
 	name=$1
-	kmoddir=$8
 	flavor=$(echo $3 | tr '-' '\n' | tail -1)
 	if [ -f /usr/src/kfabric/${flavor}/Module.symvers ]; then
 		KERNEL_STUFF="${KERNEL_STUFF} --with-kfi=/usr/src/kfabric/${flavor}"
 	elif [ -f /usr/src/kfabric/default/Module.symvers ]; then
 		KERNEL_STUFF="${KERNEL_STUFF} --with-kfi=/usr/src/kfabric/default"
-	fi
-	O2IBPATH=""
-	if [ -d /usr/src/ofa_kernel/${flavor} ]; then
-		O2IBPATH=/usr/src/ofa_kernel/${flavor}
-	elif [ -d /usr/src/ofa_kernel/default ]; then
-		O2IBPATH=/usr/src/ofa_kernel/default
-	fi
-	if [ -n ${O2IBPATH} ]; then
-		KERNEL_STUFF="${KERNEL_STUFF} --with-o2ib=${O2IBPATH}"
-	fi
-	if [ -n ${kmoddir} ]; then
-		KERNEL_STUFF="${KERNEL_STUFF} --with-kmp-moddir=${kmoddir}/${name}"
 	fi
 	sh ./autogen.sh
 	;;
@@ -80,8 +67,10 @@ case $1 in
 	;;
 esac
 
-PACKAGE_CONFIG="/etc/sysconfig/lustre"
+PACKAGE_CONFIG="/etc/sysconfig/dkms-lustre"
+PACKAGE_CONFIG_FALLBACK="/etc/sysconfig/lustre"
 DKMS_CONFIG_OPTS=$(
+    [[ -r ${PACKAGE_CONFIG} ]] || PACKAGE_CONFIG=${PACKAGE_CONFIG_FALLBACK}
     [[ -r ${PACKAGE_CONFIG} ]] \
     && source ${PACKAGE_CONFIG} \
     && shopt -q -s extglob \

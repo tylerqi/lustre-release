@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 1999, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -44,10 +26,10 @@
 #include <lustre_kernelcomm.h>
 #include <lprocfs_status.h>
 #include <cl_object.h>
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 # include <dt_object.h>
 # include <md_object.h>
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 #include <uapi/linux/lustre/lustre_ioctl.h>
 #include "llog_internal.h"
 #include <lustre_ioctl_old.h>
@@ -76,8 +58,6 @@ EXPORT_SYMBOL(ldlm_timeout);
 unsigned int ping_interval = (OBD_TIMEOUT_DEFAULT > 4) ?
 			     (OBD_TIMEOUT_DEFAULT / 4) : 1;
 EXPORT_SYMBOL(ping_interval);
-unsigned int ping_evict_timeout_multiplier = 6;
-EXPORT_SYMBOL(ping_evict_timeout_multiplier);
 unsigned int obd_timeout_set;
 EXPORT_SYMBOL(obd_timeout_set);
 unsigned int ldlm_timeout_set;
@@ -301,17 +281,17 @@ int obd_ioctl_getdata(struct obd_ioctl_data **datap, int *len, void __user *arg)
 
 	if (data->ioc_inllen1) {
 		data->ioc_inlbuf1 = &data->ioc_bulk[0];
-		offset += round_up(data->ioc_inllen1, 8);
+		offset += ALIGN(data->ioc_inllen1, 8);
 	}
 
 	if (data->ioc_inllen2) {
 		data->ioc_inlbuf2 = &data->ioc_bulk[0] + offset;
-		offset += round_up(data->ioc_inllen2, 8);
+		offset += ALIGN(data->ioc_inllen2, 8);
 	}
 
 	if (data->ioc_inllen3) {
 		data->ioc_inlbuf3 = &data->ioc_bulk[0] + offset;
-		offset += round_up(data->ioc_inllen3, 8);
+		offset += ALIGN(data->ioc_inllen3, 8);
 	}
 
 	if (data->ioc_inllen4)
@@ -337,7 +317,7 @@ int class_handle_ioctl(unsigned int cmd, void __user *uarg)
 	CDEBUG(D_IOCTL, "obdclass: cmd=%x len=%u uarg=%pK\n", cmd, len, uarg);
 	if (unlikely(_IOC_TYPE(cmd) != 'f' && !OBD_IOC_BARRIER_ALLOW(cmd) &&
 		     !IOC_OSC_SET_ACTIVE_ALLOW(cmd)))
-		RETURN(OBD_IOC_ERROR(obd->obd_name, cmd, "unknown", -ENOTTY));
+		RETURN(OBD_IOC_ERROR("obdclass", cmd, "unknown", -ENOTTY));
 
 	rc = obd_ioctl_getdata(&data, &len, uarg);
 	if (rc) {
@@ -357,12 +337,14 @@ int class_handle_ioctl(unsigned int cmd, void __user *uarg)
 		OBD_ALLOC(lcfg, data->ioc_plen1);
 		if (lcfg == NULL)
 			GOTO(out, rc = -ENOMEM);
-		rc = copy_from_user(lcfg, data->ioc_pbuf1, data->ioc_plen1);
-		if (!rc)
-			rc = lustre_cfg_sanity_check(lcfg, data->ioc_plen1);
-		if (!rc)
-			rc = class_process_config(lcfg);
+		if (copy_from_user(lcfg, data->ioc_pbuf1, data->ioc_plen1))
+			GOTO(out_lcfg, rc = -EFAULT);
+		rc = lustre_cfg_sanity_check(lcfg, data->ioc_plen1);
+		if (rc)
+			GOTO(out_lcfg, rc);
+		rc = class_process_config(lcfg, NULL);
 
+out_lcfg:
 		OBD_FREE(lcfg, data->ioc_plen1);
 		GOTO(out, rc);
 	}
@@ -548,12 +530,17 @@ static struct miscdevice obd_psdev = {
 	.fops	= &obd_psdev_fops,
 };
 
-#define test_string_to_size_err(value, expect, def_unit, __rc)		       \
+#define test_string_to_size_err_total(value, expect, total, def_unit, __rc)    \
 ({									       \
 	u64 __size;							       \
 	int __ret;							       \
 									       \
-	__ret = sysfs_memparse(value, sizeof(value) - 1, &__size, def_unit);   \
+	if (total == 0)							       \
+		__ret = sysfs_memparse(value, sizeof(value) - 1, &__size,      \
+				       def_unit);			       \
+	else								       \
+		__ret = sysfs_memparse_total(value, sizeof(value) - 1,         \
+					     &__size, total, def_unit);	       \
 	if (__ret != __rc) {						       \
 		CERROR("string_helper: parsing '%s' expect rc %d != got %d\n", \
 		       value, __rc, __ret);				       \
@@ -567,8 +554,15 @@ static struct miscdevice obd_psdev = {
 	}								       \
 	__ret;								       \
 })
-#define test_string_to_size_one(value, expect, def_unit)		       \
-	test_string_to_size_err(value, expect, def_unit, 0)
+#define test_string_to_size_total(value, expect, total, def_unit) \
+	test_string_to_size_err_total(value, expect, total, def_unit, 0)
+
+#define test_string_to_size_err(value, expect, def_unit, __rc) \
+	test_string_to_size_err_total(value, expect, 0, def_unit, __rc)
+
+#define test_string_to_size_one(value, expect, def_unit) \
+	test_string_to_size_err_total(value, expect, 0, def_unit, 0)
+
 
 static int __init obd_init_checks(void)
 {
@@ -703,6 +697,49 @@ static int __init obd_init_checks(void)
 	if (ret)
 		RETURN(ret);
 
+	/* percent_memparse unit handling */
+	ret = 0;
+	ret = ret ?: test_string_to_size_total("0B", 0, 1, "B");
+	ret = ret ?: test_string_to_size_total("512B", 512, 512, "B");
+	ret = ret ?: test_string_to_size_total("1.067kB", 1067, 1 << 20, "B");
+	ret = ret ?: test_string_to_size_total("1.042KiB", 1067, 1 << 20, "B");
+	ret = ret ?: test_string_to_size_total("8", 8388608, 8 << 20, "M");
+	ret = ret ?: test_string_to_size_total("65536", 65536, 1 << 20, "B");
+	ret = ret ?: test_string_to_size_total("128", 131072, 128 << 10, "K");
+	ret = ret ?: test_string_to_size_total("1M", 1048576, 1 << 20, "B");
+	ret = ret ?: test_string_to_size_total("0.5T", 549755813888ULL,
+					 1ULL << 40, "K");
+	ret = ret ?: test_string_to_size_total("256.5G", 275414777856ULL,
+					 1ULL << 40, "G");
+
+	ret = ret ?: test_string_to_size_total("50%", 50, 100, "G");
+	ret = ret ?: test_string_to_size_total("31%", 31, 100, "G");
+	ret = ret ?: test_string_to_size_total("32.2 ", 322, 1000, "%");
+	ret = ret ?: test_string_to_size_total("32.21 ", 3221, 10000, "%");
+	ret = ret ?: test_string_to_size_total("50.5%", 505, 1000, "G");
+	ret = ret ?: test_string_to_size_total("0.5%", 5, 1000, "G");
+	ret = ret ?: test_string_to_size_total(".5%", 5, 1000, "G");
+	ret = ret ?: test_string_to_size_total("0%", 0, 1000, "G");
+	ret = ret ?: test_string_to_size_total("100%", 1000, 1000, "G");
+	ret = ret ?: test_string_to_size_total("50.012345678%", 50012,
+					       100000, "G");
+	ret = ret ?: test_string_to_size_total("50.012345678%", 500123,
+					       1000000, "G");
+	ret = ret ?: test_string_to_size_total("50.012345678%", 5001234,
+					       10000000, "G");
+
+	if (ret)
+		RETURN(ret);
+
+	if (test_string_to_size_err_total("200%", 2000, 1000, "B", -ERANGE)) {
+		CERROR("string_helpers: percent values > 100 should be rejected\n");
+		ret = -EINVAL;
+	}
+	if (test_string_to_size_err_total("2K", 2048, 1024, "K", -ERANGE)) {
+		CERROR("string_helpers: size values > total should be rejected\n");
+		ret = -EINVAL;
+	}
+
 	/* string helper values */
 	ret = ret ?: test_string_to_size_one("16", 16777216, "MiB");
 	ret = ret ?: test_string_to_size_one("8.39MB", 8390000, "MiB");
@@ -721,6 +758,9 @@ static int __init obd_init_checks(void)
 	ret = ret ?: test_string_to_size_one("16PiB", 18014398509481984ULL,
 					     "PiB");
 	ret = ret ?: test_string_to_size_one("0.5EiB", 1ULL << 59, "EiB");
+	ret = ret ?: test_string_to_size_total("50%", 1ULL << 62, 1ULL << 63,
+					       "%");
+	ret = ret ?: test_string_to_size_total("50%", (~0ULL) >> 1, ~0ULL, "%");
 	if (ret)
 		RETURN(ret);
 
@@ -781,10 +821,10 @@ static int __init obdclass_init(void)
 	/* Default the dirty page cache cap to 1/2 of system memory.
 	 * For clients with less memory, a larger fraction is needed
 	 * for other purposes (mostly for BGL). */
-	if (cfs_totalram_pages() <= 512 << (20 - PAGE_SHIFT))
-		obd_max_dirty_pages = cfs_totalram_pages() / 4;
+	if (compat_totalram_pages() <= 512 << (20 - PAGE_SHIFT))
+		obd_max_dirty_pages = compat_totalram_pages() / 4;
 	else
-		obd_max_dirty_pages = cfs_totalram_pages() / 2;
+		obd_max_dirty_pages = compat_totalram_pages() / 2;
 
 	err = obd_init_caches();
 	if (err)
@@ -810,15 +850,18 @@ static int __init obdclass_init(void)
 	if (err)
 		goto cleanup_llog_info;
 
-#ifdef HAVE_SERVER_SUPPORT
+	err = cfs_hash_init();
+	if (err)
+		goto cleanup_obd_pool;
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	err = dt_global_init();
 	if (err != 0)
-		goto cleanup_obd_pool;
+		goto cleanup_cfs_hash;
 
 	err = lu_ucred_global_init();
 	if (err != 0)
 		goto cleanup_dt_global;
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 	/* simulate a late OOM situation now to require all
 	 * alloc'ed/initialized resources to be freed
@@ -831,14 +874,16 @@ static int __init obdclass_init(void)
 	return 0;
 
 cleanup_all:
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	lu_ucred_global_fini();
 
 cleanup_dt_global:
 	dt_global_fini();
 
+cleanup_cfs_hash:
+#endif /* CONFIG_LUSTRE_FS_SERVER */
+	cfs_hash_fini();
 cleanup_obd_pool:
-#endif /* HAVE_SERVER_SUPPORT */
 	obd_pool_fini();
 
 cleanup_llog_info:
@@ -908,10 +953,11 @@ static void __exit obdclass_exit(void)
 	ENTRY;
 
 	misc_deregister(&obd_psdev);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	lu_ucred_global_fini();
 	dt_global_fini();
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
+	cfs_hash_fini();
 	obd_pool_fini();
 	llog_info_fini();
 	cl_global_fini();
@@ -1029,5 +1075,5 @@ MODULE_DESCRIPTION("Lustre Class Driver");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(obdclass_init);
+late_initcall_sync(obdclass_init);
 module_exit(obdclass_exit);

@@ -4,37 +4,34 @@
 # Set things accordingly for a linux kernel
 #
 AC_DEFUN([LB_LINUX_VERSION], [
-KMODEXT=".ko"
-AC_SUBST(KMODEXT)
-
 makerule="$PWD/build"
 AC_CACHE_CHECK([for external module build target], lb_cv_module_target,
 [
 	lb_cv_module_target=""
-	rm -f build/conftest.i
+	rm -f kconftest.dir/conftest.i
 	MODULE_TARGET="M"
-	makerule="$PWD/build"
+	makerule="$PWD/kconftest.dir"
 	LB_LINUX_TRY_MAKE([], [],
 		[$makerule LUSTRE_KERNEL_TEST=conftest.i],
-		[test -s build/conftest.i],
+		[test -s kconftest.dir/conftest.i],
 		[lb_cv_module_target="M54"], [
 	MODULE_TARGET="M"
-	makerule="_module_$PWD/build"
+	makerule="_module_$PWDkconftest.dir"
 	LB_LINUX_TRY_MAKE([], [],
 		[$makerule LUSTRE_KERNEL_TEST=conftest.i],
-		[test -s build/conftest.i],
+		[test -skconftest.dir/conftest.i],
 		[lb_cv_module_target="M"], [
 	MODULE_TARGET="M"
 	makerule=""
 	LB_LINUX_TRY_MAKE([], [],
 		[$makerule LUSTRE_KERNEL_TEST=conftest.i],
-		[test -s build/conftest.i],
+		[test -s kconftest.dir/conftest.i],
 		[lb_cv_module_target="M58"], [
 	makerule=""
 	lb_cv_dequote_CC_VERSION_TEXT=yes
 	LB_LINUX_TRY_MAKE([], [],
 		[$makerule LUSTRE_KERNEL_TEST=conftest.i],
-		[test -s build/conftest.i],
+		[test -s kconftest.dir/conftest.i],
 		[lb_cv_module_target="M517"], [
 			AC_MSG_ERROR([kernel module make failed; check config.log for details])
 	])])])])
@@ -53,7 +50,7 @@ AC_CACHE_CHECK([for compiler version text], lb_cv_dequote_CC_VERSION_TEXT, [
 AS_IF([test -z "$lb_cv_module_target"],
 	[AC_MSG_ERROR([unknown external module build target])],
 [test "x$lb_cv_module_target" = "xM54"],
-	[makerule="$PWD/build"
+	[makerule="$PWD/kconftest.dir"
 	lb_cv_module_target="M"],
 [test "x$lb_cv_module_target" = "xM58"],
 	[makerule=""
@@ -62,7 +59,7 @@ AS_IF([test -z "$lb_cv_module_target"],
 	[makerule=""
 	lb_cv_module_target="M"],
 [test "x$lb_cv_module_target" = "xM"],
-	[makerule="_module_$PWD/build"])
+	[makerule="_module_$PWD/kconftest.dir"])
 MODULE_TARGET=$lb_cv_module_target
 AC_SUBST(MODULE_TARGET)
 ])
@@ -78,11 +75,11 @@ lb_cv_utsrelease=""
 utsrelease1=$LINUX_OBJ/include/generated/utsrelease.h
 utsrelease2=$LINUX_OBJ/include/linux/utsrelease.h
 utsrelease3=$LINUX_OBJ/include/linux/version.h
-AS_IF([test -r $utsrelease1 && fgrep -q UTS_RELEASE $utsrelease1],
+AS_IF([test -r $utsrelease1 && grep -F -q UTS_RELEASE $utsrelease1],
 	[utsrelease=$utsrelease1],
-[test -r $utsrelease2 && fgrep -q UTS_RELEASE $utsrelease2],
+[test -r $utsrelease2 && grep -F -q UTS_RELEASE $utsrelease2],
 	[utsrelease=$utsrelease2],
-[test -r $utsrelease3 && fgrep -q UTS_RELEASE $utsrelease3],
+[test -r $utsrelease3 && grep -F -q UTS_RELEASE $utsrelease3],
 	[utsrelease=$utsrelease3])
 AS_IF([test -n "$utsrelease"],
 	[lb_cv_utsrelease=$(awk -F \" '/ UTS_RELEASE / { print [$]2 }' $utsrelease)],
@@ -120,17 +117,21 @@ AC_DEFUN([LB_LINUX_RELEASE], [
 	# Check for RedHat first (no need to check KERNEL_FOUND
 	AC_CACHE_CHECK([for RedHat kernel release number], lb_cv_rhel_kernel_version, [
 		lb_cv_rhel_kernel_version=""
-		AS_IF([fgrep -q RHEL_RELEASE $LINUX_OBJ/include/$VERSION_HDIR/version.h], [
+		AS_IF([grep -F -q RHEL_RELEASE $LINUX_OBJ/include/$VERSION_HDIR/version.h], [
 			lb_cv_rhel_kernel_version=$(awk '/ RHEL_MAJOR / { print [$]3 }' \
 				$LINUX_OBJ/include/$VERSION_HDIR/version.h)$(awk \
 				'/ RHEL_MINOR / { print [$]3 }' \
 				$LINUX_OBJ/include/$VERSION_HDIR/version.h)
+			lb_cv_rhel_kernel_release=$(awk \
+				'/ RHEL_RELEASE / { print [$]3 }' \
+				$LINUX_OBJ/include/$VERSION_HDIR/version.h | tr -d '"')
 		])
 	])
 	AS_IF([test -n "$lb_cv_rhel_kernel_version"], [
 		RHEL_KERNEL="yes"
 		KERNEL_FOUND="yes"
 		RHEL_RELEASE_NO=$lb_cv_rhel_kernel_version
+		RHEL_RELEASE_STR=$lb_cv_rhel_kernel_release
 	])
 
 	# Check for SuSE
@@ -145,7 +146,7 @@ AC_DEFUN([LB_LINUX_RELEASE], [
 	AS_IF([test "x$KERNEL_FOUND" = "xno"], [
 		AC_CACHE_CHECK([for Ubuntu kernel signature], lb_cv_ubuntu_kernel_sig, [
 			lb_cv_ubuntu_kernel_sig="no"
-			AS_IF([fgrep -q "UTS_UBUNTU_RELEASE_ABI" $LINUX_OBJ/include/generated/utsrelease.h], [
+			AS_IF([grep -F -q "UTS_UBUNTU_RELEASE_ABI" $LINUX_OBJ/include/generated/utsrelease.h], [
 				lb_cv_ubuntu_kernel_sig="yes"
 			])
 		])
@@ -173,13 +174,13 @@ AC_DEFUN([LB_LINUX_RELEASE], [
 		AC_CACHE_CHECK([for ELRepo -ml kernel signature on CentOS],
 				lb_cv_mainline_kernel_sig, [
 			lb_cv_mainline_kernel_sig="no"
-			AS_IF([fgrep -q '.el7.' $LINUX_OBJ/include/generated/utsrelease.h], [
+			AS_IF([grep -F -q '.el7.' $LINUX_OBJ/include/generated/utsrelease.h], [
 				lb_cv_mainline_kernel_sig="yes"
 			])
-			AS_IF([fgrep -q '.el8.' $LINUX_OBJ/include/generated/utsrelease.h], [
+			AS_IF([grep -F -q '.el8.' $LINUX_OBJ/include/generated/utsrelease.h], [
 				lb_cv_mainline_kernel_sig="yes"
 			])
-			AS_IF([fgrep -q '.el9.' $LINUX_OBJ/include/generated/utsrelease.h], [
+			AS_IF([grep -F -q '.el9.' $LINUX_OBJ/include/generated/utsrelease.h], [
 				lb_cv_mainline_kernel_sig="yes"
 			])
 		])
@@ -193,7 +194,7 @@ AC_DEFUN([LB_LINUX_RELEASE], [
 	AS_IF([test "x$KERNEL_FOUND" = "xno"], [
 		AC_CACHE_CHECK([for openEuler kernel version number], lb_cv_openeuler_kernel_version, [
 			lb_cv_openeuler_kernel_version=""
-			AS_IF([fgrep -q OPENEULER_VERSION $LINUX_OBJ/include/$VERSION_HDIR/version.h], [
+			AS_IF([grep -F -q OPENEULER_VERSION $LINUX_OBJ/include/$VERSION_HDIR/version.h], [
 				lb_cv_openeuler_kernel_version=$(awk '/ OPENEULER_MAJOR / { print [$]3 }' \
 					$LINUX_OBJ/include/$VERSION_HDIR/version.h).$(awk \
 					'/ OPENEULER_MINOR / { print [$]3 }' \
@@ -357,10 +358,15 @@ AC_ARG_WITH([linux-config],
 
 # -------- check if .config exists --
 LB_CHECK_FILE([$LINUX_CONFIG], [],
-	[AC_MSG_ERROR([
+	[KVER=$(basename $LINUX_OBJ | sed 's/^build$//' | sed 's/^linux-//')
+	 AS_IF([test -z "$KVER"], [KVER=$(uname -r)])
+	 LB_CHECK_FILE([/boot/config-$KVER],
+		[LINUX_CONFIG=/boot/config-$KVER],
+		[AC_MSG_ERROR([
 
 Kernel config could not be found.
 ])
+	])
 ])
 AC_SUBST(LINUX_CONFIG)
 
@@ -431,9 +437,6 @@ Consult build/README.kernel-source for details.
 	EXTRA_KCFLAGS="-include $KERNEL_SOURCE_HEADER $EXTRA_KCFLAGS"
 ])
 
-AS_IF([test -n SUBARCH],
-[SUBARCH=$(echo $target_cpu | sed -e 's/powerpc.*/powerpc/' -e 's/ppc.*/powerpc/' -e 's/x86_64/x86/' -e 's/i.86/x86/' -e 's/k1om/x86/' -e 's/aarch64.*/arm64/' -e 's/armv7.*/arm/')
-])
 
 # this is needed before we can build modules
 LB_LINUX_VERSION
@@ -473,8 +476,8 @@ LB_LINUX_TRY_MAKE([
 ], [
 	$makerule LUSTRE_KERNEL_TEST=conftest.i
 ], [dnl
-	grep request_module build/conftest.i |dnl
-		grep -v `grep "int myretval=" build/conftest.i |dnl
+	grep request_module kconftest.dir/conftest.i |dnl
+		grep -v `grep "int myretval=" kconftest.dir/conftest.i |dnl
 			cut -d= -f2 | cut -d" "  -f1`dnl
 		>/dev/null dnl
 ], [lb_cv_module_loading="yes"], [lb_cv_module_loading="no"])
@@ -541,7 +544,7 @@ LC_LBUG_WITH_LOC_IN_OBJTOOL
 AC_DEFUN([LB_USES_DPKG], [
 AC_CACHE_CHECK([if this distro uses dpkg], lb_cv_uses_dpkg, [
 lb_cv_uses_dpkg="no"
-AS_CASE([$(egrep -q 'ubuntu|debian' /etc/os-release && which dpkg 2>/dev/null)],
+AS_CASE([$(grep -E -q 'ubuntu|debian' /etc/os-release && which dpkg 2>/dev/null)],
         [*/dpkg], [lb_cv_uses_dpkg="yes"])
 ])
 uses_dpkg=$lb_cv_uses_dpkg
@@ -660,12 +663,17 @@ MODULE_LICENSE("GPL");])
 #
 AC_DEFUN([LB_LINUX_COMPILE_IFELSE],
 [m4_ifvaln([$1], [AC_LANG_CONFTEST([AC_LANG_SOURCE([$1])])])dnl
-rm -f build/conftest.o build/conftest.mod.c build/conftest.ko
-AS_IF([AC_TRY_COMMAND(cp conftest.c build && make -d [$2] DEQUOTE_CC_VERSION_TEXT=$lb_cv_dequote_CC_VERSION_TEXT LDFLAGS= ${LD:+LD="$LD"} CC="$CC" -f $PWD/build/Makefile LUSTRE_LINUX_CONFIG=$LINUX_CONFIG LINUXINCLUDE="$EXTRA_CHECK_INCLUDE -I$LINUX/arch/$SUBARCH/include -Iinclude -Iarch/$SUBARCH/include/generated -I$LINUX/include -Iinclude2 -I$LINUX/include/uapi -Iinclude/generated -I$LINUX/arch/$SUBARCH/include/uapi -Iarch/$SUBARCH/include/generated/uapi -I$LINUX/include/uapi -Iinclude/generated/uapi ${SPL_OBJ:+-include $SPL_OBJ/spl_config.h} ${ZFS_OBJ:+-include $ZFS_OBJ/zfs_config.h} ${SPL:+-I$SPL/include } ${ZFS:+-I$ZFS -I$ZFS/include -I$ZFS/include/os/linux/kernel -I$ZFS/include/os/linux/spl -I$ZFS/include/os/linux/zfs -I${SPL:-$ZFS/include/spl}} -include $CONFIG_INCLUDE" KBUILD_EXTRA_SYMBOLS="${ZFS_OBJ:+$ZFS_OBJ/Module.symvers} $KBUILD_EXTRA_SYMBOLS" -o tmp_include_depends -o scripts -o include/config/MARKER -C $LINUX_OBJ EXTRA_CFLAGS="-Werror-implicit-function-declaration $EXTRA_KCFLAGS" $MODULE_TARGET=$PWD/build) >/dev/null && AC_TRY_COMMAND([$3])],
+mkdir -p kconftest.dir/
+rm -f kconftest.dir/conftest.o kconftest.dir/conftest.mod.c kconftest.dir/conftest.ko
+cp config/Kbuild kconftest.dir/
+AS_IF([AC_TRY_COMMAND(cp conftest.c kconftest.dir && make -d [$2] DEQUOTE_CC_VERSION_TEXT=$lb_cv_dequote_CC_VERSION_TEXT LDFLAGS= ${LD:+LD="$LD"} CC="$CC" -f $PWD/kconftest.dir/Kbuild LUSTRE_LINUX_CONFIG=$LINUX_CONFIG LINUXINCLUDE="$EXTRA_CHECK_INCLUDE -I$LINUX/arch/$SUBARCH/include -Iinclude -Iarch/$SUBARCH/include/generated -I$LINUX/include -Iinclude2 -I$LINUX/include/uapi -Iinclude/generated -I$LINUX/arch/$SUBARCH/include/uapi -Iarch/$SUBARCH/include/generated/uapi -I$LINUX/include/uapi -Iinclude/generated/uapi -I$LINUX/arch/$SUBARCH/include/generated -I$LINUX/arch/$SUBARCH/include/generated/uapi -I$LINUX/include/generated -I$LINUX/include/generated/uapi ${SPL_OBJ:+-include $SPL_OBJ/spl_config.h} ${ZFS_OBJ:+-include $ZFS_OBJ/zfs_config.h} ${SPL:+-I$SPL/include } ${ZFS:+-I$ZFS -I$ZFS/include -I$ZFS/include/os/linux/kernel -I$ZFS/include/os/linux/spl -I$ZFS/include/os/linux/zfs -I${SPL:-$ZFS/include/spl}} -include $CONFIG_INCLUDE" KBUILD_EXTRA_SYMBOLS="${ZFS_OBJ:+$ZFS_OBJ/Module.symvers} $KBUILD_EXTRA_SYMBOLS" -o tmp_include_depends -o scripts -o include/config/MARKER -C $LINUX_OBJ EXTRA_CFLAGS="-Werror-implicit-function-declaration $EXTRA_KCFLAGS" $MODULE_TARGET=$PWD/kconftest.dir) >/dev/null && AC_TRY_COMMAND([$3])],
 	[$4],
 	[_AC_MSG_LOG_CONFTEST
 m4_ifvaln([$5],[$5])dnl])
-rm -f build/conftest.o build/conftest.mod.c build/conftest.mod.o build/conftest.ko m4_ifval([$1], [build/conftest.c conftest.c])[]dnl
+export RES_DIR=$RANDOM
+mkdir -p kconftest.results/$RES_DIR
+cp -r kconftest.dir/* kconftest.results/$RES_DIR
+rm -f kconftest.dir/conftest.o kconftest.dir/conftest.mod.c kconftest.dir/conftest.mod.o kconftest.dir/conftest.ko m4_ifval([$1], [kconftest.dir/conftest.c conftest.c])[]dnl
 ])
 
 #
@@ -676,7 +684,7 @@ rm -f build/conftest.o build/conftest.mod.c build/conftest.mod.o build/conftest.
 AC_DEFUN([LB_LINUX_TRY_COMPILE], [
 LB_LINUX_COMPILE_IFELSE(
 	[AC_LANG_SOURCE([LB_LANG_PROGRAM([[$1]], [[$2]])])],
-	[modules], [test -s build/conftest.o],
+	[modules], [test -s kconftest.dir/conftest.o],
 	[$3], [$4])
 ])
 
@@ -720,7 +728,7 @@ AC_DEFUN([LB_CHECK_LINUX_HEADER], [
 	AS_VAR_PUSHDEF([lb_header], [lb_cv_header_$1])
 	AC_CACHE_CHECK([for $1], lb_header, [
 		LB_LINUX_COMPILE_IFELSE([LB_LANG_PROGRAM([@%:@include <$1>])],
-			[modules], [test -s build/conftest.o],
+			[modules], [test -s conftest/conftest.o],
 			[AS_VAR_SET([lb_header], [yes])],
 			[AS_VAR_SET([lb_header], [no])])
 	])
@@ -854,6 +862,10 @@ LINUXINCLUDE += -Iinclude/generated
 LINUXINCLUDE += -I$LINUX/arch/$SUBARCH/include/uapi
 LINUXINCLUDE += -Iarch/$SUBARCH/include/generated/uapi
 LINUXINCLUDE += -I$LINUX/include/uapi -Iinclude/generated/uapi
+LINUXINCLUDE += -I$LINUX/arch/$SUBARCH/include/generated
+LINUXINCLUDE += -I$LINUX/arch/$SUBARCH/include/generated/uapi
+LINUXINCLUDE += -I$LINUX/include/generated
+LINUXINCLUDE += -I$LINUX/include/generated/uapi
 ifneq (\$(SOBJ),)
 LINUXINCLUDE += -include \$(SOBJ)/spl_config.h
 endif
@@ -869,6 +881,10 @@ ifneq (\$(SINC),)
 LINUXINCLUDE += -I\$(SINC)
 else
 LINUXINCLUDE += -I\$(ZINC)/include/spl
+LINUXINCLUDE += -I\$(ZINC)/include/zfs
+LINUXINCLUDE += -I\$(ZINC)/include/os/linux/spl
+LINUXINCLUDE += -I\$(ZINC)/include/os/linux/zfs
+LINUXINCLUDE += -I\$(ZINC)/include/os/linux/kernel
 endif
 endif
 LINUXINCLUDE += -include $CONFIG_INCLUDE

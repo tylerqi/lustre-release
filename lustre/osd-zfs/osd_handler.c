@@ -19,7 +19,6 @@
 
 #define DEBUG_SUBSYSTEM S_OSD
 
-#include <libcfs/libcfs.h>
 #include <obd_support.h>
 #include <lustre_net.h>
 #include <obd.h>
@@ -88,7 +87,7 @@ static void arc_prune_func(int64_t bytes, void *private)
 		return;
 	}
 
-	lu_site_purge(&env, site, (bytes >> 10));
+	lu_site_limit(&env, site, (bytes >> 10));
 
 	lu_env_fini(&env);
 }
@@ -117,6 +116,7 @@ static void osd_trans_commit_cb(void *cb_data, int error)
 	struct osd_device *osd = osd_dt_dev(th->th_dev);
 	struct lu_device *lud = &th->th_dev->dd_lu_dev;
 	struct dt_txn_commit_cb *dcb, *tmp;
+	int slot;
 
 	ENTRY;
 	if (error) {
@@ -148,6 +148,11 @@ static void osd_trans_commit_cb(void *cb_data, int error)
 	if (osd->od_quota_slave_md != NULL)
 		qsd_op_end(NULL, osd->od_quota_slave_md, &oh->ot_quota_trans);
 
+	slot = oh->ot_txg & OSD_TXG_MAP_MASK;
+	LASSERT(atomic_read(&osd->od_commit_cb_in_txg[slot]) > 0);
+	if (atomic_dec_and_test(&osd->od_commit_cb_in_txg[slot]))
+		wake_up(&osd->od_commit_cb_waitq);
+
 	lu_device_put(lud);
 	th->th_dev = NULL;
 	OBD_FREE_PTR(oh);
@@ -161,7 +166,8 @@ static int osd_trans_cb_add(struct thandle *th, struct dt_txn_commit_cb *dcb)
 					      ot_super);
 
 	LASSERT(dcb->dcb_magic == TRANS_COMMIT_CB_MAGIC);
-	LASSERT(&dcb->dcb_func != NULL);
+	LASSERT(dcb->dcb_func);
+
 	if (dcb->dcb_flags & DCB_TRANS_STOP)
 		list_add(&dcb->dcb_linkage, &oh->ot_stop_dcb_list);
 	else
@@ -199,7 +205,7 @@ static int osd_trans_start(const struct lu_env *env, struct dt_device *d,
 		 */
 		RETURN(-EIO);
 
-	rc = -dmu_tx_assign(oh->ot_tx, TXG_WAIT);
+	rc = -dmu_tx_assign(oh->ot_tx, DMU_TX_WAIT);
 	if (unlikely(rc != 0)) {
 		/* dmu will call commit callback with error code during abort */
 		if (!lu_device_is_md(&d->dd_lu_dev) && rc == -ENOSPC)
@@ -209,8 +215,19 @@ static int osd_trans_start(const struct lu_env *env, struct dt_device *d,
 			CERROR("%s: can't assign tx: rc = %d\n",
 			       osd->od_svname, rc);
 	} else {
+		int slot;
+
 		/* add commit callback */
 		dmu_tx_callback_register(oh->ot_tx, osd_trans_commit_cb, oh);
+
+		/* count all registered commit callbacks in txg-specific slot,
+		 * we can wait for the callbacks to complete later */
+		if (oh->ot_tx->tx_txg > atomic64_read(&osd->od_last_txg))
+			atomic64_set(&osd->od_last_txg, oh->ot_tx->tx_txg);
+		oh->ot_txg = oh->ot_tx->tx_txg;
+		slot = oh->ot_txg & OSD_TXG_MAP_MASK;
+		atomic_inc(&osd->od_commit_cb_in_txg[slot]);
+
 		oh->ot_assigned = 1;
 		osd_oti_get(env)->oti_in_trans = 1;
 		lu_device_get(&d->dd_lu_dev);
@@ -658,6 +675,9 @@ static void osd_conf_get(const struct lu_env *env,
  */
 static int osd_sync(const struct lu_env *env, struct dt_device *d)
 {
+	struct osd_device *osd = osd_dt_dev(d);
+	int slot = atomic64_read(&osd->od_last_txg) & OSD_TXG_MAP_MASK;
+
 	if (!d->dd_rdonly) {
 		struct osd_device  *osd = osd_dt_dev(d);
 
@@ -666,6 +686,8 @@ static int osd_sync(const struct lu_env *env, struct dt_device *d)
 		CDEBUG(D_CACHE, "synced OSD %s\n", LUSTRE_OSD_ZFS_NAME);
 	}
 
+	wait_event(osd->od_commit_cb_waitq,
+		   atomic_read(&osd->od_commit_cb_in_txg[slot]) == 0);
 	return 0;
 }
 
@@ -734,6 +756,7 @@ static const struct dt_device_operations osd_dt_ops = {
 	.dt_commit_async	  = osd_commit_async,
 	.dt_ro			  = osd_ro,
 	.dt_reserve_or_free_quota = osd_reserve_or_free_quota,
+	.dt_last_seq_get	  = osd_last_seq_get,
 };
 
 static void *osd_key_init(const struct lu_context *ctx,
@@ -742,10 +765,14 @@ static void *osd_key_init(const struct lu_context *ctx,
 	struct osd_thread_info *info;
 
 	OBD_ALLOC_PTR(info);
-	if (info != NULL)
-		info->oti_env = container_of(ctx, struct lu_env, le_ctx);
-	else
-		info = ERR_PTR(-ENOMEM);
+	if (!info)
+		return ERR_PTR(-ENOMEM);
+
+	info->oti_env = container_of(ctx, struct lu_env, le_ctx);
+#ifdef ZAP_MAXNAMELEN_NEW
+	info->oti_za.za_name_len = MAXNAMELEN;
+	info->oti_za2.za_name_len = MAXNAMELEN;
+#endif
 	return info;
 }
 
@@ -754,6 +781,19 @@ static void osd_key_fini(const struct lu_context *ctx,
 {
 	struct osd_thread_info *info = data;
 	struct osd_idmap_cache *idc = info->oti_ins_cache;
+
+	if (info->oti_dio_pages) {
+		int i;
+		for (i = 0; i < PTLRPC_MAX_BRW_PAGES; i++) {
+			struct page *page = info->oti_dio_pages[i];
+			if (page) {
+				ClearPagePrivate2(page);
+				__free_page(page);
+			}
+		}
+		OBD_FREE_PTR_ARRAY_LARGE(info->oti_dio_pages,
+					 PTLRPC_MAX_BRW_PAGES);
+	}
 
 	if (idc != NULL) {
 		LASSERT(info->oti_ins_cache_size > 0);
@@ -768,6 +808,10 @@ static void osd_key_fini(const struct lu_context *ctx,
 static void osd_key_exit(const struct lu_context *ctx,
 			 struct lu_context_key *key, void *data)
 {
+	struct osd_thread_info *info = data;
+
+	LASSERTF(info->oti_dio_pages_used == 0, "%d\n",
+		 info->oti_dio_pages_used);
 }
 
 struct lu_context_key osd_key = {
@@ -1014,7 +1058,7 @@ int osd_unlinked_object_free(const struct lu_env *env, struct osd_device *osd,
 	dmu_tx_hold_free(tx, oid, 0, DMU_OBJECT_END);
 	osd_tx_hold_zap(tx, osd->od_unlinked->dn_object, osd->od_unlinked,
 			FALSE, NULL);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc != 0) {
 		CWARN("%s: Cannot assign tx for %llu: rc = %d\n",
 		      osd->od_svname, oid, rc);
@@ -1068,6 +1112,42 @@ osd_unlinked_drain(const struct lu_env *env, struct osd_device *osd)
 	zap_cursor_fini(&zc);
 }
 
+#ifndef HAVE_SPA_GET_MIN_ALLOC_RANGE
+#include <sys/vdev_impl.h>
+
+static void
+spa_get_min_alloc_range(spa_t *spa, uint64_t *min_alloc, uint64_t *max_alloc)
+{
+#ifdef HAVE_VDEV_OP_MIN_ALLOC
+	vdev_t *rvd = spa->spa_root_vdev;
+	int i;
+
+	*min_alloc = spa->spa_min_alloc;
+	*max_alloc = *min_alloc;
+
+	for (i = 0; i < rvd->vdev_children; i++) {
+		vdev_t *vd = rvd->vdev_child[i];
+		vdev_ops_t *ops = vd->vdev_ops;
+
+		if (vd->vdev_islog || vd->vdev_ishole)
+			continue;
+
+		if (vd->vdev_alloc_bias != VDEV_BIAS_NONE)
+			continue;
+
+		if (ops && ops->vdev_op_min_alloc) {
+			uint64_t top_min_alloc = ops->vdev_op_min_alloc(vd);
+			if (top_min_alloc > *max_alloc)
+				*max_alloc = top_min_alloc;
+		}
+	}
+#else
+	*min_alloc = SPA_MINBLOCKSIZE;
+	*max_alloc = SPA_MINBLOCKSIZE;
+#endif /* HAVE_VDEV_OP_MIN_ALLOC */
+}
+#endif /* HAVE_SPA_GET_MIN_ALLOC_RANGE */
+
 static int osd_mount(const struct lu_env *env,
 		     struct osd_device *o, struct lustre_cfg *cfg)
 {
@@ -1075,6 +1155,7 @@ static int osd_mount(const struct lu_env *env,
 	char *str = lustre_cfg_string(cfg, 2);
 	char *svname = lustre_cfg_string(cfg, 4);
 	time64_t interval = AS_DEFAULT;
+	uint64_t min_alloc, max_alloc;
 	dnode_t *rootdn;
 	const char *opts;
 	bool resetoi = false;
@@ -1098,8 +1179,12 @@ static int osd_mount(const struct lu_env *env,
 	opts = lustre_cfg_string(cfg, 3);
 
 	o->od_index_backup_stop = 0;
+
 	o->od_index = -1; /* -1 means index is invalid */
 	rc = server_name2index(o->od_svname, &o->od_index, NULL);
+	if (rc == LDD_F_SV_TYPE_OST)
+		o->od_is_ost = 1;
+
 	str = strstr(str, ":");
 	if (str) {
 		unsigned long flags;
@@ -1118,16 +1203,16 @@ static int osd_mount(const struct lu_env *env,
 			interval = AS_NEVER;
 	}
 
-	if (server_name_is_ost(o->od_svname))
-		o->od_is_ost = 1;
-
 	rc = osd_objset_open(o);
 	if (rc)
 		RETURN(rc);
 
 	o->od_xattr_in_sa = B_TRUE;
 	o->od_max_blksz = spa_maxblocksize(o->od_os->os_spa);
+	spa_get_min_alloc_range(o->od_os->os_spa, &min_alloc, &max_alloc);
+	o->od_min_blksz = max_alloc;
 	o->od_readcache_max_filesize = OSD_MAX_CACHE_SIZE;
+	o->od_fzap_blockshift = OSD_FZAP_BLOCKSHIFT_DEFAULT;
 
 	rc = __osd_obj2dnode(o->od_os, o->od_rootid, &rootdn);
 	if (rc)
@@ -1173,6 +1258,7 @@ static int osd_mount(const struct lu_env *env,
 	rc = lprocfs_init_brw_stats(&o->od_brw_stats);
 	if (rc)
 		GOTO(err, rc);
+	o->od_brw_stats.bs_devname = o->od_svname;
 
 	o->od_in_init = 1;
 	rc = osd_scrub_setup(env, o, interval, resetoi);
@@ -1261,9 +1347,15 @@ static void osd_umount(const struct lu_env *env, struct osd_device *o)
 #endif
 
 	if (o->od_os != NULL) {
+		int slot;
+
 		if (!o->od_dt_dev.dd_rdonly)
 			/* force a txg sync to get all commit callbacks */
 			txg_wait_synced(dmu_objset_pool(o->od_os), 0ULL);
+
+		for (slot = 0; slot < OSD_TXG_MAP_SIZE; slot++)
+			wait_event(o->od_commit_cb_waitq,
+				   !atomic_read(&o->od_commit_cb_in_txg[slot]));
 
 		/* close the object set */
 		osd_dmu_objset_disown(o->od_os, B_TRUE, o);
@@ -1304,7 +1396,6 @@ static struct lu_device *osd_device_fini(const struct lu_env *env,
 					 struct lu_device *d)
 {
 	struct osd_device *o = osd_dev(d);
-	int rc;
 
 	ENTRY;
 	osd_index_backup(env, o, false);
@@ -1320,12 +1411,7 @@ static struct lu_device *osd_device_fini(const struct lu_env *env,
 	/* now with all the callbacks completed we can cleanup the remainings */
 	osd_shutdown(env, o);
 	osd_scrub_cleanup(env, o);
-
-	rc = osd_procfs_fini(o);
-	if (rc) {
-		CERROR("proc fini error %d\n", rc);
-		RETURN(ERR_PTR(rc));
-	}
+	osd_procfs_fini(o);
 
 	if (o->od_os)
 		osd_umount(env, o);
@@ -1375,6 +1461,7 @@ static struct lu_device *osd_device_alloc(const struct lu_env *env,
 	INIT_LIST_HEAD(&dev->od_index_restore_list);
 	spin_lock_init(&dev->od_lock);
 	dev->od_index_backup_policy = LIBP_NONE;
+	init_waitqueue_head(&dev->od_commit_cb_waitq);
 
 	rc = dt_device_init(&dev->od_dt_dev, type);
 	if (rc == 0) {
@@ -1619,5 +1706,5 @@ MODULE_DESCRIPTION("Lustre Object Storage Device ("LUSTRE_OSD_ZFS_NAME")");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(osd_init);
+late_initcall_sync(osd_init);
 module_exit(osd_exit);

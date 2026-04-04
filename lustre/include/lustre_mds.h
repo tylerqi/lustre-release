@@ -23,7 +23,6 @@
  */
 
 #include <lustre_handles.h>
-#include <libcfs/libcfs.h>
 #include <uapi/linux/lustre/lustre_idl.h>
 #include <lustre_lib.h>
 #include <lustre_dlm.h>
@@ -37,7 +36,7 @@ struct md_rejig_data {
 #define MDD_OBD_NAME     "mdd_obd"
 #define MDD_OBD_UUID     "mdd_obd_uuid"
 
-static inline int md_should_create(u64 open_flags)
+static inline int md_should_create(enum mds_open_flags open_flags)
 {
 	return !(open_flags & MDS_OPEN_DELAY_CREATE) &&
 		(open_flags & MDS_FMODE_WRITE) &&
@@ -45,7 +44,7 @@ static inline int md_should_create(u64 open_flags)
 }
 
 /* do NOT or the MAY_*'s, you'll get the weakest */
-static inline int mds_accmode(u64 open_flags)
+static inline int mds_accmode(enum mds_open_flags open_flags)
 {
 	unsigned int may_mask = 0;
 

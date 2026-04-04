@@ -18,12 +18,12 @@
 
 #define LNET_ONLY
 
-#include <libcfs/libcfs.h>
+#include <linux/refcount.h>
+#include <linux/libcfs/libcfs.h>
 #include <lnet/api.h>
 #include <lnet/lib-lnet.h>
 #include <lnet/lib-types.h>
 #include <uapi/linux/lnet/lnetst.h>
-#include <linux/refcount.h>
 
 #include "rpc.h"
 #include "timer.h"
@@ -128,22 +128,6 @@ struct srpc_service_cd;
 struct sfw_test_unit;
 struct sfw_test_instance;
 
-/* services below SRPC_FRAMEWORK_SERVICE_MAX_ID are framework
- * services, e.g. create/modify session.
- */
-#define SRPC_SERVICE_DEBUG              0
-#define SRPC_SERVICE_MAKE_SESSION       1
-#define SRPC_SERVICE_REMOVE_SESSION     2
-#define SRPC_SERVICE_BATCH              3
-#define SRPC_SERVICE_TEST               4
-#define SRPC_SERVICE_QUERY_STAT         5
-#define SRPC_SERVICE_JOIN               6
-#define SRPC_FRAMEWORK_SERVICE_MAX_ID   10
-/* other services start from SRPC_FRAMEWORK_SERVICE_MAX_ID+1 */
-#define SRPC_SERVICE_BRW                11
-#define SRPC_SERVICE_PING               12
-#define SRPC_SERVICE_MAX_ID             12
-
 #define SRPC_REQUEST_PORTAL             50
 /* a lazy portal for framework RPC requests */
 #define SRPC_FRAMEWORK_REQUEST_PORTAL   51
@@ -151,11 +135,9 @@ struct sfw_test_instance;
 #define SRPC_RDMA_PORTAL                52
 
 static inline enum srpc_msg_type
-srpc_service2request(int service)
+srpc_service2request(enum srpc_service_type service)
 {
 	switch (service) {
-	default:
-		LBUG();
 	case SRPC_SERVICE_DEBUG:
 		return SRPC_MSG_DEBUG_REQST;
 
@@ -174,19 +156,28 @@ srpc_service2request(int service)
 	case SRPC_SERVICE_QUERY_STAT:
 		return SRPC_MSG_STAT_REQST;
 
+	case SRPC_SERVICE_JOIN:
+		return SRPC_MSG_JOIN_REQST;
+
+	case SRPC_FRAMEWORK_SERVICE_MAX_ID:
+		break;
+
 	case SRPC_SERVICE_BRW:
 		return SRPC_MSG_BRW_REQST;
 
 	case SRPC_SERVICE_PING:
 		return SRPC_MSG_PING_REQST;
 
-	case SRPC_SERVICE_JOIN:
-		return SRPC_MSG_JOIN_REQST;
+	case SRPC_SERVICE_MAX_ID:
+		break;
 	}
+
+	LASSERTF(0, "service = %i\n", service);
+	return SRPC_MSG_INVALID;
 }
 
 static inline enum srpc_msg_type
-srpc_service2reply(int service)
+srpc_service2reply(enum srpc_service_type service)
 {
 	return srpc_service2request(service) + 1;
 }
@@ -263,7 +254,7 @@ struct srpc_client_rpc {
 	struct list_head	crpc_list;	/* chain on user's lists */
 	spinlock_t		crpc_lock;	/* serialize */
 	int			crpc_service;
-	atomic_t		crpc_refcount;
+	struct kref		crpc_refcount;
 	/* # seconds to wait for reply */
 	int			crpc_timeout;
 	struct stt_timer	crpc_timer;
@@ -299,19 +290,16 @@ offsetof(struct srpc_client_rpc, crpc_bulk.bk_iovs[(rpc)->crpc_bulk.bk_niov])
 do {                                                                    \
 	CDEBUG(D_NET, "RPC[%p] -> %s (%d)++\n",                         \
 	       (rpc), libcfs_id2str((rpc)->crpc_dest),                  \
-	       atomic_read(&(rpc)->crpc_refcount));                     \
-	LASSERT(atomic_read(&(rpc)->crpc_refcount) > 0);                \
-	atomic_inc(&(rpc)->crpc_refcount);                              \
+	       kref_read(&(rpc)->crpc_refcount));                       \
+	kref_get(&(rpc)->crpc_refcount);                                \
 } while (0)
 
 #define srpc_client_rpc_decref(rpc)                                     \
 do {                                                                    \
 	CDEBUG(D_NET, "RPC[%p] -> %s (%d)--\n",                         \
 	       (rpc), libcfs_id2str((rpc)->crpc_dest),                  \
-	       atomic_read(&(rpc)->crpc_refcount));                     \
-	LASSERT(atomic_read(&(rpc)->crpc_refcount) > 0);                \
-	if (atomic_dec_and_test(&(rpc)->crpc_refcount))                 \
-		srpc_destroy_client_rpc(rpc);                           \
+	       kref_read(&(rpc)->crpc_refcount));                       \
+	kref_put(&(rpc)->crpc_refcount, srpc_destroy_client_rpc);       \
 } while (0)
 
 #define srpc_event_pending(rpc)   ((rpc)->crpc_bulkev.ev_fired == 0 ||  \
@@ -366,7 +354,7 @@ struct srpc_service_cd {
 #define SFW_FRWK_WI_MAX		256
 
 struct srpc_service {
-	int			sv_id;		/* service id */
+	enum srpc_service_type	sv_id;		/* service id */
 	const char		*sv_name;	/* human readable name */
 	int			sv_wi_total;	/* total server workitems */
 	int			sv_shuttingdown;
@@ -578,11 +566,13 @@ void sfw_shutdown(void);
 void srpc_shutdown(void);
 
 static inline void
-srpc_destroy_client_rpc(struct srpc_client_rpc *rpc)
+srpc_destroy_client_rpc(struct kref *kref)
 {
+	struct srpc_client_rpc *rpc = container_of(kref, struct srpc_client_rpc,
+						   crpc_refcount);
+
 	LASSERT(rpc != NULL);
 	LASSERT(!srpc_event_pending(rpc));
-	LASSERT(atomic_read(&rpc->crpc_refcount) == 0);
 
 	if (rpc->crpc_fini == NULL)
 		LIBCFS_FREE(rpc, srpc_client_rpc_size(rpc));
@@ -605,7 +595,7 @@ srpc_init_client_rpc(struct srpc_client_rpc *rpc, struct lnet_process_id peer,
 	swi_init_workitem(&rpc->crpc_wi, srpc_send_rpc,
 			  lst_test_wq[lnet_cpt_of_nid(peer.nid, NULL)]);
 	spin_lock_init(&rpc->crpc_lock);
-	atomic_set(&rpc->crpc_refcount, 1); /* 1 ref for caller */
+	kref_init(&rpc->crpc_refcount); /* 1 ref for caller */
 
 	rpc->crpc_dest         = peer;
 	rpc->crpc_priv         = priv;
@@ -631,20 +621,19 @@ srpc_init_client_rpc(struct srpc_client_rpc *rpc, struct lnet_process_id peer,
 static inline const char *
 swi_state2str(int state)
 {
-#define STATE2STR(x) case x: return #x
 	switch (state) {
+	ENUM2STR(SWI_STATE_NEWBORN);
+	ENUM2STR(SWI_STATE_REPLY_SUBMITTED);
+	ENUM2STR(SWI_STATE_REPLY_SENT);
+	ENUM2STR(SWI_STATE_REQUEST_SUBMITTED);
+	ENUM2STR(SWI_STATE_REQUEST_SENT);
+	ENUM2STR(SWI_STATE_REPLY_RECEIVED);
+	ENUM2STR(SWI_STATE_BULK_STARTED);
+	ENUM2STR(SWI_STATE_DONE);
 	default:
-		LBUG();
-	STATE2STR(SWI_STATE_NEWBORN);
-	STATE2STR(SWI_STATE_REPLY_SUBMITTED);
-	STATE2STR(SWI_STATE_REPLY_SENT);
-	STATE2STR(SWI_STATE_REQUEST_SUBMITTED);
-	STATE2STR(SWI_STATE_REQUEST_SENT);
-	STATE2STR(SWI_STATE_REPLY_RECEIVED);
-	STATE2STR(SWI_STATE_BULK_STARTED);
-	STATE2STR(SWI_STATE_DONE);
+		LASSERTF(0, "state bad %u\n", state);
+		return NULL;
 	}
-#undef STATE2STR
 }
 
 #define lst_wait_until(cond, lock, fmt, ...)				\

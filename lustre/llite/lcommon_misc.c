@@ -1,36 +1,18 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * cl code used by vvp (and other Lustre clients in the future).
- *
  */
+
 #define DEBUG_SUBSYSTEM S_LLITE
 #include <obd_class.h>
 #include <obd_support.h>
@@ -78,9 +60,19 @@ static int cl_init_ea_size(struct obd_export *md_exp, struct obd_export *dt_exp)
 }
 
 /**
+ * cl_ocd_update() - upcall callback hook for llite clients
+ * @host: obd observer
+ * @watched: obd being observed
+ * @ev: Events that can come through obd_notify()
+ * @owner: Private data if any
+ *
  * This function is used as an upcall-callback hooked llite clients
  * into obd_notify() listeners chain to handle notifications about
- * change of import connect_flags. See lustre_common_fill_super().
+ * change of import connect_flags (OBD_CONNECT_* under lustre_idl.h).
+ *
+ * Return:
+ * * %0: Success
+ * * %-ERRNO: Failure
  */
 int cl_ocd_update(struct obd_device *host, struct obd_device *watched,
 		  enum obd_notify_event ev, void *owner)
@@ -137,7 +129,7 @@ int cl_get_grouplock(struct cl_object *obj, unsigned long gid, int nonblock,
 	if (IS_ERR(env))
 		return PTR_ERR(env);
 
-	io = vvp_env_thread_io(env);
+	io = vvp_env_new_io(env);
 	io->ci_obj = obj;
 
 	rc = cl_io_init(env, io, CIT_MISC, io->ci_obj);
@@ -150,7 +142,7 @@ int cl_get_grouplock(struct cl_object *obj, unsigned long gid, int nonblock,
 		return rc;
 	}
 
-	lock = vvp_env_lock(env);
+	lock = vvp_env_new_lock(env);
 	descr = &lock->cll_descr;
 	descr->cld_obj = obj;
 	descr->cld_start = 0;

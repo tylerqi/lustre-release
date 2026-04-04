@@ -1,24 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- *
  * Copyright 2020, DataDirect Networks Storage.
  *
  * This file is part of Lustre, http://www.lustre.org/
@@ -70,34 +51,8 @@
 
 /* TODO fsname filter */
 
-static FILE *debug_file;
-static FILE *trace_file;
-
-#define DEBUG(fmt, args...)						\
-	do {								\
-		if (debug_file != NULL)					\
-			fprintf(debug_file, "DEBUG %s:%d: "fmt, __func__, __LINE__, ##args); \
-	} while (0)
-
-#define TRACE(fmt, args...)						\
-	do {								\
-		if (trace_file != NULL)					\
-			fprintf(trace_file, "TRACE "fmt, ##args);	\
-	} while (0)
-
-#define DEBUG_D(x) DEBUG("%s = %"PRIdMAX"\n", #x, (intmax_t)x)
-#define DEBUG_P(x) DEBUG("%s = %p\n", #x, x)
-#define DEBUG_S(x) DEBUG("%s = '%s'\n", #x, x)
-#define DEBUG_U(x) DEBUG("%s = %"PRIuMAX"\n", #x, (uintmax_t)x)
-
-#define ERROR(fmt, args...) \
-	fprintf(stderr, "%s: "fmt, program_invocation_short_name, ##args)
-
-#define FATAL(fmt, args...)			\
-	do {					\
-		ERROR("FATAL: "fmt, ##args);	\
-		exit(EXIT_FAILURE);		\
-	} while (0)
+FILE *debug_file;
+FILE *trace_file;
 
 enum {
 	ALR_EXIT_SUCCESS = INT_MIN + EXIT_SUCCESS,
@@ -143,6 +98,8 @@ static int alr_print_fraction = 100;
 #define D_ALR_LOG D_ALR_DEV" %u:%u"
 #define P_ALR_LOG(al) \
 	P_ALR_DEV(&(al)->alr_dev), major((al)->alr_rdev), minor((al)->alr_rdev)
+
+unsigned long keepalive_interval;
 
 static void alr_dev_free(int epoll_fd, struct alr_dev *ad)
 {
@@ -694,10 +651,14 @@ static void usage(void)
 "  -e, --exit-on-close            exit on close of all log devices\n"
 "  -I, --mdt-index-filter=INDEX   set log MDT index filter to INDEX\n"
 "  -h, --help                     display this help and exit\n"
+"  --keepalive=INTERVAL           print keepalive message every INTERVAL seconds\n"
 "  -l, --list                     print YAML list of available access logs\n"
 "  -d, --debug[=FILE]             print debug messages to FILE (stderr)\n"
-"  -s, --stats=FILE		  print stats messages to FILE (stderr)\n"
-"  -t, --trace[=FILE]             print trace messages to FILE (stderr)\n",
+"  -s, --stats=FILE               print stats messages to FILE (stderr)\n"
+"  -t, --trace[=FILE]             print trace messages to FILE (stderr)\n"
+"\n"
+"Enable access logs by setting obdfilter.TARGET.access_log_size > 0\n"
+"after which TARGET will appear when the --list option is used.\n",
 		program_invocation_short_name);
 }
 
@@ -724,6 +685,7 @@ int main(int argc, char *argv[])
 		{ .name = "batch-interval", .has_arg = required_argument, .val = 'i', },
 		{ .name = "batch-offset", .has_arg = required_argument, .val = 'o', },
 		{ .name = "exit-on-close", .has_arg = no_argument, .val = 'e', },
+		{ .name = "keepalive", .has_arg = required_argument, .val = 'k' },
 		{ .name = "mdt-index-filter", .has_arg = required_argument, .val = 'I' },
 		{ .name = "debug", .has_arg = optional_argument, .val = 'd', },
 		{ .name = "help", .has_arg = no_argument, .val = 'h', },
@@ -747,6 +709,13 @@ int main(int argc, char *argv[])
 			if (batch_interval < 0 || batch_interval >= 1048576 ||
 			    errno != 0)
 				FATAL("invalid batch interval '%s'\n", optarg);
+			break;
+		case 'k':
+			errno = 0;
+			keepalive_interval = strtoll(optarg, NULL, 0);
+			if (keepalive_interval > 1048576 || errno != 0)
+				FATAL("invalid keepalive message interval '%s'\n",
+				      optarg);
 			break;
 		case 'o':
 			errno = 0;

@@ -1,32 +1,16 @@
+// SPDX-License-Identifier: LGPL-2.1+
 /*
- * LGPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 or (at your discretion) any later version.
- * (LGPL) version 2.1 accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * LGPL HEADER END
- */
-/*
- * lustre/utils/liblustreapi_root.c
- *
- * lustreapi library for managing the root fd cache for llapi internal use.
- *
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  *
  * Copyright (c) 2018, 2022, Data Direct Networks
+ */
+/*
+ * This file is part of Lustre, http://www.lustre.org/
+ *
+ * lustreapi library for managing the root fd cache for llapi internal use.
  */
 
 /* for O_DIRECTORY and struct file_handle */
@@ -47,8 +31,10 @@
 #include <sys/sysmacros.h> /* for makedev() */
 #include <sys/types.h>
 #include <unistd.h>
+#include <assert.h>
 
 #include <libcfs/util/ioctl.h>
+#include <libcfs/util/string.h>
 #include <lustre/lustreapi.h>
 #include <linux/lustre/lustre_fid.h>
 #include "lustreapi_internal.h"
@@ -58,7 +44,6 @@ static struct root_cache {
 	dev_t	dev;
 	char	fsname[PATH_MAX];
 	char	mnt_dir[PATH_MAX];
-	char	nid[MAX_LINE_LEN];
 	int	fd; /* cached fd on filesystem root for internal use only */
 } root_cached = { 0 };
 
@@ -104,12 +89,30 @@ static int get_file_dev(const char *path, dev_t *dev)
 	return 0;
 }
 
+/**
+ * get_root_path_fast() - get mountpoint info from internal root_cache
+ *
+ * @want: bitmask of WANT_* flags indicating what information to return
+ * @fsname: if WANT_FSNAME is set, used as a buffer to return filesystem name
+ * (size is assumed to be PATH_MAX). Otherwise used to match the mount point
+ * @outfd: pointer to return open file descriptor (internal use only)
+ * @path: if WANT_PATH is set, used as a buffer to return mount point path
+ * (size is assumed to be PATH_MAX). Otherwise used to match the mount point
+ * @dev: pointer to return device ID
+ *
+ * Return:
+ * * %0 on success
+ * * %-ENODEV if no matching Lustre mount is found
+ * * %-ENAMETOOLONG if filesystem name, path, or NID is truncated
+ * * %negative error code on other failures
+ */
 static int get_root_path_fast(int want, char *fsname, int *outfd, char *path,
-			      dev_t *dev, char *nid)
+			      dev_t *dev)
 {
-	int rc = -ENODEV;
 	int fsnamelen;
 	int mntlen;
+	int rc2;
+	int rc = -ENODEV;
 
 	if (root_cached.dev == 0)
 		return rc;
@@ -144,10 +147,20 @@ static int get_root_path_fast(int want, char *fsname, int *outfd, char *path,
 	if (rc)
 		goto out_unlock;
 
-	if ((want & WANT_FSNAME) && fsname)
-		strcpy(fsname, root_cached.fsname);
-	if ((want & WANT_PATH) && path)
-		strcpy(path, root_cached.mnt_dir);
+	if ((want & WANT_FSNAME) && fsname) {
+		rc2 = scnprintf(fsname, PATH_MAX, "%s", root_cached.fsname);
+		if (rc2 < 0 || rc2 >= PATH_MAX - 1) {
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+			goto out_unlock;
+		}
+	}
+	if ((want & WANT_PATH) && path) {
+		rc2 = scnprintf(path, PATH_MAX, "%s", root_cached.mnt_dir);
+		if (rc2 < 0 || rc2 >= PATH_MAX - 1) {
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+			goto out_unlock;
+		}
+	}
 	if ((want & WANT_DEV) && dev)
 		*dev = root_cached.dev;
 	if ((want & WANT_FD) && outfd) {
@@ -159,36 +172,53 @@ static int get_root_path_fast(int want, char *fsname, int *outfd, char *path,
 				root_cached.fd = *outfd;
 		}
 	}
-	if ((want & WANT_NID) && nid)
-		strcpy(nid, root_cached.nid);
 out_unlock:
 	pthread_rwlock_unlock(&root_cached_lock);
 
 	return rc;
 }
 
+/**
+ * get_root_path_slow() - get mountpoint info from /proc/mounts and add to cache
+ *
+ * @want: bitmask of WANT_* flags indicating what information to return
+ * @fsname: if WANT_FSNAME is set, used as a buffer to return filesystem name
+ * (size is assumed to be PATH_MAX). Otherwise used to match the mount point
+ * @outfd: pointer to return open file descriptor (internal use only)
+ * @path: if WANT_PATH is set, used as a buffer to return mount point path
+ * (size is assumed to be PATH_MAX). Otherwise used to match the mount point
+ * @index: if WANT_INDEX is set, specifies which Lustre mount to find
+ * @dev: pointer to return device ID
+ * @out_nid: buffer to return a nidlist (dynamically allocated if rc == 0)
+ *
+ * Return:
+ * * %0 on success
+ * * %-ENODEV if no matching Lustre mount is found
+ * * %-ENAMETOOLONG if filesystem name, path, or NID is truncated
+ * * %negative error code on other failures
+ */
 static int get_root_path_slow(int want, char *fsname, int *outfd, char *path,
-			      int index, dev_t *dev, char *nid)
+			      int index, dev_t *dev, char **out_nid)
 {
 	struct mntent mnt;
 	char buf[PATH_MAX];
 	char *ptr, *ptr_end;
 	FILE *fp;
 	int idx = -1, mntlen = 0;
-	int rc = -ENODEV;
 	int fsnamelen = 0;
 	dev_t devmnt = 0;
+	int rc2;
+	int rc = -ENODEV;
 
 	/* get the mount point */
 	fp = setmntent(PROC_MOUNTS, "r");
-	if (fp == NULL) {
+	if (!fp) {
 		rc = -EIO;
 		llapi_error(LLAPI_MSG_ERROR, rc,
 			    "cannot retrieve filesystem mount point");
 		return rc;
 	}
 	while (getmntent_r(fp, &mnt, buf, sizeof(buf))) {
-
 		if (!llapi_is_lustre_mnt(&mnt))
 			continue;
 
@@ -202,13 +232,18 @@ static int get_root_path_slow(int want, char *fsname, int *outfd, char *path,
 		 * we are sure that mnt.mnt_fsname contains ":/",
 		 * so ptr should never be NULL
 		 */
-		if (ptr == NULL)
+		if (!ptr)
 			continue;
 		ptr_end = ptr;
 		while (*ptr_end != '/' && *ptr_end != '\0')
 			ptr_end++;
 
 		fsnamelen = ptr_end - ptr;
+
+		/* avoid stat/statx call if path does not match mountpoint */
+		if (path && (strlen(path) >= mntlen) &&
+		    (strncmp(mnt.mnt_dir, path, mntlen) != 0))
+			continue;
 
 		/* ignore unaccessible filesystem */
 		if (get_file_dev(mnt.mnt_dir, &devmnt))
@@ -233,10 +268,11 @@ static int get_root_path_slow(int want, char *fsname, int *outfd, char *path,
 			break;
 		}
 
-		/* Otherwise find the longest matching path */
-		if (path && strlen(path) >= mntlen &&
-		    (strncmp(mnt.mnt_dir, path, mntlen) == 0) &&
-		    (strlen(path) == mntlen || path[mntlen] == '/')) {
+		/*
+		 * Otherwise find the longest matching path beginning of path
+		 * and mnt_dir already verified to be the same.
+		 */
+		if (path && (strlen(path) == mntlen || path[mntlen] == '/')) {
 			rc = 0;
 			break;
 		}
@@ -260,27 +296,46 @@ static int get_root_path_slow(int want, char *fsname, int *outfd, char *path,
 		}
 		if ((want & WANT_FD) && outfd)
 			rc = get_root_fd(mnt.mnt_dir, &root_cached.fd);
-		strncpy(root_cached.fsname, ptr, fsnamelen);
-		root_cached.fsname[fsnamelen] = '\0';
-		strncpy(root_cached.mnt_dir, mnt.mnt_dir, mntlen);
-		root_cached.mnt_dir[mntlen] = '\0';
+
+		rc2 = scnprintf(root_cached.fsname, sizeof(root_cached.fsname),
+				"%.*s", fsnamelen, ptr);
+		if (rc2 < 0 || rc2 >= sizeof(root_cached.fsname) - 1) {
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+			goto unlock_root_cached;
+		}
+
+		rc2 = scnprintf(root_cached.mnt_dir,
+				sizeof(root_cached.mnt_dir), "%.*s", mntlen,
+				mnt.mnt_dir);
+		if (rc2 < 0 || rc2 >= sizeof(root_cached.mnt_dir) - 1)
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+
 		root_cached.dev = devmnt;
-		ptr_end = strstr(mnt.mnt_fsname, ":/");
-		strncpy(root_cached.nid, mnt.mnt_fsname,
-			ptr_end - mnt.mnt_fsname);
-		root_cached.nid[ptr_end - mnt.mnt_fsname] = '\0';
+
+		/* if rc, cache was only partially updated and must be reset */
+		if (rc)
+			memset(&root_cached, 0, sizeof(root_cached));
 
 unlock_root_cached:
 		pthread_rwlock_unlock(&root_cached_lock);
+
+		if (rc)
+			goto out;
 	}
 
 	if ((want & WANT_FSNAME) && fsname) {
-		strncpy(fsname, ptr, fsnamelen);
-		fsname[fsnamelen] = '\0';
+		rc2 = scnprintf(fsname, PATH_MAX, "%.*s", fsnamelen, ptr);
+		if (rc2 < 0 || rc2 >= PATH_MAX - 1) {
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+			goto out;
+		}
 	}
 	if ((want & WANT_PATH) && path) {
-		strncpy(path, mnt.mnt_dir, mntlen);
-		path[mntlen] = '\0';
+		rc2 = scnprintf(path, PATH_MAX, "%.*s", mntlen, mnt.mnt_dir);
+		if (rc2 < 0 || rc2 >= PATH_MAX - 1) {
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+			goto out;
+		}
 	}
 	if ((want & WANT_DEV) && dev)
 		*dev = devmnt;
@@ -290,10 +345,27 @@ unlock_root_cached:
 		else
 			rc = get_root_fd(mnt.mnt_dir, outfd);
 	}
-	if ((want & WANT_NID) && nid) {
-		ptr_end = strchr(mnt.mnt_fsname, ':');
-		strncpy(nid, mnt.mnt_fsname, ptr_end - mnt.mnt_fsname);
-		nid[ptr_end - mnt.mnt_fsname] = '\0';
+
+	if (!rc && (want & WANT_NID) && out_nid) {
+		size_t nid_bufsz;
+
+		ptr_end = strstr(mnt.mnt_fsname, ":/");
+		nid_bufsz = ptr_end - mnt.mnt_fsname + 2;
+		*out_nid = malloc(nid_bufsz);
+		if (!*out_nid) {
+			rc = -ENOMEM;
+			goto out;
+		}
+
+		rc2 = scnprintf(*out_nid, nid_bufsz, "%.*s",
+				(int)(ptr_end - mnt.mnt_fsname),
+				mnt.mnt_fsname);
+		if (rc2 < 0 || rc2 >= nid_bufsz - 1) {
+			rc = rc2 < 0 ? rc2 : -ENAMETOOLONG;
+			free(*out_nid);
+			*out_nid = NULL;
+			goto out;
+		}
 	}
 
 out:
@@ -301,25 +373,51 @@ out:
 	return rc;
 }
 
-/*
+/**
+ * get_root_path() - find filesystem info using cached or slow lookup
+ *
+ * @want: bitmask of WANT_* flags indicating what information to return
+ * @fsname: if WANT_FSNAME is set, used as a buffer to return filesystem name
+ * (size is assumed to be PATH_MAX). Otherwise used to match the mount point
+ * @outfd: pointer to return open file descriptor (internal use only)
+ * @path: if WANT_PATH is set, used as a buffer to return mount point path
+ * (size is assumed to be PATH_MAX). Otherwise used to match the mount point
+ * @index: if WANT_INDEX is set, specifies which Lustre mount to find
+ * @dev: pointer to return device ID
+ * @out_nid: buffer to return a nidlist (dynamically allocated if rc == 0)
+ *
  * Find the fsname, the full path, and/or an open fd.
  * Either the fsname or path must not be NULL.
  *
- * @outfd is for llapi internal use only, do not return it to the application.
+ * outfd is for llapi internal use only, do not return it to the application.
+ *
+ * Return:
+ * * %0 on success
+ * * %-ENODEV if no matching Lustre mount is found
+ * * %-ENAMETOOLONG if filesystem name, path, or NID is truncated
+ * * %negative error code on other failures
  */
 int get_root_path(int want, char *fsname, int *outfd, char *path, int index,
-		  dev_t *dev, char *nid)
+		  dev_t *dev, char **out_nid)
 {
 	int rc = -ENODEV;
 
-	if (!(want & WANT_INDEX))
-		rc = get_root_path_fast(want, fsname, outfd, path, dev, nid);
+	assert(fsname || path);
+
+	if (!(want & WANT_INDEX) && !(want & WANT_NID))
+		rc = get_root_path_fast(want, fsname, outfd, path, dev);
 	if (rc)
 		rc = get_root_path_slow(want, fsname, outfd, path, index, dev,
-					nid);
+					out_nid);
 
 	if (!rc || !(want & WANT_ERROR))
 		goto out_errno;
+
+	if (rc == -ENAMETOOLONG) {
+		llapi_err_noerrno(LLAPI_MSG_ERROR,
+				  "filesystem name, path, or NID is too long");
+		goto out_errno;
+	}
 
 	if (dev || !(want & WANT_DEV))
 		llapi_err_noerrno(LLAPI_MSG_ERROR,
@@ -333,6 +431,7 @@ out_errno:
 	errno = -rc;
 	return rc;
 }
+
 /*
  * search lustre mounts
  *

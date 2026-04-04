@@ -435,9 +435,10 @@ sub process {
 	my $stashrawline="";
 
 	@standard_headers = ('NAME', 'LIBRARY', 'SYNOPSIS', 'CONFIGURATION',
-		'DESCRIPTION', 'OPTIONS', 'EXIT STATUS', 'RETURN VALUE', 'ERRORS',
-		'ENVIRONMENT', 'FILES', 'ATTRIBUTES', 'VERSIONS', 'HISTORY', 'NOTES',
-		'CAVEATS', 'BUGS', 'EXAMPLES', 'AUTHORS', 'AVAILABILITY', 'SEE ALSO');
+		'DESCRIPTION', 'OPTIONS', 'EXIT STATUS', 'RETURN VALUE',
+		'ERRORS', 'ENVIRONMENT', 'MODULES', 'FILES', 'ATTRIBUTES',
+		'VERSIONS', 'HISTORY', 'NOTES', 'CAVEATS', 'BUGS', 'EXAMPLES',
+		'AUTHORS', 'AVAILABILITY', 'SEE ALSO');
 	my $valid_header_order = 1;
 
 	my $subjectline = '';
@@ -494,7 +495,7 @@ sub process {
 
 # check for shared object link
 		if ($line =~ /^\.so (.*\/)?(.*\.([1-8]))$/) {
-			if (! -e "lustre/doc/$2") {
+			if (! -e "Documentation/man3/$2") {
 				ERROR("SHARED_OBJECT_PATH",
 				      "The file that .so is referencing '$2' is not a valid man page\n" . $herecurr);
 			}
@@ -531,8 +532,8 @@ sub process {
 # check if \f is being used to format man pages
 		if ($line =~ /\\f[BIR]/) {
 			if ($prevline =~ /^\.TP/) {
-				CHK("ESCAPE_SEQUENCE_AFTER_TP",
-				    "IGNORE THIS CHECK. Avoid using \\f[BIR] for formatting purposes, however \\c is not supported when following .TP in groff 1.22.3 or older\n" . $hereprev);
+				#CHK("ESCAPE_SEQUENCE_AFTER_TP",
+				#    "IGNORE THIS CHECK. Avoid using \\f[BIR] for formatting purposes, however \\c is not supported when following .TP in groff 1.22.3 or older\n" . $hereprev);
 			} else {
 				WARN("AVOID_ESCAPE_SEQUENCE",
 				     "Avoid using \\f[BIR] for formatting purposes, instead use .[BI] or .[BIR][BIR] on a new line. Use \\c at the end of the previous line to use a different format without a space.\n" . $herecurr);
@@ -832,7 +833,7 @@ EOM
 				} else {
 					foreach my $subject (split(", ", $subjectline)) {
 						$subject =~ s/\-/ /;
-						if ($line =~ /$subject/ && $line !~ /^\.B [#\$]/) {
+						if ($line =~ /$subject/ && $line !~ /^\.B [clientmgods]*[#\$]/) {
 							CHK("EXAMPLES_FORMAT_USER_INPUT",
 							    "If this line is user input, it should be bold (.B) and prefaced with either '#'/'\$' for root/non-root users respectively\n" . $herecurr);
 						}

@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2010, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_handler.c
  *
  * Lustre Metadata Target (mdt) request handler
  *
@@ -69,7 +49,7 @@
 
 #if OBD_OCD_VERSION(3, 0, 53, 0) > LUSTRE_VERSION_CODE
 static int mdt_max_mod_rpcs_per_client_set(const char *val,
-				cfs_kernel_param_arg_t *kp)
+				const struct kernel_param *kp)
 {
 	unsigned int num;
 	int rc;
@@ -102,28 +82,6 @@ module_param_cb(max_mod_rpcs_per_client,
 MODULE_PARM_DESC(max_mod_rpcs_per_client,
 	"maximum number of modify RPCs in flight allowed per client (Deprecated)");
 #endif
-
-mdl_mode_t mdt_mdl_lock_modes[] = {
-	[LCK_MINMODE] = MDL_MINMODE,
-	[LCK_EX]      = MDL_EX,
-	[LCK_PW]      = MDL_PW,
-	[LCK_PR]      = MDL_PR,
-	[LCK_CW]      = MDL_CW,
-	[LCK_CR]      = MDL_CR,
-	[LCK_NL]      = MDL_NL,
-	[LCK_GROUP]   = MDL_GROUP
-};
-
-enum ldlm_mode mdt_dlm_lock_modes[] = {
-	[MDL_MINMODE]	= LCK_MINMODE,
-	[MDL_EX]	= LCK_EX,
-	[MDL_PW]	= LCK_PW,
-	[MDL_PR]	= LCK_PR,
-	[MDL_CW]	= LCK_CW,
-	[MDL_CR]	= LCK_CR,
-	[MDL_NL]	= LCK_NL,
-	[MDL_GROUP]	= LCK_GROUP
-};
 
 static struct mdt_device *mdt_dev(struct lu_device *d);
 
@@ -217,13 +175,13 @@ void mdt_lock_pdo_init(struct mdt_lock_handle *lh, enum ldlm_mode lock_mode,
 {
 	mdt_lock_handle_assert(lh);
 	lh->mlh_reg_mode = lock_mode;
-	lh->mlh_pdo_mode = LCK_MINMODE;
+	lh->mlh_pdo_mode = LCK_MODE_MIN;
 	lh->mlh_rreg_mode = lock_mode;
 	lh->mlh_type = MDT_PDO_LOCK;
 
 	if (lu_name_is_valid(lname)) {
-		lh->mlh_pdo_hash = ll_full_name_hash(NULL, lname->ln_name,
-						     lname->ln_namelen);
+		lh->mlh_pdo_hash = full_name_hash(NULL, lname->ln_name,
+						  lname->ln_namelen);
 		/* XXX Workaround for LU-2856
 		 *
 		 * Zero is a valid return value of full_name_hash, but several
@@ -241,7 +199,7 @@ void mdt_lock_pdo_init(struct mdt_lock_handle *lh, enum ldlm_mode lock_mode,
 static void mdt_lock_pdo_mode(struct mdt_thread_info *info, struct mdt_object *o,
 			      struct mdt_lock_handle *lh)
 {
-	mdl_mode_t mode;
+	enum ldlm_mode mode;
 
 	ENTRY;
 
@@ -267,25 +225,25 @@ static void mdt_lock_pdo_mode(struct mdt_thread_info *info, struct mdt_object *o
 	 * (lookup/modify/split) - LCK_EX --bzzz
 	 */
 
-	LASSERT(lh->mlh_reg_mode != LCK_MINMODE);
-	LASSERT(lh->mlh_pdo_mode == LCK_MINMODE);
+	LASSERT(lh->mlh_reg_mode != LCK_MODE_MIN);
+	LASSERT(lh->mlh_pdo_mode == LCK_MODE_MIN);
 
 	/*
 	 * Ask underlaying level its opinion about preferable PDO lock mode
 	 * having access type passed as regular lock mode:
 	 *
-	 * - MDL_MINMODE means that lower layer does not want to specify lock
+	 * - LCK_MODE_MIN means that lower layer does not want to specify lock
 	 * mode;
 	 *
-	 * - MDL_NL means that no PDO lock should be taken. This is used in some
+	 * - LCK_NL means that no PDO lock should be taken. This is used in some
 	 * cases. Say, for non-splittable directories no need to use PDO locks
 	 * at all.
 	 */
 	mode = mdo_lock_mode(info->mti_env, mdt_object_child(o),
-			     mdt_dlm_mode2mdl_mode(lh->mlh_reg_mode));
+			     lh->mlh_reg_mode);
 
-	if (mode != MDL_MINMODE) {
-		lh->mlh_pdo_mode = mdt_mdl_mode2dlm_mode(mode);
+	if (mode != LCK_MODE_MIN) {
+		lh->mlh_pdo_mode = mode;
 	} else {
 		/*
 		 * Lower layer does not want to specify locking mode. We do it
@@ -310,7 +268,7 @@ static void mdt_lock_pdo_mode(struct mdt_thread_info *info, struct mdt_object *o
 		}
 	}
 
-	LASSERT(lh->mlh_pdo_mode != LCK_MINMODE);
+	LASSERT(lh->mlh_pdo_mode != LCK_MODE_MIN);
 	EXIT;
 }
 
@@ -418,13 +376,16 @@ static int mdt_lookup_fileset(struct mdt_thread_info *info, const char *fileset,
 
 static int mdt_get_root(struct tgt_session_info *tsi)
 {
-	struct mdt_thread_info	*info = tsi2mdt_info(tsi);
-	struct mdt_device	*mdt = info->mti_mdt;
-	struct mdt_body		*repbody;
-	char			*fileset = NULL, *buffer = NULL;
-	int			 rc;
-	struct obd_export	*exp = info->mti_exp;
-	char			*nodemap_fileset;
+	struct mdt_thread_info *info = tsi2mdt_info(tsi);
+	struct mdt_device *mdt = info->mti_mdt;
+	struct obd_export *exp = info->mti_exp;
+	struct lu_nodemap *nodemap = NULL;
+	struct mdt_body *repbody;
+	char *fileset_mount = NULL;
+	char *fileset_buffer = NULL;
+	bool fileset_ro = false;
+	int fileset_buffer_size = 0;
+	int rc;
 
 	ENTRY;
 
@@ -437,34 +398,44 @@ static int mdt_get_root(struct tgt_session_info *tsi)
 
 	repbody = req_capsule_server_get(info->mti_pill, &RMF_MDT_BODY);
 	if (req_capsule_get_size(info->mti_pill, &RMF_NAME, RCL_CLIENT) > 0) {
-		fileset = req_capsule_client_get(info->mti_pill, &RMF_NAME);
-		if (fileset == NULL)
+		fileset_mount =
+			req_capsule_client_get(info->mti_pill, &RMF_NAME);
+		if (fileset_mount == NULL)
 			GOTO(out, rc = err_serious(-EFAULT));
 	}
 
-	nodemap_fileset = nodemap_get_fileset(exp->exp_target_data.ted_nodemap);
-	if (nodemap_fileset && nodemap_fileset[0]) {
-		CDEBUG(D_INFO, "nodemap fileset is %s\n", nodemap_fileset);
-		if (fileset) {
-			/* consider fileset from client as a sub-fileset
-			 * of the nodemap one
-			 */
-			OBD_ALLOC(buffer, PATH_MAX + 1);
-			if (buffer == NULL)
-				GOTO(out, rc = err_serious(-ENOMEM));
-			if (snprintf(buffer, PATH_MAX + 1, "%s/%s",
-				     nodemap_fileset, fileset) >= PATH_MAX + 1)
-				GOTO(out, rc = err_serious(-EINVAL));
-			fileset = buffer;
-		} else {
-			/* enforce fileset as specified in the nodemap */
-			fileset = nodemap_fileset;
+	/* refuse access if this nodemap is set to deny mounts */
+	nodemap = nodemap_get_from_exp(exp);
+	if (!IS_ERR_OR_NULL(nodemap)) {
+		if (nodemap->nmf_deny_mount) {
+			CDEBUG(D_SEC, "%s: denying client %s (at %s)\n",
+			       exp->exp_obd->obd_name,
+			       obd_uuid2str(&exp->exp_client_uuid),
+			       obd_export_nid2str(exp));
+			GOTO(out, rc = err_serious(-EPERM));
 		}
+		/* get new root from nodemap if filesets are available */
+		rc = nodemap_fileset_get_root(exp->exp_target_data.ted_nodemap,
+					      fileset_mount, &fileset_buffer,
+					      &fileset_buffer_size,
+					      &fileset_ro);
+		if (rc != 0)
+			GOTO(out, rc = err_serious(rc));
+		/* if fileset is read-only, the connection must be read-only.
+		 * rw filesets are still allowed to be mounted as read-only.
+		 */
+		if (fileset_ro && !(exp->exp_connect_data.ocd_connect_flags &
+				    OBD_CONNECT_RDONLY))
+			GOTO(out, rc = err_serious(-EROFS));
+
+		fileset_mount = fileset_buffer;
 	}
 
-	if (fileset) {
-		CDEBUG(D_INFO, "Getting fileset %s\n", fileset);
-		rc = mdt_lookup_fileset(info, fileset, &repbody->mbo_fid1);
+	/* check that root exists */
+	if (fileset_mount && fileset_mount[0] != '\0') {
+		CDEBUG(D_INFO, "Getting fileset %s\n", fileset_mount);
+		rc = mdt_lookup_fileset(info, fileset_mount,
+					&repbody->mbo_fid1);
 		if (rc < 0)
 			GOTO(out, rc = err_serious(rc));
 	} else {
@@ -476,7 +447,11 @@ static int mdt_get_root(struct tgt_session_info *tsi)
 	EXIT;
 out:
 	mdt_thread_info_fini(info);
-	OBD_FREE(buffer, PATH_MAX+1);
+	OBD_FREE(fileset_buffer, fileset_buffer_size);
+
+	if (!IS_ERR_OR_NULL(nodemap))
+		nodemap_putref(nodemap);
+
 	return rc;
 }
 
@@ -1106,16 +1081,16 @@ int __mdt_stripe_get(struct mdt_thread_info *info, struct mdt_object *o,
 
 got:
 		if (strcmp(name, XATTR_NAME_LOV) == 0) {
+			if (info->mti_big_lov_used) {
+				LASSERT(info->mti_big_lovsize >= rc);
+				ma->ma_lmm = info->mti_big_lov;
+			}
 			/* NOT return LOV EA with hole to old client. */
 			if (unlikely(le32_to_cpu(ma->ma_lmm->lmm_pattern) &
 				     LOV_PATTERN_F_HOLE) &&
 			    !(exp_connect_flags(info->mti_exp) &
 			      OBD_CONNECT_LFSCK)) {
 				return -EIO;
-			}
-			if (info->mti_big_lov_used) {
-				LASSERT(info->mti_big_lovsize >= rc);
-				ma->ma_lmm = info->mti_big_lov;
 			}
 			ma->ma_lmm_size = rc;
 			ma->ma_valid |= MA_LOV;
@@ -1161,7 +1136,7 @@ got:
 int mdt_stripe_get(struct mdt_thread_info *info, struct mdt_object *o,
 		   struct md_attr *ma, const char *name)
 {
-	void *big_lmm;
+	void *big_lmm = NULL;
 	int big_size, rc;
 	bool is_lmv;
 
@@ -1615,7 +1590,9 @@ static int mdt_getattr_internal(struct mdt_thread_info *info,
 		/* eadatasize from client includes NULL-terminator, so
 		 * there is no need to read it
 		 */
-		buffer->lb_len = reqbody->mbo_eadatasize - 1;
+		buffer->lb_len = 0;
+		if (reqbody->mbo_eadatasize > 0)
+			buffer->lb_len = reqbody->mbo_eadatasize - 1;
 		rc = mo_readlink(env, next, buffer);
 		if (unlikely(rc <= 0)) {
 			CERROR("%s: readlink failed for "DFID": rc = %d\n",
@@ -1696,7 +1673,7 @@ static int mdt_getattr(struct tgt_session_info *tsi)
 
 	reqbody = req_capsule_client_get(pill, &RMF_MDT_BODY);
 	LASSERT(reqbody);
-	LASSERT(lu_object_assert_exists(&obj->mot_obj));
+	LASSERT(lu_object_exists(&obj->mot_obj));
 
 	/* Special case for Data-on-MDT files to get data version */
 	if (unlikely(reqbody->mbo_valid & OBD_MD_FLDATAVERSION)) {
@@ -1864,12 +1841,15 @@ static void mdt_swap_lov_flag(struct mdt_object *o1, struct mdt_object *o2)
 
 static int mdt_swap_layouts(struct tgt_session_info *tsi)
 {
-	struct mdt_thread_info	*info;
-	struct ptlrpc_request	*req = tgt_ses_req(tsi);
-	struct obd_export	*exp = req->rq_export;
-	struct mdt_object	*o1, *o2, *o;
-	struct mdt_lock_handle	*lh1, *lh2;
+	struct ptlrpc_request *req = tgt_ses_req(tsi);
+	struct obd_export *exp = req->rq_export;
+	struct mdt_lock_handle *lh1, *lh2;
+	struct mdt_object *o1, *o2, *o;
+	struct mdt_thread_info *info;
 	struct mdc_swap_layouts *msl;
+	bool swap_objects = false;
+	__u64 dv1 = 0;
+	__u64 dv2 = 0;
 	int rc;
 
 	ENTRY;
@@ -1905,8 +1885,10 @@ static int mdt_swap_layouts(struct tgt_session_info *tsi)
 	if (unlikely(rc == 0)) /* same file, you kidding me? no-op. */
 		GOTO(put, rc);
 
-	if (rc < 0)
+	if (rc < 0) {
+		swap_objects = true;
 		swap(o1, o2);
+	}
 
 	/* permission check. Make sure the calling process having permission
 	 * to write both files.
@@ -1925,6 +1907,14 @@ static int mdt_swap_layouts(struct tgt_session_info *tsi)
 	if (msl == NULL)
 		GOTO(put, rc = -EPROTO);
 
+	if (msl->msl_flags & SWAP_LAYOUTS_WITH_DV12) {
+		dv1 = msl->msl_dv1;
+		dv2 = msl->msl_dv2;
+
+		if (swap_objects)
+			swap(dv1, dv2);
+	}
+
 	lh1 = &info->mti_lh[MDT_LH_NEW];
 	lh2 = &info->mti_lh[MDT_LH_OLD];
 	rc = mdt_object_lock(info, o1, lh1, MDS_INODELOCK_LAYOUT |
@@ -1938,7 +1928,7 @@ static int mdt_swap_layouts(struct tgt_session_info *tsi)
 		GOTO(unlock1, rc);
 
 	rc = mo_swap_layouts(info->mti_env, mdt_object_child(o1),
-			     mdt_object_child(o2), 0, 0, msl->msl_flags);
+			     mdt_object_child(o2), dv1, dv2, msl->msl_flags);
 	if (rc < 0)
 		GOTO(unlock2, rc);
 
@@ -2106,7 +2096,7 @@ out_match:
  */
 static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 				 struct mdt_lock_handle *lhc,
-				 __u64 child_bits,
+				 enum mds_ibits_locks child_bits,
 				 struct ldlm_reply *ldlm_rep)
 {
 	struct ptlrpc_request *req = mdt_info_req(info);
@@ -2119,7 +2109,7 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 	struct ldlm_lock *lock;
 	struct req_capsule *pill = info->mti_pill;
 	bool fscrypt_md = false;
-	__u64 try_bits = 0;
+	enum mds_ibits_locks try_bits = MDS_INODELOCK_NONE;
 	bool is_resent;
 	int ma_need = 0;
 	int rc;
@@ -2135,6 +2125,9 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 
 	if (info->mti_mdt->mdt_enable_dir_auto_split)
 		ma_need |= MA_DIRENT_CNT;
+
+	if (CFS_FAIL_TIMEOUT(OBD_FAIL_MDS_PAUSE_GETATTR, cfs_fail_val))
+		req->rq_pause_after_reply = 1;
 
 	if (info->mti_cross_ref) {
 		/* Only getattr on the child. Parent is on another node. */
@@ -2226,7 +2219,7 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 
 		CDEBUG(D_INODE, "getattr with lock for "DFID"/"DNAME", ldlm_rep = %p\n",
 		       PFID(mdt_object_fid(parent)),
-		       PNAME(lname), ldlm_rep);
+		       encode_fn_luname(lname), ldlm_rep);
 
 		if (parent->mot_obj.lo_header->loh_attr & LOHA_FSCRYPT_MD ||
 		    (fid_is_root(mdt_object_fid(parent)) &&
@@ -2458,7 +2451,7 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 			child_bits = 0;
 		}
 
-		if (try_bits != 0) {
+		if (try_bits != MDS_INODELOCK_NONE) {
 			/* try layout lock, it may fail to be granted due to
 			 * contention at LOOKUP or UPDATE
 			 */
@@ -2528,7 +2521,7 @@ static int mdt_getattr_name_lock(struct mdt_thread_info *info,
 						 req->rq_arrival_time.tv_sec +
 						 cfs_fail_val ?: 3);
 			/* Put the lock to the waiting list and force the cancel */
-			ldlm_set_ast_sent(lock);
+			(lock->l_flags |= LDLM_FL_AST_SENT);
 		}
 
 		/*
@@ -2835,11 +2828,11 @@ static int mdt_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 
 int mdt_io_set_info(struct tgt_session_info *tsi)
 {
-	struct ptlrpc_request	*req = tgt_ses_req(tsi);
-	struct ost_body		*body = NULL, *repbody;
-	void			*key, *val = NULL;
-	int			 keylen, vallen, rc = 0;
-	bool			 is_grant_shrink;
+	struct ptlrpc_request *req = tgt_ses_req(tsi);
+	struct ost_body	*body = NULL, *repbody;
+	bool is_grant_shrink;
+	int keylen, rc = 0;
+	void *key;
 
 	ENTRY;
 
@@ -2849,14 +2842,6 @@ int mdt_io_set_info(struct tgt_session_info *tsi)
 		RETURN(err_serious(-EFAULT));
 	}
 	keylen = req_capsule_get_size(tsi->tsi_pill, &RMF_SETINFO_KEY,
-				      RCL_CLIENT);
-
-	val = req_capsule_client_get(tsi->tsi_pill, &RMF_SETINFO_VAL);
-	if (val == NULL) {
-		DEBUG_REQ(D_HA, req, "no set_info val");
-		RETURN(err_serious(-EFAULT));
-	}
-	vallen = req_capsule_get_size(tsi->tsi_pill, &RMF_SETINFO_VAL,
 				      RCL_CLIENT);
 
 	is_grant_shrink = KEY_IS(KEY_GRANT_SHRINK);
@@ -2891,10 +2876,11 @@ int mdt_io_set_info(struct tgt_session_info *tsi)
 
 static int mdt_set_info(struct tgt_session_info *tsi)
 {
-	struct ptlrpc_request	*req = tgt_ses_req(tsi);
-	char			*key;
-	void			*val;
-	int			 keylen, vallen, rc = 0;
+	struct ptlrpc_request *req = tgt_ses_req(tsi);
+	struct obd_export *exp = req->rq_export;
+	char *key;
+	void *val;
+	int keylen, vallen, rc = 0;
 
 	ENTRY;
 
@@ -2923,8 +2909,8 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 			struct lu_nodemap *nm = NULL;
 			bool readonly = false;
 
-			if (req->rq_export)
-				nm = nodemap_get_from_exp(req->rq_export);
+			if (exp)
+				nm = nodemap_get_from_exp(exp);
 
 			if (!IS_ERR_OR_NULL(nm)) {
 				readonly = nm->nmf_readonly_mount;
@@ -2934,14 +2920,12 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 			if (unlikely(readonly))
 				RETURN(-EROFS);
 		}
-		spin_lock(&req->rq_export->exp_lock);
+		spin_lock(&exp->exp_lock);
 		if (*(__u32 *)val)
-			*exp_connect_flags_ptr(req->rq_export) |=
-				OBD_CONNECT_RDONLY;
+			*exp_connect_flags_ptr(exp) |= OBD_CONNECT_RDONLY;
 		else
-			*exp_connect_flags_ptr(req->rq_export) &=
-				~OBD_CONNECT_RDONLY;
-		spin_unlock(&req->rq_export->exp_lock);
+			*exp_connect_flags_ptr(exp) &= ~OBD_CONNECT_RDONLY;
+		spin_unlock(&exp->exp_lock);
 	} else if (KEY_IS(KEY_CHANGELOG_CLEAR)) {
 		struct changelog_setinfo *cs = val;
 
@@ -2955,13 +2939,13 @@ static int mdt_set_info(struct tgt_session_info *tsi)
 			__swab32s(&cs->cs_id);
 		}
 
-		if (!mdt_changelog_allow(tsi2mdt_info(tsi)))
+		if (!mdt_changelog_allow(tsi2mdt_info(tsi), exp))
 			RETURN(-EACCES);
-		rc = mdt_iocontrol(OBD_IOC_CHANGELOG_CLEAR, req->rq_export,
+		rc = mdt_iocontrol(OBD_IOC_CHANGELOG_CLEAR, exp,
 				   vallen, val, NULL);
 	} else if (KEY_IS(KEY_EVICT_BY_NID)) {
 		if (vallen > 0)
-			obd_export_evict_by_nid(req->rq_export->exp_obd, val);
+			obd_export_evict_by_nid(exp->exp_obd, val);
 	} else {
 		RETURN(-EINVAL);
 	}
@@ -3087,6 +3071,140 @@ static void mdt_preset_secctx_size(struct mdt_thread_info *info)
 	}
 }
 
+int mdt_object_striped(struct mdt_thread_info *mti, struct mdt_object *obj)
+{
+	struct lu_device *bottom_dev;
+	struct lu_object *bottom_obj;
+	int rc;
+
+	if (!S_ISDIR(obj->mot_header.loh_attr))
+		return 0;
+
+	/* getxattr from bottom obj to avoid reading in shard FIDs */
+	bottom_dev = dt2lu_dev(mti->mti_mdt->mdt_bottom);
+	bottom_obj = lu_object_find_slice(mti->mti_env, bottom_dev,
+					  mdt_object_fid(obj), NULL);
+	if (IS_ERR(bottom_obj))
+		return PTR_ERR(bottom_obj);
+
+	rc = dt_xattr_get(mti->mti_env, lu2dt(bottom_obj), &LU_BUF_NULL,
+			  XATTR_NAME_LMV);
+	lu_object_put(mti->mti_env, bottom_obj);
+
+	return (rc > 0) ? 1 : (rc == -ENODATA) ? 0 : rc;
+}
+
+static int mdt_dir_read_on_open(struct mdt_thread_info	*info,
+				struct lustre_handle *lhc)
+{
+	const struct lu_env *env = info->mti_env;
+	struct lu_rdpg		*rdpg = &info->mti_u.rdpg.mti_rdpg;
+	struct req_capsule	*pill = info->mti_pill;
+	int			 rc;
+	struct mdt_body         *mbo;
+	struct mdt_device	*mdt = info->mti_mdt;
+	struct mdt_object	*o;
+	struct ptlrpc_request	*req = pill->rc_req;
+	bool have_lock = false;
+	struct lu_fid *fid; // dir fid
+
+	ENTRY;
+
+	if (CFS_FAIL_CHECK(OBD_FAIL_MDS_READPAGE_PACK))
+		GOTO(out_err, rc = -ENOMEM);
+
+	/* client don't want a reply */
+	if (!req->rq_reqmsg->lm_repsize)
+		RETURN(0);
+
+	if (lustre_handle_is_used(lhc)) {
+		struct ldlm_lock *lock;
+
+		lock = ldlm_handle2lock(lhc);
+		if (lock) {
+			have_lock = ldlm_has_update(lock);
+			ldlm_lock_put(lock);
+		}
+	}
+	if (!have_lock)
+		GOTO(out_err, rc = 0);
+
+	rdpg->rp_hash = 0;
+	rdpg->rp_attrs = LUDA_FID | LUDA_TYPE;
+	if (exp_connect_flags(info->mti_exp) & OBD_CONNECT_64BITHASH)
+		rdpg->rp_attrs |= LUDA_64BITHASH;
+	rdpg->rp_count  = req->rq_reqmsg->lm_repsize;
+	rdpg->rp_npages = 0;
+
+	rc = req_capsule_server_grow(pill, &RMF_NIOBUF_INLINE, rdpg->rp_count);
+	if (rc != 0)
+		/* failed to grow data buffer, just exit */
+		GOTO(out_err, rc = -E2BIG);
+
+	/* re-take MDT_BODY and NIOBUF_INLINE buffers after the buffer grow */
+	mbo = req_capsule_server_get(pill, &RMF_MDT_BODY);
+	fid = &mbo->mbo_fid1;
+	if (!fid_is_sane(fid))
+		GOTO(out_rnb, rc = -EINVAL);
+
+	rdpg->rp_data = req_capsule_server_get(pill, &RMF_NIOBUF_INLINE);
+	if (rdpg->rp_data == NULL)
+		GOTO(out_rnb, rc = -EPROTO);
+
+	o = mdt_object_find(info->mti_env, mdt, fid);
+	if (IS_ERR(o))
+		GOTO(out_rnb, rc = PTR_ERR(o));
+
+	if (!mdt_object_exists(o) ||
+	     mdt_object_remote(o) ||
+	     mdt_object_striped(info, o))
+		GOTO(out_put, rc = -ENOENT);
+
+	/* call lower layers to fill allocated pages with directory data */
+	rc = mo_readpage(env, mdt_object_child(o), rdpg);
+out_put:
+	mdt_object_put(env, o);
+
+out_rnb:
+	if (rc < 0)
+		req_capsule_shrink(pill, &RMF_NIOBUF_INLINE, 0, RCL_SERVER);
+	else
+		req_capsule_shrink(pill, &RMF_NIOBUF_INLINE, rc, RCL_SERVER);
+out_err:
+	if (rc)
+		CDEBUG(D_INFO, "read dir on open failed with rc = %d\n", rc);
+	RETURN(0);
+}
+
+static int mdt_read_inline(struct mdt_thread_info *info,
+			   struct mdt_lock_handle *lhc)
+{
+	struct req_capsule	*pill = info->mti_pill;
+	struct md_attr		*ma  = &info->mti_attr;
+	struct lu_attr		*la  = &ma->ma_attr;
+	struct ptlrpc_request	*req = pill->rc_req;
+	int rc = 0;
+
+	ENTRY;
+	if (!req_capsule_field_present(pill, &RMF_NIOBUF_INLINE, RCL_SERVER)) {
+		/* There is no reply buffers for this field, this means that
+		 * client has no support for data in reply.
+		 */
+		RETURN(0);
+	}
+	/* client don't want a reply */
+	if (!req->rq_reqmsg->lm_repsize)
+		RETURN(0);
+
+	if (S_ISREG(la->la_mode))
+		rc = mdt_dom_read_on_open(info, info->mti_mdt,
+					  &lhc->mlh_reg_lh);
+	else if (S_ISDIR(la->la_mode))
+		rc = mdt_dir_read_on_open(info, &lhc->mlh_reg_lh);
+
+	return rc;
+}
+
 static int mdt_reint_internal(struct mdt_thread_info *info,
 			      struct mdt_lock_handle *lhc,
 			      __u32 op)
@@ -3182,8 +3300,7 @@ out_shrink:
 	 * in reply when possible.
 	 */
 	if (rc == 0 && op == REINT_OPEN && !req_is_replay(pill->rc_req))
-		rc = mdt_dom_read_on_open(info, info->mti_mdt,
-					  &lhc->mlh_reg_lh);
+		rc = mdt_read_inline(info, lhc);
 
 	return rc;
 }
@@ -3257,6 +3374,7 @@ int mdt_device_sync(const struct lu_env *env, struct mdt_device *mdt)
 	int rc;
 
 	ENTRY;
+	lu_objects_destroy_delayed();
 
 	rc = dt->dd_ops->dt_sync(env, dt);
 	RETURN(rc);
@@ -3386,6 +3504,17 @@ put:
 	return rc;
 }
 
+/* To get default quotas ID needs to be 0, so
+ * no reasons to swap this according to nodemap.
+ */
+static inline bool qmt_need_swap(__u32 cmd)
+{
+	if (cmd == LUSTRE_Q_GETDEFAULT || cmd == LUSTRE_Q_GETDEFAULT_POOL)
+		return false;
+
+	return true;
+}
+
 /*
  * Handle quota control requests to consult current usage/limit, but also
  * to configure quota enforcement
@@ -3430,10 +3559,12 @@ static int mdt_quotactl(struct tgt_session_info *tsi)
 	case LUSTRE_Q_SETQUOTAPOOL:
 	case LUSTRE_Q_SETINFOPOOL:
 	case LUSTRE_Q_SETDEFAULT_POOL:
+	case LUSTRE_Q_SETQUOTALQA:
+	case LUSTRE_Q_SETINFOLQA:
 	case LUSTRE_Q_DELETEQID:
 	case LUSTRE_Q_RESETQID:
-		if (!nodemap_can_setquota(nodemap, oqctl->qc_type,
-					  oqctl->qc_id))
+		if (!nodemap_can_setquota(nodemap, oqctl->qc_cmd,
+					  oqctl->qc_type, oqctl->qc_id))
 			GOTO(out_nodemap, rc = -EPERM);
 		fallthrough;
 	case Q_GETINFO:
@@ -3441,6 +3572,8 @@ static int mdt_quotactl(struct tgt_session_info *tsi)
 	case LUSTRE_Q_GETDEFAULT:
 	case LUSTRE_Q_GETQUOTAPOOL:
 	case LUSTRE_Q_GETINFOPOOL:
+	case LUSTRE_Q_GETQUOTALQA:
+	case LUSTRE_Q_GETINFOLQA:
 	case LUSTRE_Q_GETDEFAULT_POOL:
 	case LUSTRE_Q_ITERQUOTA:
 		if (qmt == NULL)
@@ -3489,16 +3622,21 @@ static int mdt_quotactl(struct tgt_session_info *tsi)
 	if (oqctl->qc_cmd == Q_SETINFO || oqctl->qc_cmd == Q_SETQUOTA)
 		barrier_exit(tsi->tsi_tgt->lut_bottom);
 
-	if (oqctl->qc_id != id)
+	if (oqctl->qc_id != id && qmt_need_swap(oqctl->qc_cmd))
 		swap(oqctl->qc_id, id);
 
 	if (oqctl->qc_cmd == Q_SETINFO || oqctl->qc_cmd == Q_SETQUOTA) {
 		if (unlikely(!barrier_entry(tsi->tsi_tgt->lut_bottom)))
-			RETURN(-EINPROGRESS);
+			GOTO(out_nodemap, -EINPROGRESS);
 	}
 
 	switch (oqctl->qc_cmd) {
 
+	case LUSTRE_Q_ITERQUOTA:
+		rc = lquota_iter_change_qid(nodemap, oqctl);
+		if (rc)
+			GOTO(out_nodemap, rc);
+		fallthrough;
 	case Q_GETINFO:
 	case Q_SETINFO:
 	case Q_SETQUOTA:
@@ -3509,24 +3647,29 @@ static int mdt_quotactl(struct tgt_session_info *tsi)
 	case LUSTRE_Q_GETQUOTAPOOL:
 	case LUSTRE_Q_SETINFOPOOL:
 	case LUSTRE_Q_GETINFOPOOL:
+	case LUSTRE_Q_SETQUOTALQA:
+	case LUSTRE_Q_GETQUOTALQA:
+	case LUSTRE_Q_SETINFOLQA:
+	case LUSTRE_Q_GETINFOLQA:
 	case LUSTRE_Q_SETDEFAULT_POOL:
 	case LUSTRE_Q_GETDEFAULT_POOL:
 	case LUSTRE_Q_DELETEQID:
 	case LUSTRE_Q_RESETQID:
-	case LUSTRE_Q_ITERQUOTA:
 		/* forward quotactl request to QMT */
-		rc = qmt_hdls.qmth_quotactl(tsi->tsi_env, qmt, oqctl, buffer,
-					    buffer == NULL ? 0 :
-							LQUOTA_ITER_BUFLEN);
+		rc = qmt_hdls.qmth_quotactl(tsi->tsi_env, qmt, nodemap, oqctl,
+					    buffer);
 		break;
 
+	case LUSTRE_Q_ITEROQUOTA:
+		rc = lquota_iter_change_qid(nodemap, oqctl);
+		if (rc)
+			GOTO(out_nodemap, rc);
+		fallthrough;
 	case Q_GETOINFO:
 	case Q_GETOQUOTA:
-	case LUSTRE_Q_ITEROQUOTA:
 		/* slave quotactl */
 		rc = lquotactl_slv(tsi->tsi_env, tsi->tsi_tgt->lut_bottom,
-				   oqctl, buffer,
-				   buffer == NULL ? 0 : LQUOTA_ITER_BUFLEN);
+				   nodemap, oqctl, buffer);
 		break;
 
 	default:
@@ -3534,7 +3677,7 @@ static int mdt_quotactl(struct tgt_session_info *tsi)
 		GOTO(out_nodemap, rc = -EFAULT);
 	}
 
-	if (oqctl->qc_id != id)
+	if (oqctl->qc_id != id && qmt_need_swap(oqctl->qc_cmd))
 		swap(oqctl->qc_id, id);
 
 	QCTL_COPY_NO_PNAME(repoqc, oqctl);
@@ -3805,7 +3948,7 @@ int mdt_remote_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *desc,
 
 		ldlm_lock2handle(lock, &lockh);
 		rc = ldlm_cli_cancel(&lockh,
-			ldlm_is_atomic_cb(lock) ? 0 : LCF_ASYNC);
+			(lock->l_flags & LDLM_FL_ATOMIC_CB) ? 0 : LCF_ASYNC);
 		if (rc < 0) {
 			CDEBUG(D_INODE, "ldlm_cli_cancel: %d\n", rc);
 			RETURN(rc);
@@ -3975,7 +4118,7 @@ int mdt_object_pdo_lock(struct mdt_thread_info *info, struct mdt_object *obj,
 		return -ENOTDIR;
 
 	policy->l_inodebits.bits = MDS_INODELOCK_UPDATE;
-	policy->l_inodebits.try_bits = 0;
+	policy->l_inodebits.try_bits = MDS_INODELOCK_NONE;
 	policy->l_inodebits.li_gid = 0;
 	policy->l_inodebits.li_initiator_id = mdt_node_id(info->mti_mdt);
 	fid_build_reg_res_name(mdt_object_fid(obj), res_id);
@@ -4022,8 +4165,10 @@ int mdt_object_pdo_lock(struct mdt_thread_info *info, struct mdt_object *obj,
 
 int mdt_object_lock_internal(struct mdt_thread_info *info,
 			     struct mdt_object *obj, const struct lu_fid *fid,
-			     struct mdt_lock_handle *lh, __u64 *ibits,
-			     __u64 trybits, bool cache)
+			     struct mdt_lock_handle *lh,
+			     enum mds_ibits_locks *ibits,
+			     enum mds_ibits_locks trybits,
+			     bool cache)
 {
 	union ldlm_policy_data *policy = &info->mti_policy;
 	struct ldlm_res_id *res_id = &info->mti_res_id;
@@ -4045,7 +4190,7 @@ int mdt_object_lock_internal(struct mdt_thread_info *info,
 	if (obj && mdt_object_remote(obj)) {
 		handle = &lh->mlh_rreg_lh;
 		LASSERT(!lustre_handle_is_used(handle));
-		LASSERT(lh->mlh_rreg_mode != LCK_MINMODE);
+		LASSERT(lh->mlh_rreg_mode != LCK_MODE_MIN);
 		LASSERT(lh->mlh_type != MDT_NUL_LOCK);
 		rc = mdt_remote_object_lock_try(info, obj, handle,
 						lh->mlh_rreg_mode, policy,
@@ -4063,7 +4208,7 @@ int mdt_object_lock_internal(struct mdt_thread_info *info,
 
 		handle = &lh->mlh_reg_lh;
 		LASSERT(!lustre_handle_is_used(handle));
-		LASSERT(lh->mlh_reg_mode != LCK_MINMODE);
+		LASSERT(lh->mlh_reg_mode != LCK_MODE_MIN);
 		LASSERT(lh->mlh_type != MDT_NUL_LOCK);
 
 		/* Lease lock are granted with LDLM_FL_CANCEL_ON_BLOCK */
@@ -4129,7 +4274,7 @@ int mdt_object_lock_internal(struct mdt_thread_info *info,
  * \retval		0 on success, -ev on error.
  */
 int mdt_object_lock(struct mdt_thread_info *info, struct mdt_object *obj,
-		    struct mdt_lock_handle *lh, __u64 ibits,
+		    struct mdt_lock_handle *lh,  enum mds_ibits_locks ibits,
 		    enum ldlm_mode mode)
 {
 	int rc;
@@ -4161,8 +4306,8 @@ int mdt_object_lock(struct mdt_thread_info *info, struct mdt_object *obj,
  */
 int mdt_object_check_lock(struct mdt_thread_info *info,
 			  struct mdt_object *parent, struct mdt_object *child,
-			  struct mdt_lock_handle *lh, __u64 ibits,
-			  enum ldlm_mode mode)
+			  struct mdt_lock_handle *lh,
+			  enum mds_ibits_locks ibits, enum ldlm_mode mode)
 {
 	int rc;
 
@@ -4177,7 +4322,7 @@ int mdt_object_check_lock(struct mdt_thread_info *info,
 
 	mdt_lock_reg_init(lh, mode);
 	if (mdt_object_remote(parent) ^ mdt_object_remote(child)) {
-		__u64 lookup_ibits = MDS_INODELOCK_LOOKUP;
+		enum mds_ibits_locks lookup_ibits = MDS_INODELOCK_LOOKUP;
 
 		rc = mdt_object_lock_internal(info, parent,
 					      mdt_object_fid(child), lh,
@@ -4220,7 +4365,7 @@ int mdt_parent_lock(struct mdt_thread_info *info, struct mdt_object *obj,
 	LASSERT(obj && lname);
 	LASSERT(mode == LCK_PW || mode == LCK_PR);
 	if (mdt_object_remote(obj) && mode == LCK_PR) {
-		__u64 ibits = MDS_INODELOCK_UPDATE;
+		enum mds_ibits_locks ibits = MDS_INODELOCK_UPDATE;
 
 		mdt_lock_reg_init(lh, mode);
 		rc = mdt_object_lock_internal(info, obj, mdt_object_fid(obj),
@@ -4249,8 +4394,8 @@ int mdt_parent_lock(struct mdt_thread_info *info, struct mdt_object *obj,
  * \retval		0 on success, -ev on error.
  */
 int mdt_object_lock_try(struct mdt_thread_info *info, struct mdt_object *obj,
-			struct mdt_lock_handle *lh, __u64 *ibits,
-			__u64 trybits, enum ldlm_mode mode)
+			struct mdt_lock_handle *lh, enum mds_ibits_locks *ibits,
+			enum mds_ibits_locks trybits, enum ldlm_mode mode)
 {
 	bool trylock_only = *ibits == 0;
 	int rc;
@@ -4276,7 +4421,7 @@ int mdt_object_lookup_lock(struct mdt_thread_info *info,
 			   struct mdt_object *pobj, struct mdt_object *obj,
 			   struct mdt_lock_handle *lh, enum ldlm_mode mode)
 {
-	__u64 ibits = MDS_INODELOCK_LOOKUP;
+	enum mds_ibits_locks ibits = MDS_INODELOCK_LOOKUP;
 	int rc;
 
 	ENTRY;
@@ -4439,7 +4584,8 @@ void mdt_object_unlock(struct mdt_thread_info *info, struct mdt_object *o,
 struct mdt_object *mdt_object_find_lock(struct mdt_thread_info *info,
 					const struct lu_fid *f,
 					struct mdt_lock_handle *lh,
-					__u64 ibits, enum ldlm_mode mode)
+					enum mds_ibits_locks ibits,
+					enum ldlm_mode mode)
 {
 	struct mdt_object *o;
 
@@ -4960,8 +5106,8 @@ static int mdt_layout_change_pccro(struct mdt_thread_info *info,
 	if (rc)
 		RETURN(rc);
 
-	rc = mo_layout_pccro_check(info->mti_env,
-				   mdt_object_child(obj), layout);
+	rc = mo_layout_check(info->mti_env,
+			     mdt_object_child(obj), layout);
 	if (rc == -EALREADY)
 		RETURN(0);
 
@@ -5593,7 +5739,7 @@ static int mdt_seq_init(const struct lu_env *env, struct mdt_device *mdt)
 
 		rc = seq_server_init(env, ss->ss_control_seq, mdt->mdt_bottom,
 				     mdt_obd_name(mdt), LUSTRE_SEQ_CONTROLLER,
-				     ss);
+				     ss, true);
 		if (rc)
 			GOTO(out_seq_fini, rc);
 	}
@@ -5604,7 +5750,7 @@ static int mdt_seq_init(const struct lu_env *env, struct mdt_device *mdt)
 		GOTO(out_seq_fini, rc = -ENOMEM);
 
 	rc = seq_server_init(env, ss->ss_server_seq, mdt->mdt_bottom,
-			     mdt_obd_name(mdt), LUSTRE_SEQ_SERVER, ss);
+			     mdt_obd_name(mdt), LUSTRE_SEQ_SERVER, ss, true);
 	if (rc)
 		GOTO(out_seq_fini, rc);
 
@@ -5858,28 +6004,9 @@ static int mdt_stack_init(const struct lu_env *env, struct mdt_device *mdt,
 		GOTO(free_bufs, rc = -EINVAL);
 	}
 
-	lustre_cfg_bufs_reset(bufs, name);
-	lustre_cfg_bufs_set_string(bufs, 1, LUSTRE_MDD_NAME);
-	lustre_cfg_bufs_set_string(bufs, 2, uuid);
-	lustre_cfg_bufs_set_string(bufs, 3, lprof->lp_dt);
-
-	OBD_ALLOC(lcfg, lustre_cfg_len(bufs->lcfg_bufcount, bufs->lcfg_buflen));
-	if (!lcfg)
-		GOTO(put_profile, rc = -ENOMEM);
-	lustre_cfg_init(lcfg, LCFG_ATTACH, bufs);
-
-	rc = class_attach(lcfg);
-	if (rc)
-		GOTO(lcfg_cleanup, rc);
-
-	obd = class_name2obd(name);
-	if (!obd) {
-		CERROR("Can not find obd %s (%s in config)\n",
-		       MDD_OBD_NAME, lustre_cfg_string(cfg, 0));
-		GOTO(lcfg_cleanup, rc = -EINVAL);
-	}
-
-	OBD_FREE(lcfg, lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens));
+	obd = class_attach_name(LUSTRE_MDD_NAME, name, uuid);
+	if (IS_ERR(obd))
+		GOTO(put_profile, rc = PTR_ERR(obd));
 
 	lustre_cfg_bufs_reset(bufs, name);
 	lustre_cfg_bufs_set_string(bufs, 1, uuid);
@@ -5924,9 +6051,9 @@ static int mdt_stack_init(const struct lu_env *env, struct mdt_device *mdt,
 	EXIT;
 class_detach:
 	if (rc)
-		class_detach(obd, lcfg);
-lcfg_cleanup:
-	OBD_FREE(lcfg, lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens));
+		class_detach(obd);
+	if (lcfg)
+		OBD_FREE(lcfg, lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens));
 put_profile:
 	class_put_profile(lprof);
 free_bufs:
@@ -5992,28 +6119,9 @@ static int mdt_quota_init(const struct lu_env *env, struct mdt_device *mdt,
 		GOTO(cleanup_mem, rc = -EINVAL);
 	}
 
-	lustre_cfg_bufs_reset(bufs, qmtname);
-	lustre_cfg_bufs_set_string(bufs, 1, LUSTRE_QMT_NAME);
-	lustre_cfg_bufs_set_string(bufs, 2, uuid);
-	lustre_cfg_bufs_set_string(bufs, 3, lprof->lp_dt);
-
-	OBD_ALLOC(lcfg, lustre_cfg_len(bufs->lcfg_bufcount, bufs->lcfg_buflen));
-	if (!lcfg)
-		GOTO(put_profile, rc = -ENOMEM);
-	lustre_cfg_init(lcfg, LCFG_ATTACH, bufs);
-
-	rc = class_attach(lcfg);
-	if (rc)
-		GOTO(lcfg_cleanup, rc);
-
-	obd = class_name2obd(qmtname);
-	if (!obd) {
-		CERROR("Can not find obd %s (%s in config)\n", qmtname,
-		       lustre_cfg_string(cfg, 0));
-		GOTO(lcfg_cleanup, rc = -EINVAL);
-	}
-
-	OBD_FREE(lcfg, lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens));
+	obd = class_attach_name(LUSTRE_QMT_NAME, qmtname, uuid);
+	if (IS_ERR(obd))
+		GOTO(put_profile, rc = PTR_ERR(obd));
 
 	lustre_cfg_bufs_reset(bufs, qmtname);
 	lustre_cfg_bufs_set_string(bufs, 1, uuid);
@@ -6064,7 +6172,7 @@ class_cleanup:
 	}
 class_detach:
 	if (rc)
-		class_detach(obd, lcfg);
+		class_detach(obd);
 lcfg_cleanup:
 	OBD_FREE(lcfg, lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens));
 put_profile:
@@ -6113,12 +6221,57 @@ static int mdt_tgt_getxattr(struct tgt_session_info *tsi)
 
 static int mdt_llog_open(struct tgt_session_info *tsi)
 {
-	ENTRY;
+	struct mdt_thread_info *info;
 
-	if (!mdt_changelog_allow(tsi2mdt_info(tsi)))
+	ENTRY;
+	info = tsi2mdt_info(tsi);
+	if (!info)
+		RETURN(err_serious(-EACCES));
+
+	if (!mdt_changelog_allow(info, tsi->tsi_exp))
 		RETURN(err_serious(-EACCES));
 
 	RETURN(tgt_llog_open(tsi));
+}
+
+static int mdt_changelog_get_user_info(struct tgt_session_info *tsi)
+{
+	struct mdt_thread_info *info = tsi2mdt_info(tsi);
+	struct mdt_device *mdt = info->mti_mdt;
+	struct changelog_filter *in;
+	struct changelog_filter *out;
+	int rc = 0;
+
+	ENTRY;
+
+	/* Get data from request */
+	in = req_capsule_client_get(tsi->tsi_pill, &RMF_GETINFO_VAL);
+	if (in == NULL) {
+		DEBUG_REQ(D_IOCTL, tgt_ses_req(tsi), "no GETINFO VAL");
+		RETURN(err_serious(-EPROTO));
+	}
+
+	/* Set reply size and prepare for reply data */
+	req_capsule_set_size(tsi->tsi_pill, &RMF_GETINFO_VAL, RCL_SERVER,
+			     sizeof(struct changelog_filter));
+	rc = req_capsule_server_pack(tsi->tsi_pill);
+	if (rc)
+		RETURN(err_serious(rc));
+	out = req_capsule_server_get(tsi->tsi_pill, &RMF_GETINFO_VAL);
+	if (out == NULL)
+		RETURN(err_serious(-EPROTO));
+
+	/* Forward to MDD layer */
+	rc = mdt->mdt_child->md_ops->mdo_iocontrol(info->mti_env,
+						   mdt->mdt_child,
+						   OBD_IOC_CHANGELOG_FILTER,
+						   sizeof(*in), in);
+	out->cf_mask = in->cf_mask;
+	out->cf_user_id = in->cf_user_id;
+	strscpy(out->cf_username, in->cf_username, sizeof(out->cf_username));
+
+	mdt_thread_info_fini(info);
+	RETURN(rc);
 }
 
 #define OBD_FAIL_OST_READ_NET	OBD_FAIL_OST_BRW_NET
@@ -6433,7 +6586,9 @@ static int mdt_init0(const struct lu_env *env, struct mdt_device *m,
 	m->mdt_enable_parallel_rename_crossdir = 1;
 	m->mdt_enable_remote_dir = 1;
 	m->mdt_enable_remote_dir_gid = 0;
+	m->mdt_enable_pin_gid = 0;
 	m->mdt_enable_remote_rename = 1;
+	m->mdt_enable_rename_trylock = 1;
 	m->mdt_enable_striped_dir = 1;
 	m->mdt_enable_dmv_implicit_inherit = 1;
 	m->mdt_dir_restripe_nsonly = 1;
@@ -6470,7 +6625,7 @@ static int mdt_init0(const struct lu_env *env, struct mdt_device *m,
 	 * FIXME: we do not failout mds0/mgs, which may cause some problems.
 	 * assumed whose ss_node_id == 0 XXX
 	 */
-	obd->obd_replayable = 1;
+	set_bit(OBDF_REPLAYABLE, obd->obd_flags);
 	/* No connection accepted until configurations will finish */
 	obd->obd_no_conn = 1;
 
@@ -6479,7 +6634,7 @@ static int mdt_init0(const struct lu_env *env, struct mdt_device *m,
 
 		if (strchr(str, 'n')) {
 			CWARN("%s: recovery disabled\n", mdt_obd_name(m));
-			obd->obd_replayable = 0;
+			clear_bit(OBDF_REPLAYABLE, obd->obd_flags);
 		}
 	}
 
@@ -6794,6 +6949,7 @@ static struct lu_object *mdt_object_alloc(const struct lu_env *env,
 		mo->mot_lsom_size = 0;
 		mo->mot_lsom_blocks = 0;
 		mo->mot_lsom_inited = false;
+		mo->mot_discard_done = false;
 		RETURN(o);
 	}
 	RETURN(NULL);
@@ -7000,8 +7156,15 @@ static int mdt_connect_internal(const struct lu_env *env,
 	    !(data->ocd_connect_flags & OBD_CONNECT_RDONLY))
 		RETURN(-EACCES);
 
-	if (data->ocd_connect_flags & OBD_CONNECT_FLAGS2)
-		data->ocd_connect_flags2 &= MDT_CONNECT_SUPPORTED2;
+	if (data->ocd_connect_flags & OBD_CONNECT_FLAGS2) {
+		__u64 supported2 = MDT_CONNECT_SUPPORTED2;
+
+		/* Add FLR_EC to supported flags when enabled */
+		if (mdt_enable_flr_ec)
+			supported2 |= OBD_CONNECT2_FLR_EC;
+
+		data->ocd_connect_flags2 &= supported2;
+	}
 
 	data->ocd_ibits_known &= MDS_INODELOCK_FULL;
 
@@ -7068,14 +7231,16 @@ static int mdt_connect_internal(const struct lu_env *env,
 		return -EBADE;
 	}
 
-	if (OCD_HAS_FLAG(data, PINGLESS)) {
-		if (ptlrpc_pinger_suppress_pings()) {
-			spin_lock(&exp->exp_obd->obd_dev_lock);
-			list_del_init(&exp->exp_obd_chain_timed);
-			spin_unlock(&exp->exp_obd->obd_dev_lock);
-		} else {
-			data->ocd_connect_flags &= ~OBD_CONNECT_PINGLESS;
-		}
+	if (OCD_HAS_FLAG(data, PINGLESS) && !ptlrpc_pinger_suppress_pings())
+		data->ocd_connect_flags &= ~OBD_CONNECT_PINGLESS;
+
+	/* Because we do not want this export to be evicted by pinger,
+	 * let's not add this export to the timed chain list. */
+	if (!OCD_HAS_FLAG(data, PINGLESS) &&
+	    !(data->ocd_connect_flags & OBD_CONNECT_MDS_MDS)) {
+		spin_lock(&exp->exp_lock);
+		exp->exp_timed = 1;
+		spin_unlock(&exp->exp_lock);
 	}
 
 	data->ocd_max_easize = mdt->mdt_max_ea_size;
@@ -7164,6 +7329,10 @@ static int mdt_ctxt_add_dirty_flag(struct lu_env *env,
 	mdt_ucred(info)->uc_rbac_chlg_ops = 1;
 	mdt_ucred(info)->uc_rbac_fscrypt_admin = 1;
 	mdt_ucred(info)->uc_rbac_server_upcall = 1;
+	mdt_ucred(info)->uc_rbac_ignore_root_prjquota = 1;
+	mdt_ucred(info)->uc_rbac_hsm_ops = 1;
+	mdt_ucred(info)->uc_rbac_local_admin = 1;
+	mdt_ucred(info)->uc_rbac_pool_quota_ops = 1;
 	rc = mdt_add_dirty_flag(info, mfd->mfd_object, &info->mti_attr);
 
 	lu_context_exit(&ses);
@@ -7180,7 +7349,7 @@ static int mdt_export_cleanup(struct obd_export *exp)
 	struct obd_device	*obd = exp->exp_obd;
 	struct mdt_device	*mdt;
 	struct mdt_thread_info	*info;
-	struct lu_env		 env;
+	struct lu_env		*env;
 	struct mdt_file_data	*mfd, *n;
 	int rc = 0;
 
@@ -7202,16 +7371,15 @@ static int mdt_export_cleanup(struct obd_export *exp)
 	mdt = mdt_dev(obd->obd_lu_dev);
 	LASSERT(mdt != NULL);
 
-	rc = lu_env_init(&env, LCT_MD_THREAD);
-	if (rc)
-		RETURN(rc);
+	env = lu_env_find();
+	LASSERT(env);
 
-	info = lu_context_key_get(&env.le_ctx, &mdt_thread_key);
+	info = lu_context_key_get(&env->le_ctx, &mdt_thread_key);
 	LASSERT(info != NULL);
-	memset(info, 0, sizeof(*info));
-	info->mti_env = &env;
+	info->mti_env = env;
 	info->mti_mdt = mdt;
 	info->mti_exp = exp;
+	info->mti_pill = NULL;
 
 	if (!list_empty(&closing_list)) {
 		struct md_attr *ma = &info->mti_attr;
@@ -7236,7 +7404,7 @@ static int mdt_export_cleanup(struct obd_export *exp)
 			 * dirty.
 			 */
 			if (mfd->mfd_open_flags & MDS_FMODE_WRITE)
-				rc = mdt_ctxt_add_dirty_flag(&env, info, mfd);
+				rc = mdt_ctxt_add_dirty_flag(env, info, mfd);
 
 			/* Don't unlink orphan on failover umount, LU-184 */
 			if (exp->exp_flags & OBD_OPT_FAILOVER ||
@@ -7248,12 +7416,13 @@ static int mdt_export_cleanup(struct obd_export *exp)
 			mdt_mfd_close(info, mfd);
 		}
 	}
+	mdt_hsm_agent_unregister(info, &exp->exp_client_uuid);
+
 	info->mti_mdt = NULL;
 	/* cleanup client slot early */
 	/* Do not erase record for recoverable client. */
 	if (!(exp->exp_flags & OBD_OPT_FAILOVER) || exp->exp_failed)
-		tgt_client_del(&env, exp);
-	lu_env_fini(&env);
+		tgt_client_del(env, exp);
 
 	RETURN(rc);
 }
@@ -7300,11 +7469,13 @@ static int mdt_obd_connect(const struct lu_env *env,
 			   struct obd_connect_data *data,
 			   void *localdata)
 {
-	struct obd_export	*lexp;
-	struct lustre_handle	conn = { 0 };
-	struct mdt_device	*mdt;
-	int			 rc;
-	struct lnet_nid		*client_nid = localdata;
+	struct ptlrpc_request *req = localdata;
+	struct ptlrpc_svc_ctx *svc_ctx = NULL;
+	struct lnet_nid *client_nid = NULL;
+	struct lustre_handle conn = { 0 };
+	struct obd_export *lexp;
+	struct mdt_device *mdt;
+	int rc;
 
 	ENTRY;
 
@@ -7339,9 +7510,20 @@ static int mdt_obd_connect(const struct lu_env *env,
 	lexp = class_conn2export(&conn);
 	LASSERT(lexp != NULL);
 
-	rc = nodemap_add_member(client_nid, lexp);
-	if (rc != 0 && rc != -EEXIST)
-		GOTO(out, rc);
+	if (req) {
+		svc_ctx = req->rq_svc_ctx;
+		client_nid = &req->rq_peer.nid;
+	}
+
+	if (svc_ctx || client_nid) {
+		rc = nodemap_add_member(svc_ctx, client_nid, lexp);
+		if (rc != 0 && rc != -EEXIST)
+			GOTO(out, rc);
+	} else {
+		CDEBUG(D_HA,
+		       "%s: cannot find nodemap for client %s: svc_ctx and nid are null\n",
+		       obd->obd_name, cluuid->uuid);
+	}
 
 	rc = mdt_connect_internal(env, lexp, mdt, data, false);
 	if (rc == 0) {
@@ -7350,8 +7532,8 @@ static int mdt_obd_connect(const struct lu_env *env,
 		LASSERT(lcd);
 		memcpy(lcd->lcd_uuid, cluuid, sizeof(lcd->lcd_uuid));
 		rc = tgt_client_new(env, lexp);
-		if (rc == 0)
-			mdt_export_stats_init(obd, lexp, localdata);
+		if (rc == 0 && client_nid)
+			mdt_export_stats_init(obd, lexp, client_nid);
 	}
 out:
 	if (rc != 0) {
@@ -7360,14 +7542,6 @@ out:
 		*exp = NULL;
 	} else {
 		*exp = lexp;
-		/* Because we do not want this export to be evicted by pinger,
-		 * let's not add this export to the timed chain list.
-		 */
-		if (data->ocd_connect_flags & OBD_CONNECT_MDS_MDS) {
-			spin_lock(&lexp->exp_obd->obd_dev_lock);
-			list_del_init(&lexp->exp_obd_chain_timed);
-			spin_unlock(&lexp->exp_obd->obd_dev_lock);
-		}
 	}
 
 	RETURN(rc);
@@ -7379,24 +7553,39 @@ static int mdt_obd_reconnect(const struct lu_env *env,
 			     struct obd_connect_data *data,
 			     void *localdata)
 {
-	struct lnet_nid *client_nid = localdata;
+	struct ptlrpc_request *req = localdata;
+	struct ptlrpc_svc_ctx *svc_ctx = NULL;
+	struct lnet_nid *client_nid = NULL;
 	int rc;
 
 	ENTRY;
 
-	if (exp == NULL || obd == NULL || cluuid == NULL)
+	if (!exp || !obd || !cluuid)
 		RETURN(-EINVAL);
 
-	rc = nodemap_add_member(client_nid, exp);
-	if (rc != 0 && rc != -EEXIST)
-		RETURN(rc);
+	if (req) {
+		svc_ctx = req->rq_svc_ctx;
+		client_nid = &req->rq_peer.nid;
+	}
+
+	if (svc_ctx || client_nid) {
+		rc = nodemap_add_member(svc_ctx, client_nid, exp);
+		if (rc != 0 && rc != -EEXIST)
+			RETURN(rc);
+	} else {
+		CDEBUG(D_HA,
+		       "%s: cannot find nodemap for client %s: svc_ctx and nid are null\n",
+		       obd->obd_name, cluuid->uuid);
+	}
 
 	rc = mdt_connect_internal(env, exp, mdt_dev(obd->obd_lu_dev), data,
 				  true);
-	if (rc == 0)
-		mdt_export_stats_init(obd, exp, localdata);
-	else
+	if (rc == 0) {
+		if (client_nid)
+			mdt_export_stats_init(obd, exp, client_nid);
+	} else {
 		nodemap_del_member(exp);
+	}
 
 	RETURN(rc);
 }
@@ -7904,6 +8093,9 @@ int mdt_get_info(struct tgt_session_info *tsi)
 		mdt_thread_info_fini(info);
 	} else if (KEY_IS(KEY_FIEMAP)) {
 		rc = mdt_fiemap_get(tsi);
+	} else if (KEY_IS(KEY_CHANGELOG_USER)) {
+		req_capsule_extend(tsi->tsi_pill, &RQF_MDS_GET_INFO);
+		rc = mdt_changelog_get_user_info(tsi);
 	} else {
 		rc = err_serious(-EOPNOTSUPP);
 	}
@@ -7981,7 +8173,7 @@ static int mdt_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		rc = mdt_device_sync(&env, mdt);
 		GOTO(out, rc);
 	case OBD_IOC_SET_READONLY:
-		rc = dt_sync(&env, dt);
+		rc = mdt_device_sync(&env, mdt);
 		if (rc == 0)
 			rc = dt_ro(&env, dt);
 		GOTO(out, rc);
@@ -8327,5 +8519,5 @@ MODULE_DESCRIPTION("Lustre Metadata Target ("LUSTRE_MDT_NAME")");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(mdt_init);
+late_initcall_sync(mdt_init);
 module_exit(mdt_exit);

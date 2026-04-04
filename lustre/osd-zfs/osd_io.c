@@ -16,7 +16,6 @@
 
 #define DEBUG_SUBSYSTEM S_OSD
 
-#include <libcfs/libcfs.h>
 #include <obd_support.h>
 #include <lustre_net.h>
 #include <obd.h>
@@ -146,6 +145,89 @@ static inline ssize_t osd_read_no_record(const struct lu_env *env,
 	size_t size = buf->lb_len;
 
 	return __osd_read(env, dt, buf, pos, &size);
+}
+
+static struct page *osd_dio_page_get(const struct lu_env *env)
+{
+	struct osd_thread_info  *oti = osd_oti_get(env);
+	struct page *page;
+	int cur;
+
+	if (unlikely(!oti->oti_dio_pages)) {
+		OBD_ALLOC_PTR_ARRAY_LARGE(oti->oti_dio_pages,
+					  PTLRPC_MAX_BRW_PAGES);
+		if (!oti->oti_dio_pages)
+			return ERR_PTR(-ENOMEM);
+	}
+
+	LASSERT(oti->oti_dio_pages);
+	cur = oti->oti_dio_pages_used;
+	page = oti->oti_dio_pages[cur];
+		
+	if (unlikely(!page)) {
+		LASSERT(cur < PTLRPC_MAX_BRW_PAGES);
+		page = alloc_page(GFP_NOFS | __GFP_HIGHMEM);
+		CDEBUG(D_MALLOC, "alloc page %px\n", page);
+		LASSERT(page);
+		oti->oti_dio_pages[cur] = page;
+		SetPagePrivate2(page);
+	}
+	oti->oti_dio_pages_used++;
+
+	RETURN(page);
+}
+
+static void osd_dio_page_put(const struct lu_env *env)
+{
+	struct osd_thread_info  *oti = osd_oti_get(env);
+	oti->oti_dio_pages_used--;
+}
+
+static int osd_zfs_fake_lnb(const struct lu_env *env, 
+			    struct niobuf_local *lnb, loff_t offset, ssize_t len,
+			    int maxlnb)
+{
+	int nrpages = 0;
+
+	while (len > 0) {
+		int poff = offset & (PAGE_SIZE - 1);
+		int plen = PAGE_SIZE - poff;
+		struct page *page;
+
+		if (nrpages >= maxlnb) {
+			break;
+		}
+
+		page = osd_dio_page_get(env);
+		if (IS_ERR(page)) {
+			nrpages = PTR_ERR(page);
+			break;
+		}
+
+		if (plen > len)
+			plen = len;
+		lnb->lnb_file_offset = offset;
+		lnb->lnb_page_offset = poff;
+		lnb->lnb_len = plen;
+		/* lnb->lnb_flags = rnb->rnb_flags; */
+		lnb->lnb_flags = 0;
+		lnb->lnb_rc = 0;
+		lnb->lnb_guard_rpc = 0;
+		lnb->lnb_guard_disk = 0;
+		lnb->lnb_locked = 0;
+
+		lnb->lnb_page = page;
+		lnb->lnb_dio = 1;
+
+		LASSERTF(plen <= len, "plen %u, len %lld\n", plen,
+			 (long long) len);
+		offset += plen;
+		len -= plen;
+		lnb++;
+		nrpages++;
+	}
+
+	RETURN(nrpages);
 }
 
 static ssize_t osd_declare_write(const struct lu_env *env, struct dt_object *dt,
@@ -325,7 +407,10 @@ static ssize_t osd_write(const struct lu_env *env, struct dt_object *dt,
 	if (obj->oo_destroyed)
 		GOTO(out, rc = -ENOENT);
 
-	if (fid_is_llog(lu_object_fid(&dt->do_lu))) {
+	/* XXX: disable the optimization as it's not compatible
+	 * with indexed llog and multiple writes a block in few
+	 * threads */
+	if (fid_is_llog(lu_object_fid(&dt->do_lu)) && 0) {
 		osd_write_llog_header(obj, buf, pos, oh);
 	} else {
 		osd_dmu_write(osd, obj->oo_dn, offset, (uint64_t)buf->lb_len,
@@ -368,6 +453,7 @@ out:
 static int osd_bufs_put(const struct lu_env *env, struct dt_object *dt,
 			struct niobuf_local *lnb, int npages)
 {
+	struct osd_thread_info  *oti = osd_oti_get(env);
 	struct osd_object *obj  = osd_dt_obj(dt);
 	struct osd_device *osd = osd_obj2dev(obj);
 	unsigned long ptr;
@@ -379,6 +465,11 @@ static int osd_bufs_put(const struct lu_env *env, struct dt_object *dt,
 	for (i = 0; i < npages; i++) {
 		if (lnb[i].lnb_page == NULL)
 			continue;
+		if (lnb[i].lnb_dio) {
+			osd_dio_page_put(env);
+			lnb[i].lnb_dio = 0;
+			goto next;
+		}
 		if (lnb[i].lnb_page->mapping == (void *)obj) {
 			/* this is anonymous page allocated for copy-write */
 			lnb[i].lnb_page->mapping = NULL;
@@ -405,9 +496,12 @@ static int osd_bufs_put(const struct lu_env *env, struct dt_object *dt,
 				atomic_dec(&osd->od_zerocopy_loan);
 			}
 		}
+next:
 		lnb[i].lnb_page = NULL;
 		lnb[i].lnb_data = NULL;
 	}
+
+	LASSERTF(oti->oti_dio_pages_used == 0, "%d\n", oti->oti_dio_pages_used);
 
 	return 0;
 }
@@ -704,6 +798,13 @@ static int osd_bufs_get(const struct lu_env *env, struct dt_object *dt,
 	if (unlikely(!dt_object_exists(dt) || obj->oo_destroyed))
 		GOTO(out, rc = -ENOENT);
 
+	if (CFS_FAIL_CHECK_QUIET(OBD_FAIL_OST_FAKE_RW)) {
+		rc = osd_zfs_fake_lnb(env, lnb, offset, len, maxlnb);
+		if (rc < 0)
+			osd_bufs_put(env, dt, lnb, maxlnb);
+		goto out;
+	}
+
 	if (rw & DT_BUFS_TYPE_WRITE)
 		rc = osd_bufs_get_write(env, obj, offset, len, lnb, maxlnb);
 	else
@@ -788,6 +889,11 @@ static int osd_declare_write_commit(const struct lu_env *env,
 		    (lnb[i].lnb_flags & OBD_BRW_SYS_RESOURCE) ||
 		    !(lnb[i].lnb_flags & OBD_BRW_SYNC))
 			declare_flags |= OSD_QID_FORCE;
+		/* ASYNC means that the page comes from the cache - it must be
+		 * written anyway.
+		 */
+		if (lnb[i].lnb_flags & OBD_BRW_ASYNC)
+			declare_flags |= OSD_QID_IGNORE_ROOT_PRJ;
 
 		if (size == 0) {
 			/* first valid lnb */
@@ -824,7 +930,7 @@ static int osd_declare_write_commit(const struct lu_env *env,
 
 	/* backend zfs FS might be configured to store multiple data copies */
 	space  *= osd->od_os->os_copies;
-	space   = toqb(space);
+	space   = stoqb(space);
 	CDEBUG(D_QUOTA, "writing %d pages, reserving %lldK of quota space\n",
 	       npages, space);
 
@@ -916,15 +1022,12 @@ static void osd_choose_next_blocksize(struct osd_object *obj,
 	if (dn->dn_datablksz >= osd->od_max_blksz)
 		return;
 
-	/*
-	 * client sends data from own writeback cache after local
-	 * aggregation. there is a chance this is a "unit of write"
-	 * so blocksize.
-	 */
-	if (off != 0)
-		return;
+	if (off == obj->oo_attr.la_size)
+		blksz = (uint32_t)max_t(uint64_t, osd->od_min_blksz, off + len);
+	else
+		blksz = (uint32_t)max_t(uint64_t, osd->od_min_blksz, len);
+	blksz = (uint32_t)min_t(uint64_t, osd->od_max_blksz, blksz);
 
-	blksz = (uint32_t)min_t(uint64_t, osd->od_max_blksz, len);
 	if (!is_power_of_2(blksz))
 		blksz = size_roundup_power2(blksz);
 
@@ -1037,10 +1140,12 @@ static int osd_write_commit(const struct lu_env *env, struct dt_object *dt,
 			continue;
 
 		if (lnb[i].lnb_page->mapping == (void *)obj) {
+			void *addr = kmap(lnb[i].lnb_page);
+
 			osd_dmu_write(osd, obj->oo_dn, lnb[i].lnb_file_offset,
-				      lnb[i].lnb_len, kmap(lnb[i].lnb_page) +
+				      lnb[i].lnb_len, addr +
 				      lnb[i].lnb_page_offset, oh->ot_tx);
-			kunmap(lnb[i].lnb_page);
+			kunmap(kmap_to_page(addr));
 			iosize += lnb[i].lnb_len;
 			abufsz = lnb[i].lnb_len; /* to drop cache below */
 		} else if (lnb[i].lnb_data) {
@@ -1061,9 +1166,11 @@ static int osd_write_commit(const struct lu_env *env, struct dt_object *dt,
 			 */
 			for (j = 0; j < apages; j++)
 				lnb[i + j].lnb_page = NULL;
-			dmu_assign_arcbuf(&obj->oo_dn->dn_bonus->db,
-					  lnb[i].lnb_file_offset,
-					  lnb[i].lnb_data, oh->ot_tx);
+			ll_dmu_assign_arcbuf_by_dbuf(&obj->oo_dn->dn_bonus->db,
+						     lnb[i].lnb_file_offset,
+						     lnb[i].lnb_data,
+						     oh->ot_tx,
+						     DB_RF_MUST_SUCCEED);
 			/* drop the reference, otherwise osd_put_bufs()
 			 * will be releasing it - bad!
 			 */

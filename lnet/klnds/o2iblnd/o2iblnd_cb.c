@@ -144,10 +144,8 @@ kiblnd_post_rx(struct kib_rx *rx, int credit)
 {
 	struct kib_conn *conn = rx->rx_conn;
 	struct kib_net *net = conn->ibc_peer->ibp_ni->ni_data;
-	struct ib_recv_wr *bad_wrq = NULL;
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	struct ib_mr *mr = conn->ibc_hdev->ibh_mrs;
-#endif
+	struct ib_recv_wr wrq = {0};
+	struct ib_sge rx_sge = {0};
 	int rc;
 
 	LASSERT(net != NULL);
@@ -155,20 +153,14 @@ kiblnd_post_rx(struct kib_rx *rx, int credit)
 	LASSERT(credit == IBLND_POSTRX_NO_CREDIT ||
 		 credit == IBLND_POSTRX_PEER_CREDIT ||
 		 credit == IBLND_POSTRX_RSRVD_CREDIT);
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	LASSERT(mr != NULL);
+	rx_sge.lkey   = conn->ibc_hdev->ibh_pd->local_dma_lkey;
+	rx_sge.addr   = rx->rx_msgaddr;
+	rx_sge.length = IBLND_MSG_SIZE;
 
-	rx->rx_sge.lkey   = mr->lkey;
-#else
-	rx->rx_sge.lkey   = conn->ibc_hdev->ibh_pd->local_dma_lkey;
-#endif
-	rx->rx_sge.addr   = rx->rx_msgaddr;
-	rx->rx_sge.length = IBLND_MSG_SIZE;
-
-	rx->rx_wrq.next = NULL;
-	rx->rx_wrq.sg_list = &rx->rx_sge;
-	rx->rx_wrq.num_sge = 1;
-	rx->rx_wrq.wr_id = kiblnd_ptr2wreqid(rx, IBLND_WID_RX);
+	wrq.next = NULL;
+	wrq.sg_list = &rx_sge;
+	wrq.num_sge = 1;
+	wrq.wr_id = kiblnd_ptr2wreqid(rx, IBLND_WID_RX);
 
 	LASSERT(conn->ibc_state >= IBLND_CONN_INIT);
 	LASSERT(rx->rx_nob >= 0);              /* not posted */
@@ -184,15 +176,10 @@ kiblnd_post_rx(struct kib_rx *rx, int credit)
 	 * own this rx (and rx::rx_conn) anymore, LU-5678.
 	 */
 	kiblnd_conn_addref(conn);
-#ifdef HAVE_OFED_IB_POST_SEND_RECV_CONST
-	rc = ib_post_recv(conn->ibc_cmid->qp, &rx->rx_wrq,
-			  (const struct ib_recv_wr **)&bad_wrq);
-#else
-	rc = ib_post_recv(conn->ibc_cmid->qp, &rx->rx_wrq, &bad_wrq);
-#endif
+	rc = ib_post_recv(conn->ibc_cmid->qp, &wrq, NULL);
 	if (unlikely(rc != 0)) {
-		CERROR("Can't post rx for %s: bad_wrq: %p: rc = %d\n",
-		       libcfs_nidstr(&conn->ibc_peer->ibp_nid), bad_wrq, rc);
+		CERROR("Can't post rx for %s: rc = %d\n",
+		       libcfs_nidstr(&conn->ibc_peer->ibp_nid), rc);
 		rx->rx_nob = 0;
 	}
 
@@ -365,7 +352,7 @@ kiblnd_handle_rx(struct kib_rx *rx)
 	switch (msg->ibm_type) {
 	default:
 		rc = -EPROTO;
-                CERROR("Bad IBLND message type %x from %s: rc = %d\n",
+		CERROR("Bad IBLND message type %x from %s: rc = %d\n",
 		       msg->ibm_type, libcfs_nidstr(&conn->ibc_peer->ibp_nid),
 		       rc);
 		post_credit = IBLND_POSTRX_NO_CREDIT;
@@ -672,47 +659,12 @@ kiblnd_unmap_tx(struct kib_tx *tx)
 	}
 }
 
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-static struct ib_mr *
-kiblnd_find_rd_dma_mr(struct lnet_ni *ni, struct kib_rdma_desc *rd)
-{
-	struct kib_net *net = ni->ni_data;
-	struct kib_hca_dev *hdev = net->ibn_dev->ibd_hdev;
-	struct lnet_ioctl_config_o2iblnd_tunables *tunables;
-
-	tunables = &ni->ni_lnd_tunables.lnd_tun_u.lnd_o2ib;
-
-	/*
-	 * if map-on-demand is turned on and the device supports
-	 * either FMR or FastReg then use that. Otherwise use global
-	 * memory regions. If that's not available either, then you're
-	 * dead in the water and fail the operation.
-	 */
-	if (tunables->lnd_map_on_demand && (IS_FAST_REG_DEV(net->ibn_dev)
-#ifdef HAVE_OFED_FMR_POOL_API
-	     || net->ibn_dev->ibd_dev_caps & IBLND_DEV_CAPS_FMR_ENABLED
-#endif
-	))
-		return NULL;
-
-	/*
-	 * hdev->ibh_mrs can be NULL. This case is dealt with gracefully
-	 * in the call chain. The mapping will fail with appropriate error
-	 * message.
-	 */
-	return hdev->ibh_mrs;
-}
-#endif
-
 static int kiblnd_map_tx(struct lnet_ni *ni, struct kib_tx *tx,
 			 struct kib_rdma_desc *rd, int nfrags)
 {
 	struct kib_net *net = ni->ni_data;
 	struct kib_hca_dev *hdev = net->ibn_dev->ibd_hdev;
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	struct ib_mr *mr = NULL;
-#endif
-	__u32 nob;
+	u32 nob;
 	int i;
 
 	/* If rd is not tx_rd, it's going to get sent to a peer_ni and I'm the
@@ -729,15 +681,6 @@ static int kiblnd_map_tx(struct lnet_ni *ni, struct kib_tx *tx,
 			hdev->ibh_ibdev, &tx->tx_frags[i]);
 		nob += rd->rd_frags[i].rf_nob;
 	}
-
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	mr = kiblnd_find_rd_dma_mr(ni, rd);
-	if (mr != NULL) {
-		/* found pre-mapping MR */
-		rd->rd_key = (rd != tx->tx_rd) ? mr->rkey : mr->lkey;
-		return 0;
-	}
-#endif
 
 	if (net->ibn_fmr_ps != NULL)
 		return kiblnd_fmr_map_tx(net, tx, rd, nob);
@@ -1126,16 +1069,9 @@ kiblnd_init_tx_sge(struct kib_tx *tx, u64 addr, unsigned int len)
 {
 	struct ib_sge *sge = &tx->tx_sge[tx->tx_nsge];
 	struct kib_hca_dev *hdev = tx->tx_pool->tpo_hdev;
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	struct ib_mr *mr = hdev->ibh_mrs;
-#endif
 
 	*sge = (struct ib_sge) {
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-		.lkey   = mr->lkey,
-#else
 		.lkey   = hdev->ibh_pd->local_dma_lkey,
-#endif
 		.addr   = addr,
 		.length = len,
 	};
@@ -1425,7 +1361,7 @@ kiblnd_resolve_addr(struct rdma_cm_id *cmid,
 	int rc;
 
 	if (!capable(CAP_NET_BIND_SERVICE)) {
-		new_creds = prepare_kernel_cred(NULL);
+		new_creds = prepare_kernel_cred(&init_task);
 		if (!new_creds)
 			return -ENOMEM;
 
@@ -3430,6 +3366,12 @@ kiblnd_cm_callback(struct rdma_cm_id *cmid, struct rdma_cm_event *event)
 
 	case RDMA_CM_EVENT_UNREACHABLE:
 		conn = cmid->context;
+
+		/* In case we have a flapping network, we can get this event
+		 * before conn is created */
+		if (conn == NULL)
+			return -ENETDOWN;
+
 		CNETERR("%s: UNREACHABLE %d cm_id %p conn %p ibc_state: %d\n",
 			libcfs_nidstr(&conn->ibc_peer->ibp_nid),
 			event->status, cmid, conn, conn->ibc_state);
@@ -3499,7 +3441,10 @@ kiblnd_cm_callback(struct rdma_cm_id *cmid, struct rdma_cm_event *event)
 		conn = cmid->context;
 		switch (conn->ibc_state) {
 		default:
-			LBUG();
+			CERROR("%s: ESTABLISHED (ignored): %d cm_id %p conn %p ibc_state: %d\n",
+				libcfs_nidstr(&conn->ibc_peer->ibp_nid),
+				event->status, cmid, conn, conn->ibc_state);
+			return 0;
 
 		case IBLND_CONN_PASSIVE_WAIT:
 			CDEBUG(D_NET, "ESTABLISHED (passive): %s cm_id %p conn %p\n",
@@ -3550,6 +3495,13 @@ kiblnd_cm_callback(struct rdma_cm_id *cmid, struct rdma_cm_event *event)
 
 	case RDMA_CM_EVENT_ADDR_CHANGE:
 		LCONSOLE_INFO("Physical link changed (eg hca/port)\n");
+		return 0;
+
+	case RDMA_CM_EVENT_CONNECT_RESPONSE:
+		conn = cmid->context;
+		LCONSOLE_INFO("RDMA_CM_EVENT_CONNECT_RESPONSE from %s, with status %d, ibc_state %d\n",
+			      libcfs_nidstr(&conn->ibc_peer->ibp_nid),
+			      event->status, conn->ibc_state);
 		return 0;
 	}
 }

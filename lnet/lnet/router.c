@@ -10,6 +10,7 @@
 #define DEBUG_SUBSYSTEM S_LNET
 
 #include <linux/random.h>
+#include <linux/libcfs/libcfs.h>
 #include <lnet/lib-lnet.h>
 
 #define LNET_NRB_TINY_MIN	512	/* min value for each CPT */
@@ -89,21 +90,16 @@ MODULE_PARM_DESC(router_ping_timeout, "Seconds to wait for the reply to a router
  * The default is set to 100 to ensure we maintain the original behavior.
  */
 unsigned int router_sensitivity_percentage = 100;
-static int rtr_sensitivity_set(const char *val, cfs_kernel_param_arg_t *kp);
+static int rtr_sensitivity_set(const char *val, const struct kernel_param *kp);
 static struct kernel_param_ops param_ops_rtr_sensitivity = {
 	.set = rtr_sensitivity_set,
 	.get = param_get_int,
 };
 #define param_check_rtr_sensitivity(name, p) \
 		__param_check(name, p, int)
-#ifdef HAVE_KERNEL_PARAM_OPS
 module_param(router_sensitivity_percentage, rtr_sensitivity, S_IRUGO|S_IWUSR);
-#else
-module_param_call(router_sensitivity_percentage, rtr_sensitivity_set, param_get_int,
-		  &router_sensitivity_percentage, S_IRUGO|S_IWUSR);
-#endif
 MODULE_PARM_DESC(router_sensitivity_percentage,
-		"How healthy a gateway should be to be used in percent");
+		"(Deprecated) How healthy a gateway should be to be used in percent");
 
 static void lnet_add_route_to_rnet(struct lnet_remotenet *rnet,
 				   struct lnet_route *route);
@@ -112,7 +108,7 @@ static void lnet_del_route_from_rnet(struct lnet_nid *gw_nid,
 				     struct list_head *zombies);
 
 static int
-rtr_sensitivity_set(const char *val, cfs_kernel_param_arg_t *kp)
+rtr_sensitivity_set(const char *val, const struct kernel_param *kp)
 {
 	int rc;
 	unsigned *sen = (unsigned *)kp->arg;
@@ -329,9 +325,6 @@ bool lnet_is_route_alive(struct lnet_route *route)
 	spin_lock(&gw->lp_lock);
 	if (!(gw->lp_state & LNET_PEER_ROUTER_ENABLED)) {
 		spin_unlock(&gw->lp_lock);
-		if (gw->lp_rtr_refcount > 0)
-			CERROR("peer %s is being used as a gateway but routing feature is not turned on\n",
-			       libcfs_nidstr(&gw->lp_primary_nid));
 		return false;
 	}
 	spin_unlock(&gw->lp_lock);
@@ -598,8 +591,7 @@ lnet_add_route_to_rnet(struct lnet_remotenet *rnet, struct lnet_route *route)
 }
 
 int
-lnet_add_route(__u32 net, __u32 hops, struct lnet_nid *gateway,
-	       __u32 priority, __u32 sensitivity)
+lnet_add_route(__u32 net, __u32 hops, struct lnet_nid *gateway, __u32 priority)
 __must_hold(&the_lnet.ln_api_mutex)
 {
 	struct list_head *route_entry;
@@ -716,7 +708,6 @@ __must_hold(&the_lnet.ln_api_mutex)
 	 * consolidated peer lp_routes list
 	 */
 	if (add_route) {
-		gw->lp_health_sensitivity = sensitivity;
 		lnet_add_route_to_rnet(rnet2, route);
 		if (lnet_peer_discovery_disabled)
 			CWARN("Consider turning discovery on to enable full Multi-Rail routing functionality\n");
@@ -914,7 +905,7 @@ int lnet_get_rtr_pool_cfg(int cpt, struct lnet_ioctl_pool_cfg *pool_cfg)
 
 int
 lnet_get_route(int idx, __u32 *net, __u32 *hops, lnet_nid_t *gateway,
-	       __u32 *flags, __u32 *priority, __u32 *sensitivity)
+	       __u32 *flags, __u32 *priority)
 {
 	struct lnet_remotenet *rnet;
 	struct list_head *rn_list;
@@ -933,8 +924,6 @@ lnet_get_route(int idx, __u32 *net, __u32 *hops, lnet_nid_t *gateway,
 					*gateway  = lnet_nid_to_nid4(&route->lr_nid);
 					*hops	  = route->lr_hops;
 					*priority = route->lr_priority;
-					*sensitivity = route->lr_gateway->
-						lp_health_sensitivity;
 					if (lnet_is_route_alive(route))
 						*flags |= LNET_RT_ALIVE;
 					else
@@ -1008,7 +997,7 @@ lnet_update_ni_status_locked(void)
 	time64_t now;
 	time64_t timeout;
 
-	LASSERT(the_lnet.ln_routing);
+	LASSERT(lnet_routing_enabled());
 
 	timeout = router_ping_timeout + alive_router_check_interval;
 
@@ -1075,11 +1064,55 @@ bool lnet_router_checker_active(void)
 {
 	/* Router Checker thread needs to run when routing is enabled in
 	 * order to call lnet_update_ni_status_locked() */
-	if (the_lnet.ln_routing)
+	if (lnet_routing_enabled())
 		return true;
 
 	return !list_empty(&the_lnet.ln_routers) &&
 		alive_router_check_interval > 0;
+}
+
+static void
+lnet_enable_routing(void)
+{
+	lnet_net_lock(LNET_LOCK_EX);
+	the_lnet.ln_routing = LNET_ROUTING_ENABLED;
+
+	the_lnet.ln_ping_target->pb_info.pi_features &=
+		~LNET_PING_FEAT_RTE_DISABLED;
+	lnet_net_unlock(LNET_LOCK_EX);
+	LCONSOLE_INFO("Message forwarding enabled\n");
+}
+
+static void
+lnet_disable_routing(void)
+{
+	lnet_net_lock(LNET_LOCK_EX);
+	the_lnet.ln_routing = LNET_ROUTING_DISABLED;
+	lnet_net_unlock(LNET_LOCK_EX);
+	lnet_rtrpools_free(1);
+	LCONSOLE_INFO("Message forwarding disabled\n");
+}
+
+static bool
+lnet_rtrpools_are_free(time64_t now, int cpt)
+{
+	struct lnet_rtrbufpool *rbp;
+	int cpt2;
+
+	lnet_net_unlock(cpt);
+
+	cfs_percpt_for_each(rbp, cpt2, the_lnet.ln_rtrpools) {
+		lnet_net_lock(cpt2);
+		if (rbp->rbp_credits < rbp->rbp_nbuffers) {
+			lnet_net_unlock(cpt2);
+			lnet_net_lock(cpt);
+			return false;
+		}
+		lnet_net_unlock(cpt2);
+	}
+
+	lnet_net_lock(cpt);
+	return true;
 }
 
 void
@@ -1097,8 +1130,49 @@ lnet_check_routers(void)
 	time64_t now;
 	int cpt;
 	int rc;
+	static time64_t rtr_min_wait;
+	static time64_t rtr_max_wait;
 
 	cpt = lnet_net_lock_current();
+
+	now = ktime_get_real_seconds();
+
+	if (the_lnet.ln_routing == LNET_ROUTING_STOPPING ||
+	    the_lnet.ln_routing == LNET_ROUTING_STARTING) {
+		if (!rtr_min_wait) {
+			int interval = alive_router_check_interval +
+				       router_ping_timeout;
+
+			/* Wait at least alive_router_check_interval +
+			 * router_ping_timeout, and for stopping case
+			 * no more than 3x of these intervals, before
+			 * disabling or enabling routing
+			 */
+			rtr_min_wait = now + interval;
+			rtr_max_wait = now + 3 * interval;
+		}
+
+		if (the_lnet.ln_routing == LNET_ROUTING_STARTING &&
+		    rtr_min_wait < now) {
+			lnet_net_unlock(cpt);
+			lnet_enable_routing();
+			rtr_min_wait = 0;
+			rtr_max_wait = 0;
+			push = true;
+			lnet_net_lock(cpt);
+		}
+
+		if (the_lnet.ln_routing == LNET_ROUTING_STOPPING &&
+		    ((rtr_min_wait < now && lnet_rtrpools_are_free(now, cpt)) ||
+		     rtr_max_wait < now)) {
+			lnet_net_unlock(cpt);
+			lnet_disable_routing();
+			rtr_min_wait = 0;
+			rtr_max_wait = 0;
+			lnet_net_lock(cpt);
+		}
+	}
+
 rescan:
 	version = the_lnet.ln_routers_version;
 
@@ -1168,7 +1242,7 @@ rescan:
 			       libcfs_nidstr(&rtr->lp_primary_nid));
 			continue;
 		}
-		lnet_peer_ni_addref_locked(lpni);
+		kref_get(&lpni->lpni_kref);
 
 		/* specify the net to use */
 		rtr->lp_disc_net_id = lpn->lpn_net_id;
@@ -1194,8 +1268,8 @@ rescan:
 		}
 	}
 
-	if (the_lnet.ln_routing)
-		push = lnet_update_ni_status_locked();
+	if (lnet_routing_enabled() && lnet_update_ni_status_locked())
+		push = true;
 
 	lnet_net_unlock(cpt);
 
@@ -1523,7 +1597,7 @@ lnet_rtrpools_alloc(int im_a_router)
 	}
 
 	lnet_net_lock(LNET_LOCK_EX);
-	the_lnet.ln_routing = 1;
+	the_lnet.ln_routing = LNET_ROUTING_ENABLED;
 	lnet_net_unlock(LNET_LOCK_EX);
 	complete(&the_lnet.ln_mt_wait_complete);
 	return 0;
@@ -1584,7 +1658,7 @@ lnet_rtrpools_adjust(int tiny, int small, int large)
 	 * failed.  It's up to the user space caller to revert the
 	 * changes. */
 
-	if (!the_lnet.ln_routing)
+	if (lnet_routing_disabled())
 		return 0;
 
 	return lnet_rtrpools_adjust_helper(tiny, small, large);
@@ -1595,8 +1669,13 @@ lnet_rtrpools_enable(void)
 {
 	int rc = 0;
 
-	if (the_lnet.ln_routing)
+	if (the_lnet.ln_routing == LNET_ROUTING_ENABLED ||
+	    the_lnet.ln_routing == LNET_ROUTING_STARTING) {
 		return 0;
+	} else if (the_lnet.ln_routing == LNET_ROUTING_STOPPING) {
+		CERROR("Cannot enable routing while it is being stopped\n");
+		return -EBUSY;
+	}
 
 	if (the_lnet.ln_rtrpools == NULL)
 		/* If routing is turned off, and we have never
@@ -1607,14 +1686,15 @@ lnet_rtrpools_enable(void)
 		rc = lnet_rtrpools_alloc(1);
 	else
 		rc = lnet_rtrpools_adjust_helper(0, 0, 0);
-	if (rc != 0)
+
+	if (rc)
 		return rc;
 
 	lnet_net_lock(LNET_LOCK_EX);
-	the_lnet.ln_routing = 1;
-
-	the_lnet.ln_ping_target->pb_info.pi_features &=
-		~LNET_PING_FEAT_RTE_DISABLED;
+	the_lnet.ln_routing = LNET_ROUTING_STARTING;
+	LCONSOLE_INFO("Message forwarding will be enabled in %ds\n",
+		      alive_router_check_interval +
+		      router_ping_timeout);
 	lnet_net_unlock(LNET_LOCK_EX);
 
 	if (lnet_peer_discovery_disabled)
@@ -1627,11 +1707,11 @@ lnet_rtrpools_enable(void)
 void
 lnet_rtrpools_disable(void)
 {
-	if (!the_lnet.ln_routing)
+	if (lnet_routing_disabled())
 		return;
 
 	lnet_net_lock(LNET_LOCK_EX);
-	the_lnet.ln_routing = 0;
+	the_lnet.ln_routing = LNET_ROUTING_STOPPING;
 	the_lnet.ln_ping_target->pb_info.pi_features |=
 		LNET_PING_FEAT_RTE_DISABLED;
 
@@ -1639,7 +1719,9 @@ lnet_rtrpools_disable(void)
 	small_router_buffers = 0;
 	large_router_buffers = 0;
 	lnet_net_unlock(LNET_LOCK_EX);
-	lnet_rtrpools_free(1);
+	LCONSOLE_INFO("Message forwarding will stop in %ds to %ds\n",
+		      alive_router_check_interval + router_ping_timeout,
+		      3 * (alive_router_check_interval + router_ping_timeout));
 }
 
 /*

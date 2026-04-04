@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2015, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -53,26 +35,26 @@ void ptlrpc_fill_bulk_md(struct lnet_md *md, struct ptlrpc_bulk_desc *desc,
 
 	/* just send a lnet header */
 	if (mdidx >= desc->bd_md_count) {
-		md->options |= LNET_MD_KIOV;
-		md->length = 0;
-		md->start = NULL;
+		md->umd_options |= LNET_MD_KIOV;
+		md->umd_length = 0;
+		md->umd_start = NULL;
 		return;
 	}
 
 	if (desc->bd_is_rdma)
-		md->options |= LNET_MD_GPU_ADDR;
+		md->umd_options |= LNET_MD_GPU_ADDR;
 
 	start = desc->bd_mds_off[mdidx];
 	if (mdidx == (desc->bd_md_count - 1))
-		md->length = desc->bd_iov_count - start;
+		md->umd_length = desc->bd_iov_count - start;
 	else
-		md->length = desc->bd_mds_off[mdidx + 1] - start;
+		md->umd_length = desc->bd_mds_off[mdidx + 1] - start;
 
-	md->options |= LNET_MD_KIOV;
+	md->umd_options |= LNET_MD_KIOV;
 	if (desc->bd_enc_vec)
-		md->start = &desc->bd_enc_vec[start];
+		md->umd_start = &desc->bd_enc_vec[start];
 	else
-		md->start = &desc->bd_vec[start];
+		md->umd_start = &desc->bd_vec[start];
 }
 
 

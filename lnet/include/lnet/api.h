@@ -56,8 +56,18 @@ int LNetNIFini(void);
 int LNetGetId(unsigned int index, struct lnet_processid *id, bool large_nids);
 int LNetDist(struct lnet_nid *nid, struct lnet_nid *srcnid, __u32 *order);
 void LNetPrimaryNID(struct lnet_nid *nid);
+void LNetLocalPrimaryNID(struct lnet_nid *nid);
 bool LNetIsPeerLocal(struct lnet_nid *nid);
 int LNetPeerDiscovered(struct lnet_nid *nid);
+int LNetFetchNIDs(int (*cb)(void *private, struct lnet_nid *nid),
+		  __u32 netid, void *data);
+int LNetHasLocalNet(__u32 net);
+
+struct nid_update_info;
+int LNetRegisterNIDUpdates(int (*nid_update_cb)(void *private,
+						struct nid_update_info *nui),
+			   void *cb_data);
+void LNetUnRegisterNIDUpdates(void *cb_data);
 
 /** @} lnet_addr */
 
@@ -142,7 +152,7 @@ int LNetClearLazyPortal(int portal);
 int LNetCtl(unsigned int cmd, void *arg);
 void LNetDebugPeer(struct lnet_processid *id);
 int LNetGetPeerDiscoveryStatus(void);
-int LNetAddPeer(struct lnet_nid *nids, u32 num_nids);
+void LNetAddPeer(struct lnet_nid *nids, int num_nids);
 
 /** @} lnet_misc */
 

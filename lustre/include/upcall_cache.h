@@ -14,7 +14,6 @@
 #ifndef _UPCALL_CACHE_H
 #define _UPCALL_CACHE_H
 
-#include <libcfs/libcfs.h>
 #include <uapi/linux/lnet/lnet-types.h>
 #include <uapi/linux/lustre/lustre_disk.h>
 #include <obd.h>
@@ -62,10 +61,11 @@ struct md_perm {
 };
 
 struct md_identity {
+	struct work_struct         mi_work;
 	struct upcall_cache_entry *mi_uc_entry;
 	uid_t                      mi_uid;
 	gid_t                      mi_gid;
-	struct group_info          *mi_ginfo;
+	struct group_info         *mi_ginfo;
 	int                        mi_nperms;
 	struct md_perm            *mi_perms;
 };
@@ -114,6 +114,7 @@ struct upcall_cache_ops {
 	void            (*init_entry)(struct upcall_cache_entry *, void *args);
 	void            (*free_entry)(struct upcall_cache *,
 				      struct upcall_cache_entry *);
+	void            (*free_delay)(struct upcall_cache_entry *);
 	int             (*upcall_compare)(struct upcall_cache *,
 					  struct upcall_cache_entry *,
 					  __u64 key, void *args);
@@ -124,6 +125,8 @@ struct upcall_cache_ops {
 				     struct upcall_cache_entry *);
 	int             (*parse_downcall)(struct upcall_cache *,
 					  struct upcall_cache_entry *, void *);
+	int             (*accept_expired)(struct upcall_cache *,
+					  struct upcall_cache_entry *);
 };
 
 struct upcall_cache {

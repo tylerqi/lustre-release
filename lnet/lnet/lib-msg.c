@@ -13,6 +13,7 @@
 
 #define DEBUG_SUBSYSTEM S_LNET
 
+#include <linux/libcfs/libcfs_fail.h>
 #include <lnet/lib-lnet.h>
 
 void
@@ -70,9 +71,6 @@ lnet_build_msg_event(struct lnet_msg *msg, enum lnet_event_kind ev_type)
 	}
 
 	switch (ev_type) {
-	default:
-		LBUG();
-
 	case LNET_EVENT_PUT: /* passive PUT */
 		ev->pt_index   = hdr->msg.put.ptl_index;
 		ev->match_bits = hdr->msg.put.match_bits;
@@ -112,7 +110,33 @@ lnet_build_msg_event(struct lnet_msg *msg, enum lnet_event_kind ev_type)
 			ev->hdr_data   = 0;
 		}
 		return;
+
+	default:
+		LBUG();
 	}
+}
+
+/* get_msg_deadline
+ *   Gets the message deadline in nanoseconds.
+ *   If the LND for this message implements its own lnd_get_timeout()
+ *   function via its exposed API, we use this to calculate the LNet
+ *   transaction timeout (LTT) value, based on the message's NI LND timeout
+ *   (LNDT) and global retry count (LRC):
+ *   LTT = LNDT * (LRC + 1) + 1
+ *   If the LND did not implement the lnd_get_timeout() function or the LNDT
+ *   was set to zero, fall back to default global LTT implementation.
+ */
+static ktime_t get_msg_deadline(struct lnet_ni *msg_ni)
+{
+	unsigned int msg_timeout = lnet_transaction_timeout;
+
+	if (msg_ni && msg_ni->ni_net->net_lnd->lnd_get_timeout) {
+		int lnd_timeout = msg_ni->ni_net->net_lnd->lnd_get_timeout();
+
+		if (lnd_timeout > 0)
+			msg_timeout = lnd_timeout * (lnet_retry_count + 1) + 1;
+	}
+	return ktime_add_ns(ktime_get(), msg_timeout * NSEC_PER_SEC);
 }
 
 void
@@ -120,17 +144,15 @@ lnet_msg_commit(struct lnet_msg *msg, int cpt)
 {
 	struct lnet_msg_container *container = the_lnet.ln_msg_containers[cpt];
 	struct lnet_counters_common *common;
-	s64 timeout_ns;
 
-	/* set the message deadline */
-	timeout_ns = lnet_transaction_timeout * NSEC_PER_SEC;
-	msg->msg_deadline = ktime_add_ns(ktime_get(), timeout_ns);
-
-	/* routed message can be committed for both receiving and sending */
+	/* A routed message can be committed for both receiving and sending */
 	LASSERT(!msg->msg_tx_committed);
 
 	if (msg->msg_sending) {
 		LASSERT(!msg->msg_receiving);
+
+		/* Set the message deadline using msg send NI */
+		msg->msg_deadline = get_msg_deadline(msg->msg_txni);
 		msg->msg_tx_cpt = cpt;
 		msg->msg_tx_committed = 1;
 		if (msg->msg_rx_committed) { /* routed message REPLY */
@@ -139,6 +161,9 @@ lnet_msg_commit(struct lnet_msg *msg, int cpt)
 		}
 	} else {
 		LASSERT(!msg->msg_sending);
+
+		/* Set the message deadline using msg recv NI */
+		msg->msg_deadline = get_msg_deadline(msg->msg_rxni);
 		msg->msg_rx_cpt = cpt;
 		msg->msg_rx_committed = 1;
 	}
@@ -441,7 +466,7 @@ lnet_ni_add_to_recoveryq_locked(struct lnet_ni *ni,
 }
 
 static void
-lnet_handle_local_failure(struct lnet_ni *local_ni)
+lnet_handle_local_failure(struct lnet_ni *ni)
 {
 	/*
 	 * the lnet_net_lock(0) is used to protect the addref on the ni
@@ -454,8 +479,9 @@ lnet_handle_local_failure(struct lnet_ni *local_ni)
 		return;
 	}
 
-	lnet_dec_healthv_locked(&local_ni->ni_healthv, lnet_health_sensitivity);
-	lnet_ni_add_to_recoveryq_locked(local_ni, &the_lnet.ln_mt_localNIRecovq,
+	lnet_dec_ni_healthv_locked(ni);
+
+	lnet_ni_add_to_recoveryq_locked(ni, &the_lnet.ln_mt_localNIRecovq,
 					ktime_get_seconds());
 	lnet_net_unlock(0);
 }
@@ -497,11 +523,11 @@ lnet_handle_remote_failure(struct lnet_peer_ni *lpni)
 
 static void
 lnet_incr_hstats(struct lnet_ni *ni, struct lnet_peer_ni *lpni,
-		 enum lnet_msg_hstatus hstatus)
+		 enum lnet_msg_hstatus hstatus, int retry_count, int cpt)
 {
 	struct lnet_counters_health *health;
 
-	health = &the_lnet.ln_counters[0]->lct_health;
+	health = &the_lnet.ln_counters[cpt]->lct_health;
 
 	switch (hstatus) {
 	case LNET_MSG_STATUS_LOCAL_INTERRUPT:
@@ -549,6 +575,8 @@ lnet_incr_hstats(struct lnet_ni *ni, struct lnet_peer_ni *lpni,
 		health->lch_network_timeout_count++;
 		break;
 	case LNET_MSG_STATUS_OK:
+		if (retry_count)
+			health->lch_successful_resends++;
 		break;
 	default:
 		LBUG();
@@ -659,17 +687,20 @@ lnet_attempt_msg_resend(struct lnet_msg *msg)
 		return -ENOTRECOVERABLE;
 	}
 
+	cpt = msg->msg_tx_cpt;
+	lnet_net_lock(cpt);
+
 	/* check if the message has exceeded the number of retries */
 	if (msg->msg_retry_count >= lnet_retry_count) {
-		CNETERR("msg %s->%s exceeded retry count %d\n",
+		CDEBUG(D_NET, "%s->%s exceeded retry count %d\n",
 			libcfs_nidstr(&msg->msg_from),
 			libcfs_nidstr(&msg->msg_target.nid),
 			msg->msg_retry_count);
+		if (lnet_retry_count)
+			the_lnet.ln_counters[cpt]->lct_health.lch_failed_resends++;
+		lnet_net_unlock(cpt);
 		return -ENOTRECOVERABLE;
 	}
-
-	cpt = msg->msg_tx_cpt;
-	lnet_net_lock(cpt);
 
 	/* check again under lock */
 	if (the_lnet.ln_mt_state != LNET_MT_STATE_RUNNING) {
@@ -739,13 +770,9 @@ lnet_health_check(struct lnet_msg *msg)
 	bool lo = false;
 	bool attempt_local_resend;
 	bool attempt_remote_resend;
-	bool handle_local_health;
-	bool handle_remote_health;
+	bool handle_remote_health = true;
 	ktime_t now;
-
-	/* if we're shutting down no point in handling health. */
-	if (the_lnet.ln_mt_state != LNET_MT_STATE_RUNNING)
-		return -1;
+	int cpt;
 
 	LASSERT(msg->msg_tx_committed || msg->msg_rx_committed);
 
@@ -796,34 +823,30 @@ lnet_health_check(struct lnet_msg *msg)
 	       lnet_msgtyp2str(msg->msg_type),
 	       lnet_health_error2str(hstatus));
 
-	/*
-	 * stats are only incremented for errors so avoid wasting time
-	 * incrementing statistics if there is no error. Similarly, whether to
-	 * update health values or perform resends is only applicable for
-	 * messages with a health status != OK.
+	cpt = msg->msg_tx_committed ? msg->msg_tx_cpt : msg->msg_rx_cpt;
+	lnet_net_lock(cpt);
+
+	/* if we're shutting down no point in handling health. */
+	if (the_lnet.ln_mt_state != LNET_MT_STATE_RUNNING) {
+		lnet_net_unlock(cpt);
+		return -1;
+	}
+
+	lnet_incr_hstats(ni, lpni, hstatus, msg->msg_retry_count, cpt);
+
+	/* Whether to update health values or perform resends is only applicable
+	 * for messages with a health status != OK.
 	 */
 	if (hstatus != LNET_MSG_STATUS_OK) {
 		struct lnet_ping_info *pi;
-
-		/* Don't further decrement the health value if a recovery
-		 * message failed.
-		 */
-		if (msg->msg_recovery)
-			handle_local_health = handle_remote_health = false;
-		else
-			handle_local_health = handle_remote_health = true;
 
 		/* For local failures, health/recovery/resends are not needed if
 		 * I only have a single (non-lolnd) interface.
 		 */
 		pi = &the_lnet.ln_ping_target->pb_info;
-		if (lnet_ping_at_least_two_entries(pi)) {
-			handle_local_health = false;
+		if (lnet_ping_at_least_two_entries(pi))
 			attempt_local_resend = false;
-		}
 
-		lnet_net_lock(0);
-		lnet_incr_hstats(ni, lpni, hstatus);
 		/* For remote failures, health/recovery/resends are not needed
 		 * if the peer only has a single interface. Special case for
 		 * routers where we rely on health feature to manage route and
@@ -835,17 +858,18 @@ lnet_health_check(struct lnet_msg *msg)
 		    lpni->lpni_peer_net->lpn_peer &&
 		    lpni->lpni_peer_net->lpn_peer->lp_nnis <= 1) {
 			attempt_remote_resend = false;
-			if (!(lnet_isrouter(lpni) || the_lnet.ln_routing))
+			if (!(lnet_isrouter(lpni) || lnet_routing_enabled()))
 				handle_remote_health = false;
 		}
 		/* Do not put my interfaces into peer NI recovery. They should
 		 * be handled with local NI recovery.
 		 */
 		if (handle_remote_health && lpni &&
-		    lnet_nid_to_ni_locked(&lpni->lpni_nid, 0))
+		    lnet_nid_to_ni_locked(&lpni->lpni_nid, cpt))
 			handle_remote_health = false;
-		lnet_net_unlock(0);
 	}
+
+	lnet_net_unlock(cpt);
 
 	switch (hstatus) {
 	case LNET_MSG_STATUS_OK:
@@ -856,7 +880,8 @@ lnet_health_check(struct lnet_msg *msg)
 		 * Ping counts are reset to 0 as appropriate to allow for
 		 * faster recovery.
 		 */
-		lnet_inc_healthv(&ni->ni_healthv, lnet_health_sensitivity);
+		lnet_inc_ni_healthv(ni);
+
 		/*
 		 * It's possible msg_txpeer is NULL in the LOLND
 		 * case. Only increment the peer's health if we're
@@ -874,7 +899,8 @@ lnet_health_check(struct lnet_msg *msg)
 			 * I'm a router, then set that lpni's health to
 			 * maximum so we can commence communication
 			 */
-			if (lnet_isrouter(lpni) || the_lnet.ln_routing) {
+			if ((lnet_isrouter(lpni) || lnet_routing_enabled()) &&
+			     likely(!CFS_FAIL_CHECK(CFS_FAIL_RTR_HEALTH_INC))) {
 				lnet_set_lpni_healthv_locked(lpni,
 					LNET_MAX_HEALTH_VALUE);
 			} else {
@@ -899,14 +925,12 @@ lnet_health_check(struct lnet_msg *msg)
 	case LNET_MSG_STATUS_LOCAL_ABORTED:
 	case LNET_MSG_STATUS_LOCAL_NO_ROUTE:
 	case LNET_MSG_STATUS_LOCAL_TIMEOUT:
-		if (handle_local_health)
-			lnet_handle_local_failure(ni);
+		lnet_handle_local_failure(ni);
 		if (attempt_local_resend)
 			return lnet_attempt_msg_resend(msg);
 		break;
 	case LNET_MSG_STATUS_LOCAL_ERROR:
-		if (handle_local_health)
-			lnet_handle_local_failure(ni);
+		lnet_handle_local_failure(ni);
 		return -1;
 	case LNET_MSG_STATUS_REMOTE_DROPPED:
 		if (handle_remote_health)
@@ -922,8 +946,7 @@ lnet_health_check(struct lnet_msg *msg)
 	case LNET_MSG_STATUS_NETWORK_TIMEOUT:
 		if (handle_remote_health)
 			lnet_handle_remote_failure(lpni);
-		if (handle_local_health)
-			lnet_handle_local_failure(ni);
+		lnet_handle_local_failure(ni);
 		return -1;
 	default:
 		LBUG();

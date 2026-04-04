@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2010, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/obdecho/echo.c
  *
  * Author: Peter Braam <braam@clusterfs.com>
  * Author: Andreas Dilger <adilger@clusterfs.com>
@@ -40,6 +20,7 @@
 #include <obd_class.h>
 #include <lustre_dlm.h>
 #include <lprocfs_status.h>
+#include <lustre_nodemap.h>
 
 #include "echo_internal.h"
 
@@ -79,7 +60,11 @@ static int echo_connect(const struct lu_env *env,
 			struct obd_uuid *cluuid, struct obd_connect_data *data,
 			void *localdata)
 {
+	struct ptlrpc_request *req = localdata;
+	struct ptlrpc_svc_ctx *svc_ctx = NULL;
+	struct lnet_nid *client_nid = NULL;
 	struct lustre_handle conn = { 0 };
+	struct obd_export *lexp;
 	int rc;
 
 	data->ocd_connect_flags &= ECHO_CONNECT_SUPPORTED;
@@ -92,16 +77,49 @@ static int echo_connect(const struct lu_env *env,
 		CERROR("can't connect %d\n", rc);
 		return rc;
 	}
-	*exp = class_conn2export(&conn);
+	lexp = class_conn2export(&conn);
 
-	return 0;
+	if (lexp) {
+		if (req) {
+			svc_ctx = req->rq_svc_ctx;
+			client_nid = &req->rq_peer.nid;
+		}
+
+		if (svc_ctx || client_nid) {
+			rc = nodemap_add_member(svc_ctx, client_nid, lexp);
+			if (rc == -EEXIST)
+				rc = 0;
+			if (rc)
+				GOTO(out, rc);
+		} else {
+			CDEBUG(D_HA,
+			       "%s: cannot find nodemap for client %s: svc_ctx and nid are null\n",
+			       obd->obd_name, cluuid->uuid);
+		}
+	}
+
+out:
+	if (rc) {
+		class_disconnect(lexp);
+		nodemap_del_member(lexp);
+		*exp = NULL;
+	} else {
+		*exp = lexp;
+	}
+
+	return rc;
 }
 
 static int echo_disconnect(struct obd_export *exp)
 {
+	int rc;
+
 	LASSERT(exp != NULL);
 
-	return server_disconnect_export(exp);
+	rc = server_disconnect_export(exp);
+	nodemap_del_member(exp);
+
+	return rc;
 }
 
 static int echo_init_export(struct obd_export *exp)
@@ -135,8 +153,9 @@ static void
 echo_page_debug_setup(struct page *page, int rw, u64 id,
 		      __u64 offset, int len)
 {
-	int   page_offset = offset & ~PAGE_MASK;
-	char *addr        = ((char *)kmap(page)) + page_offset;
+	int page_offset = offset & ~PAGE_MASK;
+	char *kaddr = kmap_local_page(page);
+	char *addr = kaddr + page_offset;
 
 	if (len % OBD_ECHO_BLOCK_SIZE != 0)
 		CERROR("Unexpected block size %d\n", len);
@@ -155,17 +174,18 @@ echo_page_debug_setup(struct page *page, int rw, u64 id,
 		len    -= OBD_ECHO_BLOCK_SIZE;
 	}
 
-	kunmap(page);
+	kunmap_local(kaddr);
 }
 
 static int
 echo_page_debug_check(struct page *page, u64 id,
 		      __u64 offset, int len)
 {
-	int   page_offset = offset & ~PAGE_MASK;
-	char *addr        = ((char *)kmap(page)) + page_offset;
-	int   rc          = 0;
-	int   rc2;
+	int page_offset = offset & ~PAGE_MASK;
+	char *kaddr = kmap_local_page(page);
+	char *addr = kaddr + page_offset;
+	int rc = 0;
+	int rc2;
 
 	if (len % OBD_ECHO_BLOCK_SIZE != 0)
 		CERROR("Unexpected block size %d\n", len);
@@ -182,7 +202,7 @@ echo_page_debug_check(struct page *page, u64 id,
 		len    -= OBD_ECHO_BLOCK_SIZE;
 	}
 
-	kunmap(page);
+	kunmap_local(kaddr);
 
 	return rc;
 }
@@ -272,7 +292,7 @@ static int echo_finalize_lb(struct obdo *oa, struct obd_ioobj *obj,
 
 	for (i = 0; i < count; i++, (*pgs) ++, res++) {
 		struct page *page = res->lnb_page;
-		void       *addr;
+		void *addr;
 
 		if (!page) {
 			CERROR("null page objid %llu:%p, buf %d/%d\n",
@@ -281,7 +301,7 @@ static int echo_finalize_lb(struct obdo *oa, struct obd_ioobj *obj,
 			return -EFAULT;
 		}
 
-		addr = kmap(page);
+		addr = kmap_local_page(page);
 
 		CDEBUG(D_PAGE, "$$$$ use page %p, addr %p@%llu\n",
 		       res->lnb_page, addr, res->lnb_file_offset);
@@ -296,7 +316,7 @@ static int echo_finalize_lb(struct obdo *oa, struct obd_ioobj *obj,
 				rc = vrc;
 		}
 
-		kunmap(page);
+		kunmap_local(addr);
 		/* NB see comment above regarding persistent pages */
 		__free_page(page);
 	}
@@ -368,7 +388,6 @@ preprw_cleanup:
 	 */
 	CERROR("cleaning up %u pages (%d obdos)\n", *pages, objcount);
 	for (i = 0; i < *pages; i++) {
-		kunmap(res[i].lnb_page);
 		/*
 		 * NB if this is a persistent page, __free_page() will just
 		 * lose the extra ref gained above
@@ -460,13 +479,6 @@ commitrw_cleanup:
 	return rc;
 }
 
-LPROC_SEQ_FOPS_RO_TYPE(echo, uuid);
-static struct lprocfs_vars lprocfs_echo_obd_vars[] = {
-	{ .name =       "uuid",
-	  .fops =       &echo_uuid_fops         },
-	{ NULL }
-};
-
 const struct obd_ops echo_obd_ops = {
 	.o_owner           = THIS_MODULE,
 	.o_connect         = echo_connect,
@@ -478,15 +490,15 @@ const struct obd_ops echo_obd_ops = {
 };
 
 /**
- * Echo Server request handler for OST_CREATE RPC.
+ * esd_create_hdl() - Echo Server request handler for OST_CREATE RPC.
+ * @tsi: target session environment for this request
  *
  * This is part of request processing. Its simulates the object
  * creation on OST.
  *
- * \param[in] tsi	target session environment for this request
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 static int esd_create_hdl(struct tgt_session_info *tsi)
 {
@@ -533,15 +545,15 @@ static int esd_create_hdl(struct tgt_session_info *tsi)
 }
 
 /**
- * Echo Server request handler for OST_DESTROY RPC.
+ * esd_destroy_hdl() - Echo Server request handler for OST_DESTROY RPC.
+ * @tsi: target session environment for this request
  *
  * This is Echo Server part of request handling. It simulates the objects
  * destroy on OST.
  *
- * \param[in] tsi	target session environment for this request
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 static int esd_destroy_hdl(struct tgt_session_info *tsi)
 {
@@ -578,16 +590,16 @@ static int esd_destroy_hdl(struct tgt_session_info *tsi)
 }
 
 /**
- * Echo Server request handler for OST_GETATTR RPC.
+ * esd_getattr_hdl() - Echo Server request handler for OST_GETATTR RPC.
+ * @tsi: target session environment for this request
  *
  * This is Echo Server part of request handling. It returns an object
  * attributes to the client. All objects have the same attributes in
  * Echo Server.
  *
- * \param[in] tsi	target session environment for this request
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 static int esd_getattr_hdl(struct tgt_session_info *tsi)
 {
@@ -619,15 +631,15 @@ static int esd_getattr_hdl(struct tgt_session_info *tsi)
 }
 
 /**
- * Echo Server request handler for OST_SETATTR RPC.
+ * esd_setattr_hdl() - Echo Server request handler for OST_SETATTR RPC.
+ * @tsi: target session environment for this request
  *
  * This is Echo Server part of request handling. It sets common
  * attributes from request to the Echo Server objects.
  *
- * \param[in] tsi	target session environment for this request
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 static int esd_setattr_hdl(struct tgt_session_info *tsi)
 {
@@ -661,7 +673,7 @@ static int esd_setattr_hdl(struct tgt_session_info *tsi)
 #define OST_BRW_READ	OST_READ
 #define OST_BRW_WRITE	OST_WRITE
 
-/**
+/*
  * Table of Echo Server specific request handlers
  *
  * This table contains all opcodes accepted by Echo Server and
@@ -709,7 +721,7 @@ static struct tgt_opc_slice esd_common_slice[] = {
 	}
 };
 
-/**
+/*
  * lu_device_operations matrix for ECHO SRV device is NULL,
  * this device is just serving incoming requests immediately
  * without building a stack of lu_devices.
@@ -717,18 +729,19 @@ static struct tgt_opc_slice esd_common_slice[] = {
 static const struct lu_device_operations echo_srv_lu_ops = { 0 };
 
 /**
- * Initialize Echo Server device with parameters in the config log \a cfg.
+ * echo_srv_init0() - Initialize Echo Server device with parameters in the
+ * config log(@cfg)
+ * @env: execution environment
+ * @esd: Echo Server device
+ * @ldt: LU device type of Echo Server
+ * @cfg: configuration log
  *
  * This is the main starting point of Echo Server initialization. It fills all
  * parameters with their initial values and starts Echo Server.
  *
- * \param[in] env	execution environment
- * \param[in] m		Echo Server device
- * \param[in] ldt	LU device type of Echo Server
- * \param[in] cfg	configuration log
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 static int echo_srv_init0(const struct lu_env *env,
 			  struct echo_srv_device *esd,
@@ -761,7 +774,7 @@ static int echo_srv_init0(const struct lu_env *env,
 	spin_unlock(&obd->obd_dev_lock);
 
 	/* non-replayable target */
-	obd->obd_replayable = 0;
+	clear_bit(OBDF_REPLAYABLE, obd->obd_flags);
 
 	snprintf(ns_name, sizeof(ns_name), "echotgt-%s", obd->obd_uuid.uuid);
 	obd->obd_namespace = ldlm_namespace_new(obd, ns_name,
@@ -776,7 +789,6 @@ static int echo_srv_init0(const struct lu_env *env,
 		RETURN(rc);
 	}
 
-	obd->obd_vars = lprocfs_echo_obd_vars;
 	if (!lprocfs_obd_setup(obd, true) &&
 	    ldebugfs_alloc_obd_stats(obd, LPROC_ECHO_LAST) == 0) {
 		lprocfs_counter_init(obd->obd_stats, LPROC_ECHO_READ_BYTES,
@@ -812,13 +824,12 @@ err_out:
 }
 
 /**
- * Stop the Echo Server device.
+ * echo_srv_fini() - Stop the Echo Server device.
+ * @env: execution environment
+ * @esd: ESD device
  *
  * This function stops the Echo Server device and all its subsystems.
  * This is the end of Echo Server lifecycle.
- *
- * \param[in] env	execution environment
- * \param[in] esd		ESD device
  */
 static void echo_srv_fini(const struct lu_env *env,
 			  struct echo_srv_device *esd)
@@ -856,15 +867,14 @@ static void echo_srv_fini(const struct lu_env *env,
 }
 
 /**
- * Implementation of lu_device_type_operations::ldto_device_fini.
+ * echo_srv_device_fini() - Implementation of ldto_device_fini.
+ * @env: execution environment
+ * @d: LU device of ESD
  *
  * Finalize device. Dual to echo_srv_device_init(). It is called from
  * obd_precleanup() and stops the current device.
  *
- * \param[in] env	execution environment
- * \param[in] d		LU device of ESD
- *
- * \retval		NULL
+ * Returns NULL always
  */
 static struct lu_device *echo_srv_device_fini(const struct lu_env *env,
 					      struct lu_device *d)
@@ -875,14 +885,13 @@ static struct lu_device *echo_srv_device_fini(const struct lu_env *env,
 }
 
 /**
- * Implementation of lu_device_type_operations::ldto_device_free.
+ * echo_srv_device_free() - Implementation of ldto_device_free.
+ * @env: execution environment
+ * @d: LU device of ESD
  *
  * Free Echo Server device. Dual to echo_srv_device_alloc().
  *
- * \param[in] env	execution environment
- * \param[in] d		LU device of ESD
- *
- * \retval		NULL
+ * Returns NULL always
  */
 static struct lu_device *echo_srv_device_free(const struct lu_env *env,
 					      struct lu_device *d)
@@ -895,17 +904,16 @@ static struct lu_device *echo_srv_device_free(const struct lu_env *env,
 }
 
 /**
- * Implementation of lu_device_type_operations::ldto_device_alloc.
+ * echo_srv_device_alloc() - Implementation of ldto_device_alloc
+ * @env: execution environment
+ * @t: lu_device_type of ESD device
+ * @cfg: configuration log
  *
  * This function allocates the new Echo Server device. It is called from
  * obd_setup() if OBD device had lu_device_type defined.
  *
- * \param[in] env	execution environment
- * \param[in] t		lu_device_type of ESD device
- * \param[in] cfg	configuration log
- *
- * \retval		pointer to the lu_device of just allocated OFD
- * \retval		ERR_PTR of return value on error
+ * Return pointer to the lu_device of just allocated OFD on success else
+ * ERR_PTR of return value on error
  */
 static struct lu_device *echo_srv_device_alloc(const struct lu_env *env,
 					       struct lu_device_type *t,
@@ -957,7 +965,8 @@ void echo_persistent_pages_fini(void)
 int echo_persistent_pages_init(void)
 {
 	struct page *pg;
-	int          i;
+	void *kaddr;
+	int i;
 
 	for (i = 0; i < ECHO_PERSISTENT_PAGES; i++) {
 		gfp_t gfp_mask = (i < ECHO_PERSISTENT_PAGES / 2) ?
@@ -969,8 +978,9 @@ int echo_persistent_pages_init(void)
 			return -ENOMEM;
 		}
 
-		memset(kmap(pg), 0, PAGE_SIZE);
-		kunmap(pg);
+		kaddr = kmap_local_page(pg);
+		memset(kaddr, 0, PAGE_SIZE);
+		kunmap_local(kaddr);
 		/* set mapping so page is not considered encrypted */
 		pg->mapping = ECHO_MAPPING_UNENCRYPTED;
 

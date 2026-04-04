@@ -47,6 +47,9 @@ struct lov_layout_operations {
 			  lu_printer_t p, const struct lu_object *o);
 	int  (*llo_page_init)(const struct lu_env *env, struct cl_object *obj,
 			      struct cl_page *page, pgoff_t index);
+	int  (*llo_dio_pages_init)(const struct lu_env *env,
+				   struct cl_object *obj,
+				   struct cl_dio_pages *cdp, pgoff_t index);
 	int  (*llo_lock_init)(const struct lu_env *env,
 			      struct cl_object *obj, struct cl_lock *lock,
 			      const struct cl_io *io);
@@ -218,7 +221,7 @@ static int lov_init_raid0(const struct lu_env *env, struct lov_device *dev,
 			GOTO(out, result = -EIO);
 		}
 
-		exp = dev->ld_lov->lov_tgts[ost_idx]->ltd_exp;
+		exp = lov_tgt(dev->ld_lov, ost_idx)->ltd_exp;
 		if (likely(exp)) {
 			/* the more fast OSTs the better */
 			if (exp->exp_obd->obd_osfs.os_state & OS_STATFS_NONROT)
@@ -423,13 +426,14 @@ static int lov_attr_get_dom(const struct lu_env *env, struct lov_object *lov,
 static int lov_fld_lookup(struct lov_device *ld, const struct lu_fid *fid,
 			  __u32 *nr)
 {
+	struct lu_seq_range res = {0};
 	__u32 mds_idx;
 	int i, rc;
 
 	ENTRY;
 
 	rc = fld_client_lookup(&ld->ld_lmv->u.lmv.lmv_fld, fid_seq(fid),
-			       &mds_idx, LU_SEQ_RANGE_MDT, NULL);
+			       LU_SEQ_RANGE_MDT, NULL, &res);
 	if (rc) {
 		CERROR("%s: error while looking for mds number. Seq %#llx"
 		       ", err = %d\n", lu_dev_name(cl2lu_dev(&ld->ld_cl)),
@@ -437,6 +441,7 @@ static int lov_fld_lookup(struct lov_device *ld, const struct lu_fid *fid,
 		RETURN(rc);
 	}
 
+	mds_idx = res.lsr_index;
 	CDEBUG(D_INODE, "FLD lookup got mds #%x for fid="DFID"\n",
 	       mds_idx, PFID(fid));
 
@@ -595,6 +600,7 @@ static int lov_init_composite(const struct lu_env *env, struct lov_device *dev,
 	LASSERT(lsm->lsm_entry_count > 0);
 	LASSERT(lov->lo_lsm == NULL);
 	lov->lo_lsm = lsm_addref(lsm);
+	LASSERT(lov->lo_lsm);
 	set_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags);
 
 	dump_lsm(D_INODE, lsm);
@@ -675,8 +681,7 @@ static int lov_init_composite(const struct lu_env *env, struct lov_device *dev,
 		}
 
 		lle->lle_extent = &lle->lle_lsme->lsme_extent;
-		if (!lov_pattern_supported(
-				lov_pattern(lle->lle_lsme->lsme_pattern)) ||
+		if (!lov_pattern_supported(lle->lle_lsme->lsme_pattern) ||
 		    !lov_supported_comp_magic(lle->lle_lsme->lsme_magic))
 			lle->lle_valid = 0;
 		else
@@ -741,8 +746,7 @@ static int lov_init_composite(const struct lu_env *env, struct lov_device *dev,
 		if (lsme_is_foreign(lle->lle_lsme))
 			continue;
 
-		if (!lov_pattern_supported(
-				lov_pattern(lle->lle_lsme->lsme_pattern)) ||
+		if (!lov_pattern_supported(lle->lle_lsme->lsme_pattern) ||
 		    !lov_supported_comp_magic(lle->lle_lsme->lsme_magic))
 			continue;
 
@@ -762,7 +766,7 @@ static int lov_init_composite(const struct lu_env *env, struct lov_device *dev,
 	 * so that different clients would use different mirrors for read. */
 	mirror_count = 0;
 	preference = -1;
-	seq = cfs_hash_long((unsigned long)lov, 8);
+	seq = hash_long((unsigned long)lov, 8);
 	for (i = 0; i < comp->lo_mirror_count; i++) {
 		unsigned int idx = (i + seq) % comp->lo_mirror_count;
 
@@ -823,6 +827,8 @@ static int lov_init_released(const struct lu_env *env,
 	LASSERT(lov->lo_lsm == NULL);
 
 	lov->lo_lsm = lsm_addref(lsm);
+	LASSERT(lov->lo_lsm);
+
 	return 0;
 }
 
@@ -837,6 +843,8 @@ static int lov_init_foreign(const struct lu_env *env,
 	LASSERT(lov->lo_lsm == NULL);
 
 	lov->lo_lsm = lsm_addref(lsm);
+	LASSERT(lov->lo_lsm);
+
 	return 0;
 }
 
@@ -868,8 +876,7 @@ static int lov_delete_composite(const struct lu_env *env,
 		if (lsme) {
 			if (lsme_is_foreign(lsme))
 				continue;
-			if (!lov_pattern_supported(lov_pattern(
-							lsme->lsme_pattern)) ||
+			if (!lov_pattern_supported(lsme->lsme_pattern) ||
 			    !lov_supported_comp_magic(lsme->lsme_magic))
 				continue;
 		}
@@ -883,7 +890,7 @@ static int lov_delete_composite(const struct lu_env *env,
 }
 
 static void lov_fini_empty(const struct lu_env *env, struct lov_object *lov,
-                           union lov_layout_state *state)
+			   union lov_layout_state *state)
 {
 	LASSERT(lov->lo_type == LLT_EMPTY || lov->lo_type == LLT_RELEASED);
 }
@@ -946,7 +953,7 @@ static int lov_print_composite(const struct lu_env *env, void *cookie,
 	(*p)(env, cookie, "entries: %d, %s, lsm{%p 0x%08X %d %u}:\n",
 	     lsm->lsm_entry_count,
 	     test_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags) ? "invalid" :
-	     "valid", lsm, lsm->lsm_magic, atomic_read(&lsm->lsm_refc),
+	     "valid", lsm, lsm->lsm_magic, kref_read(&lsm->lsm_refc),
 	     lsm->lsm_layout_gen);
 
 	for (i = 0; i < lsm->lsm_entry_count; i++) {
@@ -976,7 +983,7 @@ static int lov_print_released(const struct lu_env *env, void *cookie,
 	(*p)(env, cookie,
 		"released: %s, lsm{%p 0x%08X %d %u}:\n",
 		test_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags) ? "invalid" :
-		"valid", lsm, lsm->lsm_magic, atomic_read(&lsm->lsm_refc),
+		"valid", lsm, lsm->lsm_magic, kref_read(&lsm->lsm_refc),
 		lsm->lsm_layout_gen);
 	return 0;
 }
@@ -991,7 +998,7 @@ static int lov_print_foreign(const struct lu_env *env, void *cookie,
 		"foreign: %s, lsm{%p 0x%08X %d %u}:\n",
 		test_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags) ?
 		"invalid" : "valid", lsm,
-		lsm->lsm_magic, atomic_read(&lsm->lsm_refc),
+		lsm->lsm_magic, kref_read(&lsm->lsm_refc),
 		lsm->lsm_layout_gen);
 	(*p)(env, cookie,
 		"raw_ea_content '%.*s'\n",
@@ -1125,6 +1132,7 @@ static const struct lov_layout_operations lov_dispatch[] = {
 		.llo_fini      = lov_fini_empty,
 		.llo_print     = lov_print_empty,
 		.llo_page_init = lov_page_init_empty,
+		.llo_dio_pages_init = lov_dio_pages_init_empty,
 		.llo_lock_init = lov_lock_init_empty,
 		.llo_io_init   = lov_io_init_empty,
 		.llo_getattr   = lov_attr_get_empty,
@@ -1136,6 +1144,7 @@ static const struct lov_layout_operations lov_dispatch[] = {
 		.llo_fini      = lov_fini_released,
 		.llo_print     = lov_print_released,
 		.llo_page_init = lov_page_init_empty,
+		.llo_dio_pages_init = lov_dio_pages_init_empty,
 		.llo_lock_init = lov_lock_init_empty,
 		.llo_io_init   = lov_io_init_released,
 		.llo_getattr   = lov_attr_get_released,
@@ -1147,6 +1156,7 @@ static const struct lov_layout_operations lov_dispatch[] = {
 		.llo_fini      = lov_fini_composite,
 		.llo_print     = lov_print_composite,
 		.llo_page_init = lov_page_init_composite,
+		.llo_dio_pages_init = lov_dio_pages_init_composite,
 		.llo_lock_init = lov_lock_init_composite,
 		.llo_io_init   = lov_io_init_composite,
 		.llo_getattr   = lov_attr_get_composite,
@@ -1158,6 +1168,7 @@ static const struct lov_layout_operations lov_dispatch[] = {
 		.llo_fini      = lov_fini_released,
 		.llo_print     = lov_print_foreign,
 		.llo_page_init = lov_page_init_foreign,
+		.llo_dio_pages_init = lov_dio_pages_init_foreign,
 		.llo_lock_init = lov_lock_init_empty,
 		.llo_io_init   = lov_io_init_empty,
 		.llo_getattr   = lov_attr_get_empty,
@@ -1221,7 +1232,7 @@ static inline void lov_conf_thaw(struct lov_object *lov)
 	struct lov_object                      *__obj = (obj);          \
 	int                                     __lock = !!(lock);      \
 	typeof(lov_dispatch[0].op(__VA_ARGS__)) __result;               \
-                                                                        \
+									\
 	if (__lock)                                                     \
 		lov_conf_freeze(__obj);					\
 	__result = LOV_2DISPATCH_NOLOCK(obj, op, __VA_ARGS__);          \
@@ -1234,13 +1245,13 @@ static inline void lov_conf_thaw(struct lov_object *lov)
  * Performs a locked double-dispatch based on the layout type of an object.
  */
 #define LOV_2DISPATCH(obj, op, ...)                     \
-        LOV_2DISPATCH_MAYLOCK(obj, op, 1, __VA_ARGS__)
+	LOV_2DISPATCH_MAYLOCK(obj, op, 1, __VA_ARGS__)
 
 #define LOV_2DISPATCH_VOID(obj, op, ...)                                \
 do {                                                                    \
 	struct lov_object                      *__obj = (obj);          \
 	enum lov_layout_type                    __llt;                  \
-                                                                        \
+									\
 	lov_conf_freeze(__obj);						\
 	__llt = __obj->lo_type;                                         \
 	LASSERT(__llt < ARRAY_SIZE(lov_dispatch));			\
@@ -1311,11 +1322,8 @@ static int lov_layout_change(const struct lu_env *unused,
 	new_ops = &lov_dispatch[llt];
 
 	rc = cl_object_prune(env, &lov->lo_cl);
-	if (rc != 0) {
-		if (rc == -EAGAIN)
-			set_bit(LO_NEED_INODE_LOCK, &lov->lo_obj_flags);
+	if (rc != 0)
 		GOTO(out, rc);
-	}
 
 	rc = old_ops->llo_delete(env, lov, &lov->u);
 	if (rc != 0)
@@ -1400,9 +1408,6 @@ static int lov_conf_set(const struct lu_env *env, struct cl_object *obj,
 {
 	struct lov_stripe_md *lsm = NULL;
 	struct lov_object *lov = cl2lov(obj);
-	struct cl_object *top = cl_object_top(obj);
-	bool lock_inode = false;
-	bool inode_size_locked = false;
 	int result = 0;
 	ENTRY;
 
@@ -1421,7 +1426,6 @@ static int lov_conf_set(const struct lu_env *env, struct cl_object *obj,
 		GOTO(out_lsm, result = 0);
 	}
 
-retry:
 	lov_conf_lock(lov);
 	if (conf->coc_opc == OBJECT_CONF_WAIT) {
 		if (test_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags) &&
@@ -1479,52 +1483,15 @@ retry:
 		GOTO(out, result = -ERESTARTSYS);
 	}
 
-	clear_bit(LO_NEED_INODE_LOCK, &lov->lo_obj_flags);
 	result = lov_layout_change(env, lov, lsm, conf);
-	if (result) {
-		if (result == -EAGAIN &&
-		    test_bit(LO_NEED_INODE_LOCK, &lov->lo_obj_flags)) {
-			/**
-			 * we need unlocked lov conf and get inode lock.
-			 * It's possible we have already taken inode's size
-			 * mutex and/or layout mutex, so we need keep such lock
-			 * order, lest deadlock happens:
-			 *   inode lock        (ll_inode_lock())
-			 *   inode size lock   (ll_inode_size_lock())
-			 *   lov conf lock     (lov_conf_lock())
-			 *
-			 * e.g.
-			 *   vfs_setxattr                inode locked
-			 *     ll_lov_setstripe_ea_info  inode size locked
-			 *       ll_prep_inode
-			 *         cl_file_inode_init
-			 *           cl_conf_set
-			 *             lov_conf_set      lov conf locked
-			 */
-			lov_conf_unlock(lov);
-			if (cl_object_inode_ops(env, top, COIO_SIZE_UNLOCK,
-						NULL) == 0)
-				inode_size_locked = true;
-
-			/* take lock in order */
-			if (cl_object_inode_ops(
-					env, top, COIO_INODE_LOCK, NULL) == 0)
-				lock_inode = true;
-			if (inode_size_locked)
-				cl_object_inode_ops(env, top, COIO_SIZE_LOCK,
-						    NULL);
-			goto retry;
-		}
+	if (result)
 		set_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags);
-	} else {
+	else
 		clear_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags);
-	}
 	EXIT;
 
 out:
 	lov_conf_unlock(lov);
-	if (lock_inode)
-		cl_object_inode_ops(env, top, COIO_INODE_UNLOCK, NULL);
 out_lsm:
 	lov_lsm_put(lsm);
 	CDEBUG(D_INODE, DFID" lo_layout_invalid=%u\n",
@@ -1566,6 +1533,13 @@ static int lov_page_init(const struct lu_env *env, struct cl_object *obj,
 				    index);
 }
 
+static int lov_dio_pages_init(const struct lu_env *env, struct cl_object *obj,
+			 struct cl_dio_pages *cdp, pgoff_t index)
+{
+	return LOV_2DISPATCH_NOLOCK(cl2lov(obj), llo_dio_pages_init, env, obj,
+				    cdp, index);
+}
+
 /**
  * Implements cl_object_operations::clo_io_init() method for lov
  * layer. Dispatches to the appropriate layout io initialization method.
@@ -1602,7 +1576,7 @@ static int lov_attr_get(const struct lu_env *env, struct cl_object *obj,
 }
 
 static int lov_attr_update(const struct lu_env *env, struct cl_object *obj,
-			   const struct cl_attr *attr, unsigned valid)
+			   const struct cl_attr *attr, enum cl_attr_valid valid)
 {
 	/*
 	 * No dispatch is required here, as no layout implements this.
@@ -1689,11 +1663,13 @@ static int fiemap_calc_last_stripe(struct lov_stripe_md *lsm, int index,
  */
 static void fiemap_prepare_and_copy_exts(struct fiemap *fiemap,
 					 struct fiemap_extent *lcl_fm_ext,
-					 int ost_index, unsigned int ext_count,
-					 int current_extent, int abs_stripeno)
+					 unsigned int ost_index,
+					 unsigned int ext_count,
+					 unsigned int current_extent,
+					 unsigned int abs_stripeno)
 {
-	char		*to;
-	unsigned int	ext;
+	unsigned int ext;
+	char *to;
 
 	for (ext = 0; ext < ext_count; ext++) {
 		set_fe_device_stripenr(&lcl_fm_ext[ext], ost_index,
@@ -1840,20 +1816,24 @@ static int fiemap_for_stripe(const struct lu_env *env, struct cl_object *obj,
 	switch (lle->lle_type) {
 	case LOV_PATTERN_RAID0:
 	{
-		struct lov_device *lov = lov_object_dev(lo);
+		struct lov_obd *lov = lu2lov_dev(obj->co_lu.lo_dev)->ld_lov;
+		struct lu_tgt_descs *ltd = &lov->lov_ost_descs;
 		const struct lov_layout_raid0 *r0 = &lle->lle_raid0;
 		struct lov_oinfo *oinfo;
+		struct lu_tgt_desc *tgt;
 
 		if (stripeno >= r0->lo_nr)
 			RETURN(-EINVAL);
+
 		subobj = lovsub2cl(r0->lo_sub[stripeno]);
 		oinfo = lsme->lsme_oinfo[stripeno];
 		if (lov_oinfo_is_dummy(oinfo))
 			RETURN(-EIO);
 		devnr = oinfo->loi_ost_idx;
-		if (devnr < 0 || devnr >= lov_targets_nr(lov))
+		if (devnr < 0 || devnr >= ltd->ltd_tgts_size)
 			RETURN(-EINVAL);
-		if (!lov->ld_lov->lov_tgts[devnr]->ltd_active) {
+		tgt = lov_tgt(lov, devnr);
+		if (!tgt || !tgt->ltd_active) {
 			ext_count = fiemap_unknown(fs, obd_start, obd_end);
 			GOTO(out_unknown, rc = -ENODEV);
 		}
@@ -1993,18 +1973,18 @@ static int lov_object_fiemap(const struct lu_env *env, struct cl_object *obj,
 	struct fiemap *fm_local = NULL;
 	loff_t whole_start;
 	loff_t whole_end;
-	int entry;
-	int start_entry = -1;
-	int end_entry;
-	int cur_stripe = 0;
-	int stripe_count;
+	unsigned int entry;
+	unsigned int start_entry = ~0U;
+	unsigned int end_entry;
+	unsigned int cur_stripe = 0;
+	unsigned int stripe_count;
 	unsigned int buffer_size = FIEMAP_BUFFER_SIZE;
 	int rc = 0;
 	struct fiemap_state fs = { 0 };
 	struct lu_extent range;
-	int cur_ext;
-	int stripe_last = 0;
-	int start_stripe = 0;
+	unsigned int cur_ext;
+	unsigned int stripe_last = 0;
+	unsigned int start_stripe = 0;
 	bool resume = false;
 	ENTRY;
 
@@ -2113,9 +2093,9 @@ static int lov_object_fiemap(const struct lu_env *env, struct cl_object *obj,
 		cur_stripe += stripes;
 	}
 
-	if (start_entry == -1) {
-		CERROR(DFID": FIEMAP does not init start entry, cur_stripe=%d, "
-		       "stripe_last=%d\n", PFID(lu_object_fid(&obj->co_lu)),
+	if (start_entry == ~0U) {
+		CERROR(DFID": FIEMAP does not init start entry, cur_stripe=%u, "
+		       "stripe_last=%u\n", PFID(lu_object_fid(&obj->co_lu)),
 		       cur_stripe, stripe_last);
 		GOTO(out_fm_local, rc = -EINVAL);
 	}
@@ -2308,6 +2288,7 @@ static int lov_object_flush(const struct lu_env *env, struct cl_object *obj,
 
 static const struct cl_object_operations lov_ops = {
 	.coo_page_init    = lov_page_init,
+	.coo_dio_pages_init = lov_dio_pages_init,
 	.coo_lock_init    = lov_lock_init,
 	.coo_io_init      = lov_io_init,
 	.coo_attr_get     = lov_attr_get,
@@ -2362,7 +2343,7 @@ static struct lov_stripe_md *lov_lsm_addref(struct lov_object *lov)
 	if (lov->lo_lsm != NULL) {
 		lsm = lsm_addref(lov->lo_lsm);
 		CDEBUG(D_INODE, "lsm %p addref %d/%d by %p.\n",
-			lsm, atomic_read(&lsm->lsm_refc),
+			lsm, kref_read(&lsm->lsm_refc),
 			test_bit(LO_LAYOUT_INVALID, &lov->lo_obj_flags),
 			current);
 	}
@@ -2395,8 +2376,7 @@ int lov_read_and_clear_async_rc(struct cl_object *clob)
 				int j;
 
 				if (!lsme_inited(lse) ||
-				    !lov_pattern_supported(
-					    lov_pattern(lse->lsme_pattern)) ||
+				    !lov_pattern_supported(lse->lsme_pattern) ||
 				    !lov_supported_comp_magic(lse->lsme_magic))
 					break;
 

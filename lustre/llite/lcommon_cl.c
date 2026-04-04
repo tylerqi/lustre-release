@@ -1,39 +1,20 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
  */
 
 #define DEBUG_SUBSYSTEM S_LLITE
 
-#include <libcfs/libcfs.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
@@ -52,37 +33,37 @@
 #include "llite_internal.h"
 #include "vvp_internal.h"
 
-/**
- * An `emergency' environment used by cl_inode_fini() when cl_env_get()
+/* An 'emergency' environment used by cl_inode_fini() when cl_env_get()
  * fails. Access to this environment is serialized by cl_inode_fini_guard
  * mutex.
  */
 struct lu_env *cl_inode_fini_env;
 __u16 cl_inode_fini_refcheck;
 
-/**
- * A mutex serializing calls to slp_inode_fini() under extreme memory
+/* A mutex serializing calls to slp_inode_fini() under extreme memory
  * pressure, when environments cannot be allocated.
  */
 static DEFINE_MUTEX(cl_inode_fini_guard);
 
-int cl_setattr_ost(struct cl_object *obj, const struct iattr *attr,
+int cl_setattr_ost(struct inode *inode, const struct iattr *attr,
 		   enum op_xvalid xvalid, unsigned int attr_flags)
 {
+	struct cl_object *obj;
 	struct lu_env *env;
-	struct cl_io  *io;
+	struct cl_io *io;
 	int result;
 	__u16 refcheck;
 
 	ENTRY;
 
+	obj = ll_i2info(inode)->lli_clob;
+
 	env = cl_env_get(&refcheck);
 	if (IS_ERR(env))
 		RETURN(PTR_ERR(env));
 
-	io = vvp_env_thread_io(env);
+	io = vvp_env_new_io(env);
 	io->ci_obj = obj;
-	io->ci_verify_layout = 1;
 
 	io->u.ci_setattr.sa_attr.lvb_atime = attr->ia_atime.tv_sec;
 	io->u.ci_setattr.sa_attr.lvb_mtime = attr->ia_mtime.tv_sec;
@@ -92,8 +73,14 @@ int cl_setattr_ost(struct cl_object *obj, const struct iattr *attr,
 	io->u.ci_setattr.sa_avalid = attr->ia_valid;
 	io->u.ci_setattr.sa_xvalid = xvalid;
 	io->u.ci_setattr.sa_parent_fid = lu_object_fid(&obj->co_lu);
-	if (attr->ia_valid & ATTR_SIZE)
+	if (attr->ia_valid & ATTR_SIZE) {
 		io->u.ci_setattr.sa_subtype = CL_SETATTR_TRUNC;
+		io->u.ci_setattr.sa_attr_uid =
+			from_kuid(&init_user_ns, current_uid());
+		io->u.ci_setattr.sa_attr_gid =
+			from_kgid(&init_user_ns, current_gid());
+		io->u.ci_setattr.sa_attr_projid = ll_i2info(inode)->lli_projid;
+	}
 again:
 	if (attr->ia_valid & ATTR_FILE)
 		ll_io_set_mirror(io, attr->ia_file);
@@ -109,6 +96,7 @@ again:
 			vio->vui_fd = attr->ia_file->private_data;
 
 		result = cl_io_loop(env, io);
+		CFS_FAIL_TIMEOUT(OBD_FAIL_LLITE_TRUNC_PAUSE, 2);
 	} else {
 		result = io->ci_result;
 	}
@@ -121,13 +109,17 @@ again:
 }
 
 /**
- * Initialize or update CLIO structures for regular files when new
- * meta-data arrives from the server.
+ * cl_file_inode_init() - Initialize or update CLIO structures for regular
+ * files when new meta-data arrives from the server.
+ * @inode: regular file inode
+ * @md: new file metadata from MDS
  *
- * \param inode regular file inode
- * \param md    new file metadata from MDS
  * - allocates cl_object if necessary,
  * - updated layout, if object was already here.
+ *
+ * Return:
+ * * %0: Success
+ * * %-ERRNO: Failure
  */
 int cl_file_inode_init(struct inode *inode, struct lustre_md *md)
 {
@@ -145,8 +137,8 @@ int cl_file_inode_init(struct inode *inode, struct lustre_md *md)
 	int result = 0;
 	__u16 refcheck;
 
-	LASSERT(md->body->mbo_valid & OBD_MD_FLID);
-	LASSERT(S_ISREG(inode->i_mode));
+	if (!(md->body->mbo_valid & OBD_MD_FLID) || !S_ISREG(inode->i_mode))
+		return 0;
 
 	env = cl_env_get(&refcheck);
 	if (IS_ERR(env))
@@ -200,7 +192,7 @@ out:
 	return result;
 }
 
-/**
+/*
  * Wait for others drop their references of the object at first, then we drop
  * the last one, which will lead to the object be destroyed immediately.
  * Must be called after cl_object_kill() against this object.
@@ -263,11 +255,17 @@ void cl_inode_fini(struct inode *inode)
 }
 
 /**
- * build inode number from passed @fid.
+ * cl_fid_build_ino() - build inode number from passed @fid.
+ * @fid: FID(Unique File Identifier)
+ * @api32: 1 for 32bit otherwise it is 64bit
  *
  * For 32-bit systems or syscalls limit the inode number to a 32-bit value
  * to avoid EOVERFLOW errors.  This will inevitably result in inode number
  * collisions, but fid_flatten32() tries hard to avoid this if possible.
+ *
+ * Return:
+ * * map FID(Unique File Identifier) to 32bit for inode on 32bit systems or
+ * map FID to 64bit for inode on 32bit systems
  */
 __u64 cl_fid_build_ino(const struct lu_fid *fid, int api32)
 {
@@ -278,8 +276,15 @@ __u64 cl_fid_build_ino(const struct lu_fid *fid, int api32)
 }
 
 /**
+ * cl_fid_build_gen() - build inode generation from passed @fid.
+ * @fid: Unique File Identifier
+ *
  * build inode generation from passed @fid.  If our FID overflows the 32-bit
  * inode number then return a non-zero generation to distinguish them.
+ *
+ * Return:
+ * * >0 generation number which will get incremented/changed on @fid reuse
+ *
  */
 __u32 cl_fid_build_gen(const struct lu_fid *fid)
 {

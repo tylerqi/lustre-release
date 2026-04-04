@@ -1,37 +1,19 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * Implementation of cl_page for VVP layer.
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
- *   Author: Jinshan Xiong <jinshan.xiong@whamcloud.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Jinshan Xiong <jinshan.xiong@whamcloud.com>
  */
 
 #define DEBUG_SUBSYSTEM S_LLITE
@@ -43,15 +25,11 @@
 #include <linux/page-flags.h>
 #include <linux/pagemap.h>
 
-#include <libcfs/libcfs.h>
 #include "llite_internal.h"
 #include "vvp_internal.h"
 
-/*****************************************************************************
- *
- * Page operations.
- *
- */
+/* Page operations */
+
 static void vvp_page_discard(const struct lu_env *env,
 			     const struct cl_page_slice *slice,
 			     struct cl_io *unused)
@@ -75,7 +53,7 @@ static void vvp_page_delete(const struct lu_env *env,
 		LASSERT((struct cl_page *)vmpage->private == cp);
 
 		CDEBUG(D_CACHE, "delete page %pK index %ld\n",
-		       vmpage, vmpage->index);
+		       vmpage, folio_index_page(vmpage));
 		/* Drop the reference count held in vvp_page_init */
 		refcount_dec(&cp->cp_ref);
 
@@ -101,7 +79,11 @@ static void vvp_page_delete(const struct lu_env *env,
 }
 
 /**
- * Handles page transfer errors at VM level.
+ * vvp_vmpage_error() - Handles page transfer errors at VM level.
+ *
+ * @inode: inode linked with vmpage(struct page)
+ * @vmpage: struct page that has error
+ * @ioret: type of error
  *
  * This takes inode as a separate argument, because inode on which error is to
  * be set can be different from \a vmpage inode in case of direct-io.
@@ -133,9 +115,9 @@ static void vvp_vmpage_error(struct inode *inode, struct page *vmpage,
 	}
 }
 
-static void vvp_page_completion_read(const struct lu_env *env,
-				     const struct cl_page_slice *slice,
-				     int ioret)
+static void vvp_page_complete_read(const struct lu_env *env,
+				   const struct cl_page_slice *slice,
+				   int ioret)
 {
 	struct cl_page *cp = slice->cpl_page;
 	struct page *vmpage = cp->cp_vmpage;
@@ -174,9 +156,9 @@ static void vvp_page_completion_read(const struct lu_env *env,
 	EXIT;
 }
 
-static void vvp_page_completion_write(const struct lu_env *env,
-				      const struct cl_page_slice *slice,
-				      int ioret)
+static void vvp_page_complete_write(const struct lu_env *env,
+				    const struct cl_page_slice *slice,
+				    int ioret)
 {
 	struct cl_page *cp = slice->cpl_page;
 	struct page *vmpage = cp->cp_vmpage;
@@ -205,10 +187,10 @@ static const struct cl_page_operations vvp_page_ops = {
 	.cpo_discard       = vvp_page_discard,
 	.io = {
 		[CRT_READ] = {
-			.cpo_completion = vvp_page_completion_read,
+			.cpo_complete = vvp_page_complete_read,
 		},
 		[CRT_WRITE] = {
-			.cpo_completion = vvp_page_completion_write,
+			.cpo_complete = vvp_page_complete_write,
 		},
 	},
 };

@@ -35,7 +35,7 @@
  * to 0, the feature is disabled.
  */
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 
 /* Lock count is stored in ldlm_reclaim_threshold & ldlm_lock_limit */
 __u64 ldlm_reclaim_threshold;
@@ -386,11 +386,7 @@ int ldlm_reclaim_setup(void)
 	ldlm_last_reclaim_age_ns = LDLM_RECLAIM_AGE_MAX;
 	ldlm_last_reclaim_time = ktime_get();
 
-#ifdef HAVE_PERCPU_COUNTER_INIT_GFP_FLAG
 	return percpu_counter_init(&ldlm_granted_total, 0, GFP_KERNEL);
-#else
-	return percpu_counter_init(&ldlm_granted_total, 0);
-#endif
 }
 
 void ldlm_reclaim_cleanup(void)
@@ -398,7 +394,7 @@ void ldlm_reclaim_cleanup(void)
 	percpu_counter_destroy(&ldlm_granted_total);
 }
 
-#else /* HAVE_SERVER_SUPPORT */
+#else /* CONFIG_LUSTRE_FS_SERVER */
 
 bool ldlm_reclaim_full(void)
 {
@@ -422,4 +418,4 @@ void ldlm_reclaim_cleanup(void)
 {
 }
 
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */

@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -61,6 +41,7 @@
 #include "mount_utils.h"
 
 #define MAX_RETRIES 99
+#define PATH_FORMAT "/etc/lustre/mount.%s.params"
 
 int	verbose;
 int	version;
@@ -96,17 +77,18 @@ static void usage(FILE *out)
 		"\t\tabort_recov: abort server recovery handling\n"
 		"\t\tnosvc: only start MGC/MGS without starting MDS/OSS\n"
 		"\t\tnomgs: only start target MDS/OSS, using existing MGS\n"
+		"\t\tnoclient: do NOT allow clients connections other than MGS local\n"
 		"\t\tnoscrub: do NOT auto start OI scrub unless requested\n"
 		"\t\tskip_lfsck: do NOT auto resume paused/crashed LFSCK\n"
-		"\t\tmax_sectors_kb=<size>: set device max_sectors_kb to size or leaves it untouched if size=0\n"
-		"\t\t\tIf not specified, device max_sectors_kb will be set to max_hw_sectors_kb\n"
 		"\t\tmd_stripe_cache_size=<num>: set MD RAID device stripe cache size\n"
 		"\t<cliopt>: one or more comma separated client options:\n"
 		"\t\texclude=<ostname>[:<ostname>]: list of inactive OSTs (e.g. lustre-OST0001)\n"
 		"\t\tlocalflock: enable POSIX flock only on local client\n"
+		"\tmgsname=HOSTNAME: MGS hostname for display in /proc/mounts\n"
 		"\t\tretry=<num>: number of times mount is retried by client\n"
 #ifdef HAVE_GSS
 		"\t\tskpath=<file|directory>: path of keys to load into kernel keyring\n"
+		"\t\t\t(clients also auto-load <mountpoint>/.lgss if present)\n"
 #endif
 		"\t\t(no)user_fid2path: disable* or enable user $MOUNT/.lustre/fid access\n"
 		"\t\t(no)checksum: disable or enable* data checksums\n"
@@ -279,17 +261,21 @@ static int parse_options(struct mount_opts *mop, char *orig_options,
 		 * the form of param=value. We should pay attention not to
 		 * remove those mount options, see bug 22097.
 		 */
-		if (val && strncmp(arg, "max_sectors_kb", 14) == 0) {
-			mop->mo_max_sectors_kb = atoi(val + 1);
+		if (strcmp(opt, "force") == 0) {
+			/* XXX special check for 'force' option */
+			++mop->mo_force;
+			printf("force: %d\n", mop->mo_force);
+		} else if (val && strncmp(arg, "max_sectors_kb", 14) == 0) {
+			fprintf(stderr,
+				"%s: max_sectors_kb is ignored\n",
+				progname);
 		} else if (val &&
 			   strncmp(arg, "md_stripe_cache_size", 20) == 0) {
 			mop->mo_md_stripe_cache_size = atoi(val + 1);
-		} else if (val && strncmp(arg, "retry", 5) == 0) {
-			mop->mo_retry = atoi(val + 1);
-			if (mop->mo_retry > MAX_RETRIES)
-				mop->mo_retry = MAX_RETRIES;
-			else if (mop->mo_retry < 0)
-				mop->mo_retry = 0;
+		} else if (val && strncmp(arg, "mgsname", 7) == 0) {
+			rc = append_option(options, options_len, opt, NULL);
+			if (rc != 0)
+				goto out_options;
 		} else if (val && strncmp(arg, "mgssec", 6) == 0) {
 			rc = append_option(options, options_len, opt, NULL);
 			if (rc != 0)
@@ -299,10 +285,12 @@ static int parse_options(struct mount_opts *mop, char *orig_options,
 			rc = append_option(options, options_len, opt, NULL);
 			if (rc != 0)
 				goto out_options;
-		} else if (strcmp(opt, "force") == 0) {
-			/* XXX special check for 'force' option */
-			++mop->mo_force;
-			printf("force: %d\n", mop->mo_force);
+		} else if (val && strncmp(arg, "retry", 5) == 0) {
+			mop->mo_retry = atoi(val + 1);
+			if (mop->mo_retry > MAX_RETRIES)
+				mop->mo_retry = MAX_RETRIES;
+			else if (mop->mo_retry < 0)
+				mop->mo_retry = 0;
 #ifdef HAVE_GSS
 		} else if (val && strncmp(opt, "skpath=", 7) == 0) {
 			if (strlen(val) + 1 >= sizeof(mop->mo_skpath)) {
@@ -499,6 +487,7 @@ static int parse_ldd(char *source, struct mount_opts *mop,
 	struct lustre_disk_data *ldd = &mop->mo_ldd;
 	char *cur, *start;
 	char *temp_options;
+	bool skip_mgsnode_param = false;
 	int rc = 0;
 
 	rc = osd_is_lustre(source, &ldd->ldd_mount_type);
@@ -583,6 +572,7 @@ static int parse_ldd(char *source, struct mount_opts *mop,
 			if (add_mgsnids(mop, options, ldd->ldd_params,
 					options_len))
 				return E2BIG;
+			skip_mgsnode_param = true;
 		}
 	}
 	/* Better have an mgsnid by now */
@@ -634,6 +624,10 @@ static int parse_ldd(char *source, struct mount_opts *mop,
 			*start = '\0';
 			start++;
 		}
+
+		if (skip_mgsnode_param && !strncmp(cur, "mgsnode", 7))
+			continue;
+
 		rc = append_option(options, options_len, "param=", cur);
 		if (rc != 0)
 			return rc;
@@ -659,15 +653,16 @@ static void set_defaults(struct mount_opts *mop)
 	mop->mo_md_stripe_cache_size = 16384;
 	mop->mo_orig_options = "";
 	mop->mo_nosvc = 0;
-	mop->mo_max_sectors_kb = -1;
 }
 
-static int parse_opts(int argc, char *const argv[], struct mount_opts *mop)
+static int parse_opts(int argc, char *const argv[], struct mount_opts *mop,
+		      char *options, size_t options_len)
 {
 	static struct option long_opts[] = {
 	{ .val = 1,	.name = "force",	.has_arg = no_argument },
 	{ .val = 'f',	.name = "fake",		.has_arg = no_argument },
 	{ .val = 'h',	.name = "help",		.has_arg = no_argument },
+	{ .val = 'M',	.name = "mgsname",	.has_arg = required_argument },
 	{ .val = 'n',	.name = "nomtab",	.has_arg = no_argument },
 	{ .val = 'o',	.name = "options",	.has_arg = required_argument },
 	{ .val = 'v',	.name = "verbose",	.has_arg = no_argument },
@@ -680,7 +675,7 @@ static int parse_opts(int argc, char *const argv[], struct mount_opts *mop)
 	char *ptr;
 	int opt, rc;
 
-	while ((opt = getopt_long(argc, argv, "fhno:vV",
+	while ((opt = getopt_long(argc, argv, "fhM:no:vV",
 				  long_opts, NULL)) != EOF){
 		switch (opt) {
 		case 1:
@@ -693,6 +688,12 @@ static int parse_opts(int argc, char *const argv[], struct mount_opts *mop)
 			break;
 		case 'h':
 			usage(stdout);
+			break;
+		case 'M':
+			rc = append_option(options, options_len, "mgsname=",
+					   optarg);
+			if (rc != 0)
+				return rc;
 			break;
 		case 'n':
 			++mop->mo_nomtab;
@@ -726,6 +727,22 @@ static int parse_opts(int argc, char *const argv[], struct mount_opts *mop)
 	if (!mop->mo_usource)
 		usage(stderr);
 
+#ifdef HAVE_SERVER_SUPPORT
+	/* osd-wbcfs lustre_tgt */
+	if (strcmp(mop->mo_usource, OSD_WBCFS_DEV) == 0) {
+		mop->mo_ldd.ldd_mount_type = LDD_MT_WBCFS;
+		mop->mo_source = strdup(mop->mo_usource);
+		if (!realpath(argv[optind + 1], mop->mo_target)) {
+			rc = errno;
+			fprintf(stderr, "warning: %s: cannot resolve: %s\n",
+				argv[optind], strerror(errno));
+			return rc;
+		}
+
+		return 0;
+	}
+#endif
+
 	/**
 	 * Try to get the real path to the device, in case it is a
 	 * symbolic link for instance
@@ -755,6 +772,7 @@ static int parse_opts(int argc, char *const argv[], struct mount_opts *mop)
 		mop->mo_source = convert_hostnames(mop->mo_usource, true);
 		if (!mop->mo_source)
 			usage(stderr);
+		mop->mo_fsname = convert_fsname(mop->mo_usource);
 	} else {
 		mop->mo_source = strdup(mop->mo_usource);
 	}
@@ -795,7 +813,7 @@ static void label_lustre(struct mount_opts *mop)
 		 */
 		memset(&ldd, 0, sizeof(ldd));
 		ldd.ldd_mount_type = mop->mo_ldd.ldd_mount_type;
-		rc = osd_read_ldd(mop->mo_source, &ldd);
+		rc = osd_label_read(mop->mo_source, &ldd);
 		if (rc == 0) {
 			rc = strlen(ldd.ldd_svname);
 			if (rc >= 8 && ldd.ldd_svname[rc - 8] != '-')
@@ -804,6 +822,111 @@ static void label_lustre(struct mount_opts *mop)
 	}
 }
 #endif /* HAVE_SERVER_SUPPORT */
+
+/* no-op version for mount, since it only needs temporary parameters */
+int jt_lcfg_setparam_perm(int argc, char **argv, struct param_opts *popt)
+{
+	return 0;
+}
+
+const char *jt_cmdname(const char *func)
+{
+	return func;
+}
+struct sp_workq { int unused; };
+int spwq_init(struct sp_workq *wq, struct param_opts *popt)
+{ return 0; }
+int spwq_destroy(struct sp_workq *wq)
+{ return 0; }
+int spwq_expand(struct sp_workq *wq, size_t num_items)
+{ return 0; }
+int spwq_add_item(struct sp_workq *wq, char *path,
+				char *param_name, char *value)
+{ return 0; }
+int sp_run_threads(struct sp_workq *wq)
+{ return 0; }
+
+int parse_param_file(char *path)
+{
+	int rc = 0;
+
+	FILE *file = fopen(path, "r");
+
+	if (file) {
+		char *param = NULL;
+		size_t len = 0;
+
+		while (getline(&param, &len, file) != -1) {
+			char *tmp;
+
+			/* skip any comments on lines */
+			tmp = strchr(param, '#');
+			if (tmp) {
+				if (tmp == param)
+					continue;
+				*tmp = '\0';
+			}
+			/* remove trailing newline/whitespace. embedded OK */
+			tmp = strchr(param, '\n');
+			if (tmp)
+				*tmp = '\0';
+
+			if (!*param)
+				continue;
+
+			rc = jt_lcfg_setparam(2, (char*[3])
+					      { "mount.params", param, NULL });
+		}
+		free(param);
+	}
+
+	return rc;
+}
+
+/**
+ * check_vm_dirty_ratio() - Check vm.dirty_ratio
+ *
+ * Check if vm.dirty_ratio is set to a value that may cause performance issues.
+ * Lustre's writeback support does not work well with vm_dirty_ratio set to 0.
+ * Values below 10 can cause inefficient write behavior under load.
+ */
+static void check_vm_dirty_ratio(void)
+{
+	int dirty_ratio = 0;
+	FILE *fp = fopen("/proc/sys/vm/dirty_ratio", "r");
+
+	if (fp) {
+		if (fscanf(fp, "%d", &dirty_ratio) == 1 && dirty_ratio < 10) {
+			fprintf(stderr,
+				"Warning: vm.dirty_ratio is set to %d, which may hurt performance\n",
+				dirty_ratio);
+			fprintf(stderr, "Consider increasing it to at least 10 using:\n");
+			fprintf(stderr, "  sysctl -w vm.dirty_ratio=10\n");
+		}
+		fclose(fp);
+		return;
+	}
+
+	return;
+}
+
+int set_client_params(char *fsname)
+{
+	char path[PATH_MAX];
+	int rc, rc1;
+
+	snprintf(path, sizeof(path), PATH_FORMAT, "client");
+	rc = parse_param_file(path);
+
+	if (fsname) {
+		snprintf(path, sizeof(path), PATH_FORMAT, fsname);
+		rc1 = parse_param_file(path);
+		if (rc1 && !rc)
+			rc = rc1;
+	}
+
+	return 0;
+}
 
 int main(int argc, char *const argv[])
 {
@@ -828,9 +951,17 @@ int main(int argc, char *const argv[])
 	}
 	maxopt_len = MIN(g_pagesize, 64 * 1024);
 
-	rc = parse_opts(argc, argv, &mop);
+	options = malloc(maxopt_len);
+	if (!options) {
+		fprintf(stderr, "can't allocate memory for options\n");
+		rc = ENOMEM;
+		goto out_mo_source;
+	}
+	options[0] = '\0';
+
+	rc = parse_opts(argc, argv, &mop, options, maxopt_len);
 	if (rc || version)
-		return rc;
+		goto out_options;
 
 	if (verbose) {
 		for (i = 0; i < argc; i++)
@@ -839,13 +970,6 @@ int main(int argc, char *const argv[])
 		       mop.mo_source, mop.mo_target);
 		printf("options(%zu/%zu) = %s\n", strlen(mop.mo_orig_options),
 		       maxopt_len, mop.mo_orig_options);
-	}
-
-	options = malloc(maxopt_len);
-	if (!options) {
-		fprintf(stderr, "can't allocate memory for options\n");
-		rc = ENOMEM;
-		goto out_mo_source;
 	}
 
 	if (strlen(mop.mo_orig_options) >= maxopt_len) {
@@ -898,7 +1022,10 @@ int main(int argc, char *const argv[])
 	}
 
 	client = (strstr(mop.mo_usource, ":/") != NULL);
-	if (!client) {
+	if (client) {
+		/* Check vm.dirty_ratio for client mounts */
+		check_vm_dirty_ratio();
+	} else {
 #ifdef HAVE_SERVER_SUPPORT
 		rc = osd_init();
 		if (rc)
@@ -913,6 +1040,62 @@ int main(int argc, char *const argv[])
 			progname, mop.mo_usource);
 		goto out_options;
 #endif
+	}
+
+#ifdef HAVE_GSS
+	/* For client mounts, auto check for .lgss file in mount point */
+	if (client && mop.mo_skpath[0] == '\0') {
+		char lgss_path[PATH_MAX];
+		struct stat lgss_stat;
+		int ret;
+
+		ret = snprintf(lgss_path, sizeof(lgss_path), "%s/.lgss",
+			       mop.mo_target);
+		if (ret > 0 && ret < sizeof(lgss_path) &&
+		    stat(lgss_path, &lgss_stat) == 0 &&
+		    S_ISREG(lgss_stat.st_mode)) {
+			if (verbose)
+				printf("Found SSK key file %s, loading\n",
+				       lgss_path);
+
+			/* Set the skpath to the .lgss file */
+			strscpy(mop.mo_skpath, lgss_path,
+				sizeof(mop.mo_skpath));
+		}
+	}
+
+	if (mop.mo_skpath[0] != '\0') {
+		/* Treat shared key failures as fatal */
+		rc = load_shared_keys(&mop, client);
+		if (rc < 0) {
+			fprintf(stderr, "%s: Error loading shared keys: %s\n",
+				progname, strerror(rc));
+			goto out_osd;
+		}
+	}
+#endif /* HAVE_GSS */
+
+	/*
+	 * Auto-generate mgsname from device string if not already specified,
+	 * and convert_hostname() has replaced the hostname with an IP address.
+	 */
+	if (client && !strstr(options, "mgsname=") &&
+	    strchr(mop.mo_usource, '@')) {
+		char *end = strpbrk(mop.mo_usource, ",:");
+
+		if (end && strncmp(mop.mo_usource, mop.mo_source,
+				   end - mop.mo_usource) != 0) {
+			char sep = *end;
+
+			*end = '\0'; /* temporarily NUL terminate mgsname */
+			rc = append_option(options, maxopt_len, "mgsname=",
+					   mop.mo_usource);
+			if (verbose)
+				printf("add option mgsname=%s: rc = %d\n",
+				       mop.mo_usource, rc);
+			*end = sep;
+			rc = 0;
+		}
 	}
 
 	/*
@@ -935,17 +1118,6 @@ int main(int argc, char *const argv[])
 				argv[0], mop.mo_source);
 	}
 #endif
-#ifdef HAVE_GSS
-	if (mop.mo_skpath[0] != '\0') {
-		/* Treat shared key failures as fatal */
-		rc = load_shared_keys(&mop);
-		if (rc) {
-			fprintf(stderr, "%s: Error loading shared keys: %s\n",
-				progname, strerror(rc));
-			goto out_osd;
-		}
-	}
-#endif /* HAVE_GSS */
 
 	if (!mop.mo_fake) {
 		char *fstype;
@@ -1073,9 +1245,14 @@ int main(int argc, char *const argv[])
 		 * Deal with utab just for client. Note that we ignore
 		 * the return value here since it is not worth to fail
 		 * mount by prevent some rare cases
+		 * Client specific parameters are stored in either
+		 * '/etc/lustre/mount.params' or '/etc/lustre/FSNAME.params'
+		 * and are set here.
 		 */
-		if (strstr(mop.mo_usource, ":/") != NULL)
+		if (strstr(mop.mo_usource, ":/") != NULL) {
 			update_utab_entry(&mop);
+			rc = set_client_params(mop.mo_fsname);
+		}
 		if (!mop.mo_nomtab) {
 			rc = update_mtab_entry(mop.mo_usource, mop.mo_target,
 					       "lustre", mop.mo_orig_options,
@@ -1094,5 +1271,6 @@ out_options:
 out_mo_source:
 	/* mo_usource should be freed, but we can rely on the kernel */
 	free(mop.mo_source);
+	free(mop.mo_fsname);
 	return rc;
 }

@@ -16,7 +16,6 @@
 
 #define OAP_MAGIC 8675309
 
-#include <libcfs/linux/linux-mem.h>
 #include <lustre_osc.h>
 
 extern atomic_t osc_pool_req_count;
@@ -26,12 +25,15 @@ extern struct ptlrpc_request_pool *osc_rq_pool;
 int osc_shrink_grant_to_target(struct client_obd *cli, __u64 target_bytes);
 void osc_schedule_grant_work(void);
 void osc_update_next_shrink(struct client_obd *cli);
-int lru_queue_work(const struct lu_env *env, void *data);
+void lru_queue_work(struct work_struct *work);
 int osc_extent_finish(const struct lu_env *env, struct osc_extent *ext,
 		      int sent, int rc);
-void osc_extent_release(const struct lu_env *env, struct osc_extent *ext);
+void osc_extent_release(const struct lu_env *env, struct osc_extent *ext,
+			enum cl_io_priority prio);
 int osc_lock_discard_pages(const struct lu_env *env, struct osc_object *osc,
 			   pgoff_t start, pgoff_t end, bool discard);
+int osc_ldlm_hp_handle(const struct lu_env *env, struct osc_object *obj,
+		       pgoff_t start, pgoff_t end, bool need_rpc_check);
 
 void osc_lock_lvb_update(const struct lu_env *env,
 			 struct osc_object *osc,
@@ -43,7 +45,7 @@ int osc_enqueue_base(struct obd_export *exp, struct ldlm_res_id *res_id,
 		     struct ost_lvb *lvb, osc_enqueue_upcall_f upcall,
 		     void *cookie, struct ldlm_enqueue_info *einfo,
 		     struct ptlrpc_request_set *rqset, int async,
-		     bool speculative);
+		     bool speculative, __u32 projid);
 
 int osc_match_base(const struct lu_env *env, struct obd_export *exp,
 		   struct ldlm_res_id *res_id, enum ldlm_type type,
@@ -81,22 +83,12 @@ int osc_tunables_init(struct obd_device *obd);
 
 extern struct lu_device_type osc_device_type;
 
-static inline struct cl_io *osc_env_thread_io(const struct lu_env *env)
+static inline struct cl_io *osc_env_new_io(const struct lu_env *env)
 {
 	struct cl_io *io = &osc_env_info(env)->oti_io;
 
 	memset(io, 0, sizeof(*io));
 	return io;
-}
-
-static inline int osc_is_object(const struct lu_object *obj)
-{
-	return obj->lo_dev->ld_type == &osc_device_type;
-}
-
-static inline struct osc_lock *osc_lock_at(const struct cl_lock *lock)
-{
-	return cl2osc_lock(cl_lock_at(lock, &osc_device_type));
 }
 
 int osc_lock_init(const struct lu_env *env, struct cl_object *obj,
@@ -116,11 +108,6 @@ static inline int osc_recoverable_error(int rc)
 static inline unsigned long rpcs_in_flight(struct client_obd *cli)
 {
 	return cli->cl_r_in_flight + cli->cl_w_in_flight;
-}
-
-static inline char *cli_name(struct client_obd *cli)
-{
-	return cli->cl_import->imp_obd->obd_name;
 }
 
 static inline char list_empty_marker(struct list_head *list)

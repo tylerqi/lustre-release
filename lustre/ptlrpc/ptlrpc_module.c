@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2014, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -75,9 +57,13 @@ static __init int ptlrpc_init(void)
 	if (rc)
 		GOTO(err_cache, rc);
 
-	rc = ptlrpc_connection_init();
+	rc = ptlrpc_lproc_init();
 	if (rc)
 		GOTO(err_portals, rc);
+
+	rc = ptlrpc_connection_init();
+	if (rc)
+		GOTO(err_lproc, rc);
 
 	rc = ptlrpc_start_pinger();
 	if (rc)
@@ -95,7 +81,7 @@ static __init int ptlrpc_init(void)
 	if (rc)
 		GOTO(err_sptlrpc, rc);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	rc = tgt_mod_init();
 	if (rc)
 		GOTO(err_nrs, rc);
@@ -105,7 +91,7 @@ static __init int ptlrpc_init(void)
 		GOTO(err_tgt, rc);
 #endif
 	RETURN(0);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 err_tgt:
 	tgt_mod_exit();
 err_nrs:
@@ -119,6 +105,8 @@ err_pinger:
 	ptlrpc_stop_pinger();
 err_conn:
 	ptlrpc_connection_fini();
+err_lproc:
+	ptlrpc_lproc_fini();
 err_portals:
 	ptlrpc_exit_portals();
 err_cache:
@@ -132,7 +120,7 @@ err_layout:
 
 static void __exit ptlrpc_exit(void)
 {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	nodemap_mod_exit();
 	tgt_mod_exit();
 #endif
@@ -144,6 +132,7 @@ static void __exit ptlrpc_exit(void)
 	ptlrpc_request_cache_fini();
 	ptlrpc_hr_fini();
 	ptlrpc_connection_fini();
+	ptlrpc_lproc_fini();
 	req_layout_fini();
 }
 
@@ -152,5 +141,5 @@ MODULE_DESCRIPTION("Lustre Request Processor and Lock Management");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(ptlrpc_init);
+late_initcall_sync(ptlrpc_init);
 module_exit(ptlrpc_exit);

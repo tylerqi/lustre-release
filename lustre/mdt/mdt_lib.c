@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_lib.c
  *
  * Lustre Metadata Target (mdt) request unpacking helper.
  *
@@ -201,10 +181,15 @@ static void ucred_set_rbac_roles(struct mdt_thread_info *info,
 	uc->uc_rbac_file_perms = !!(rbac & NODEMAP_RBAC_FILE_PERMS);
 	uc->uc_rbac_dne_ops = !!(rbac & NODEMAP_RBAC_DNE_OPS);
 	uc->uc_rbac_quota_ops = !!(rbac & NODEMAP_RBAC_QUOTA_OPS);
+	uc->uc_rbac_pool_quota_ops = !!(rbac & NODEMAP_RBAC_POOL_QUOTA_OPS);
 	uc->uc_rbac_byfid_ops = !!(rbac & NODEMAP_RBAC_BYFID_OPS);
 	uc->uc_rbac_chlg_ops = !!(rbac & NODEMAP_RBAC_CHLG_OPS);
 	uc->uc_rbac_fscrypt_admin = !!(rbac & NODEMAP_RBAC_FSCRYPT_ADMIN);
 	uc->uc_rbac_server_upcall = !!(rbac & NODEMAP_RBAC_SERVER_UPCALL);
+	uc->uc_rbac_ignore_root_prjquota =
+		!!(rbac & NODEMAP_RBAC_IGN_ROOT_PRJQUOTA);
+	uc->uc_rbac_hsm_ops = !!(rbac & NODEMAP_RBAC_HSM_OPS);
+	uc->uc_rbac_local_admin = !!(rbac & NODEMAP_RBAC_LOCAL_ADMIN);
 }
 
 static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
@@ -220,7 +205,7 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 	__u32 perm = 0;
 	int setuid;
 	int setgid;
-	int rc = 0;
+	int i, rc = 0;
 
 	ENTRY;
 	LASSERT(req->rq_auth_gss);
@@ -229,6 +214,10 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 	LASSERT(ucred != NULL);
 
 	ucred->uc_valid = UCRED_INVALID;
+	ucred->uc_o_uid = pud->pud_uid;
+	ucred->uc_o_gid = pud->pud_gid;
+	ucred->uc_o_fsuid = pud->pud_fsuid;
+	ucred->uc_o_fsgid = pud->pud_fsgid;
 
 	nodemap = nodemap_get_from_exp(info->mti_exp);
 	if (IS_ERR(nodemap))
@@ -242,15 +231,12 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 				       NODEMAP_CLIENT_TO_FS, pud->pud_fsuid);
 	pud->pud_fsgid = nodemap_map_id(nodemap, NODEMAP_GID,
 				       NODEMAP_CLIENT_TO_FS, pud->pud_fsgid);
-
-	ucred->uc_o_uid = pud->pud_uid;
-	ucred->uc_o_gid = pud->pud_gid;
-	ucred->uc_o_fsuid = pud->pud_fsuid;
-	ucred->uc_o_fsgid = pud->pud_fsgid;
+	for (i = 0; i < pud->pud_ngroups; i++)
+		pud->pud_groups[i] = nodemap_map_suppgid(nodemap,
+							 pud->pud_groups[i]);
 
 	ucred->uc_uid = pud->pud_uid;
 	ucred->uc_gid = pud->pud_gid;
-
 	ucred->uc_fsuid = pud->pud_fsuid;
 	ucred->uc_fsgid = pud->pud_fsgid;
 
@@ -260,7 +246,8 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 	if (type == BODY_INIT) {
 		struct mdt_body *body = (struct mdt_body *)buf;
 
-		ucred->uc_suppgids[0] = body->mbo_suppgid;
+		ucred->uc_suppgids[0] = nodemap_map_suppgid(nodemap,
+							    body->mbo_suppgid);
 		ucred->uc_suppgids[1] = -1;
 	}
 
@@ -275,8 +262,9 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 		GOTO(out_nodemap, rc = -EACCES);
 	}
 
-	if (nodemap && ucred->uc_o_uid == nodemap->nm_squash_uid &&
-	    nodemap->nmf_deny_unknown)
+	if (nodemap && nodemap->nmf_deny_unknown &&
+	    nodemap_id_is_squashed(nodemap, ucred->uc_o_uid, NODEMAP_UID,
+				   NODEMAP_CLIENT_TO_FS))
 		/* deny access before we get identity ref */
 		GOTO(out, rc = -EACCES);
 
@@ -351,10 +339,10 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 	}
 
 	/* clear suppgids if uid or gid was squashed. */
-	if (nodemap &&
-	    (ucred->uc_o_uid == nodemap->nm_squash_uid ||
-	     ucred->uc_o_gid == nodemap->nm_squash_gid)) {
-
+	if (nodemap_id_is_squashed(nodemap, ucred->uc_o_uid, NODEMAP_UID,
+				   NODEMAP_CLIENT_TO_FS) ||
+	    nodemap_id_is_squashed(nodemap, ucred->uc_o_gid, NODEMAP_GID,
+				   NODEMAP_CLIENT_TO_FS)) {
 		ucred->uc_cap = CAP_EMPTY_SET;
 		ucred->uc_suppgids[0] = -1;
 		ucred->uc_suppgids[1] = -1;
@@ -366,8 +354,16 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 
 	mdt_root_squash(info, &peernid);
 
-	if (ucred->uc_fsuid) {
-		if (!cap_issubset(ucred->uc_cap, mdt->mdt_enable_cap_mask))
+	if (!is_local_root(ucred->uc_fsuid, nodemap)) {
+		kernel_cap_t caps;
+		bool from_nodemap;
+
+		from_nodemap = nodemap &&
+			nodemap->nmf_caps_type != NODEMAP_CAP_OFF;
+		caps = from_nodemap ? nodemap->nm_capabilities :
+			mdt->mdt_enable_cap_mask;
+
+		if (!cap_issubset(ucred->uc_cap, caps))
 			CDEBUG(D_SEC, "%s: drop capabilities %llx for NID %s\n",
 			       mdt_obd_name(mdt),
 #ifdef CAP_FOR_EACH_U32
@@ -377,8 +373,10 @@ static int new_init_ucred(struct mdt_thread_info *info, ucred_init_type_t type,
 			       ucred->uc_cap.val,
 #endif
 			       libcfs_nidstr(&mdt_info_req(info)->rq_peer.nid));
-		ucred->uc_cap = cap_intersect(ucred->uc_cap,
-					      mdt->mdt_enable_cap_mask);
+		if (!from_nodemap || nodemap->nmf_caps_type == NODEMAP_CAP_MASK)
+			ucred->uc_cap = cap_intersect(ucred->uc_cap, caps);
+		else
+			ucred->uc_cap = caps;
 	}
 
 	/* Thanks to Kerberos, Lustre does not have to trust clients anymore,
@@ -427,13 +425,14 @@ out_nodemap:
 }
 
 /**
- * Check whether allow the client to set supplementary group IDs or not.
+ * allow_client_chgrp() - Check whether allow the client to set supplementary
+ *                        group IDs or not.
+ * @info: pointer to the thread context
+ * @uc: pointer to the RPC user descriptor
  *
- * \param[in] info	pointer to the thread context
- * \param[in] uc	pointer to the RPC user descriptor
- *
- * \retval		true if allow to set supplementary group IDs
- * \retval		false for other cases
+ * Return:
+ * * %true if allow to set supplementary group IDs
+ * * %false for other cases
  */
 bool allow_client_chgrp(struct mdt_thread_info *info, struct lu_ucred *uc)
 {
@@ -545,8 +544,9 @@ static int old_init_ucred_common(struct mdt_thread_info *info,
 	struct mdt_device *mdt = info->mti_mdt;
 	struct md_identity *identity = NULL;
 
-	if (nodemap && uc->uc_o_uid == nodemap->nm_squash_uid
-	    && nodemap->nmf_deny_unknown)
+	if (nodemap && nodemap->nmf_deny_unknown &&
+	    nodemap_id_is_squashed(nodemap, uc->uc_o_uid, NODEMAP_UID,
+				   NODEMAP_CLIENT_TO_FS))
 		/* deny access before we get identity ref */
 		RETURN(-EACCES);
 
@@ -569,10 +569,10 @@ static int old_init_ucred_common(struct mdt_thread_info *info,
 	}
 	uc->uc_identity = identity;
 
-	if (nodemap &&
-	    (uc->uc_o_uid == nodemap->nm_squash_uid ||
-	     uc->uc_o_gid == nodemap->nm_squash_gid)) {
-
+	if (nodemap_id_is_squashed(nodemap, uc->uc_o_uid, NODEMAP_UID,
+				   NODEMAP_CLIENT_TO_FS) ||
+	    nodemap_id_is_squashed(nodemap, uc->uc_o_gid, NODEMAP_GID,
+				   NODEMAP_CLIENT_TO_FS)) {
 		uc->uc_cap = CAP_EMPTY_SET;
 		uc->uc_suppgids[0] = -1;
 		uc->uc_suppgids[1] = -1;
@@ -582,8 +582,16 @@ static int old_init_ucred_common(struct mdt_thread_info *info,
 	mdt_root_squash(info,
 			&mdt_info_req(info)->rq_peer.nid);
 
-	if (uc->uc_fsuid) {
-		if (!cap_issubset(uc->uc_cap, mdt->mdt_enable_cap_mask))
+	if (!is_local_root(uc->uc_fsuid, nodemap)) {
+		kernel_cap_t caps;
+		bool from_nodemap;
+
+		from_nodemap = nodemap &&
+			nodemap->nmf_caps_type != NODEMAP_CAP_OFF;
+		caps = from_nodemap ? nodemap->nm_capabilities :
+				      mdt->mdt_enable_cap_mask;
+
+		if (!cap_issubset(uc->uc_cap, caps))
 			CDEBUG(D_SEC, "%s: drop capabilities %llx for NID %s\n",
 			       mdt_obd_name(mdt),
 #ifdef CAP_FOR_EACH_U32
@@ -592,8 +600,10 @@ static int old_init_ucred_common(struct mdt_thread_info *info,
 			       uc->uc_cap.val,
 #endif
 			       libcfs_nidstr(&mdt_info_req(info)->rq_peer.nid));
-		uc->uc_cap = cap_intersect(uc->uc_cap,
-					   mdt->mdt_enable_cap_mask);
+		if (!from_nodemap || nodemap->nmf_caps_type == NODEMAP_CAP_MASK)
+			uc->uc_cap = cap_intersect(uc->uc_cap, caps);
+		else
+			uc->uc_cap = caps;
 	}
 
 	/* Thanks to Kerberos, Lustre does not have to trust clients anymore,
@@ -634,6 +644,12 @@ static int old_init_ucred(struct mdt_thread_info *info,
 	int rc;
 
 	ENTRY;
+
+	uc->uc_o_uid = body->mbo_uid;
+	uc->uc_o_gid = body->mbo_gid;
+	uc->uc_o_fsuid = body->mbo_fsuid;
+	uc->uc_o_fsgid = body->mbo_fsgid;
+
 	nodemap = nodemap_get_from_exp(info->mti_exp);
 	if (IS_ERR(nodemap))
 		RETURN(PTR_ERR(nodemap));
@@ -649,11 +665,11 @@ static int old_init_ucred(struct mdt_thread_info *info,
 
 	LASSERT(uc != NULL);
 	uc->uc_valid = UCRED_INVALID;
-	uc->uc_o_uid = uc->uc_uid = body->mbo_uid;
-	uc->uc_o_gid = uc->uc_gid = body->mbo_gid;
-	uc->uc_o_fsuid = uc->uc_fsuid = body->mbo_fsuid;
-	uc->uc_o_fsgid = uc->uc_fsgid = body->mbo_fsgid;
-	uc->uc_suppgids[0] = body->mbo_suppgid;
+	uc->uc_uid = body->mbo_uid;
+	uc->uc_gid = body->mbo_gid;
+	uc->uc_fsuid = body->mbo_fsuid;
+	uc->uc_fsgid = body->mbo_fsgid;
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, body->mbo_suppgid);
 	uc->uc_suppgids[1] = -1;
 	uc->uc_ginfo = NULL;
 	uc->uc_cap = CAP_EMPTY_SET;
@@ -672,6 +688,10 @@ static int old_init_ucred_reint(struct mdt_thread_info *info)
 	int rc;
 
 	ENTRY;
+
+	uc->uc_o_uid = uc->uc_o_fsuid = uc->uc_fsuid;
+	uc->uc_o_gid = uc->uc_o_fsgid = uc->uc_fsgid;
+
 	nodemap = nodemap_get_from_exp(info->mti_exp);
 	if (IS_ERR(nodemap))
 		RETURN(PTR_ERR(nodemap));
@@ -684,8 +704,8 @@ static int old_init_ucred_reint(struct mdt_thread_info *info)
 				      NODEMAP_CLIENT_TO_FS, uc->uc_fsgid);
 
 	uc->uc_valid = UCRED_INVALID;
-	uc->uc_o_uid = uc->uc_o_fsuid = uc->uc_uid = uc->uc_fsuid;
-	uc->uc_o_gid = uc->uc_o_fsgid = uc->uc_gid = uc->uc_fsgid;
+	uc->uc_uid = uc->uc_fsuid;
+	uc->uc_gid = uc->uc_fsgid;
 	uc->uc_ginfo = NULL;
 
 	rc = old_init_ucred_common(info, nodemap);
@@ -734,6 +754,46 @@ int mdt_init_ucred_reint(struct mdt_thread_info *info)
 		return old_init_ucred_reint(info);
 	else
 		return new_init_ucred(info, REC_INIT, NULL);
+}
+
+/**
+ * mdt_check_resource_ids() - check client access to resource via nodemap
+ *
+ * @info: mdt thread environment
+ * @obj: mdt object to check
+ *
+ * Check whether the client is allowed to access the resource by consulting
+ * the nodemap with the client's export and the MDT inode's UID/GID attributes.
+ *
+ * Return:
+ * * %0 on success (access is allowed)
+ * * %-ECHRNG if access is denied
+ */
+int mdt_check_resource_ids(struct mdt_thread_info *info, struct mdt_object *obj)
+{
+	struct dt_object *dt;
+	struct lu_attr la = { 0 };
+
+	ENTRY;
+
+	if (info->mti_mdt->mdt_lut.lut_enable_resource_id_check == 0)
+		RETURN(0);
+
+	dt = mdt_obj2dt(obj);
+
+	/* Get attributes from MDT inode */
+	if (dt && dt->do_ops && dt->do_ops->do_attr_get) {
+		dt_attr_get(info->mti_env, mdt_obj2dt(obj), &la);
+	} else {
+		/* log this case but don't return err code */
+		CERROR("%s: no dt object for " DFID ": rc = %d\n",
+		       mdt_obd_name(info->mti_mdt), PFID(mdt_object_fid(obj)),
+		       -ENOENT);
+		RETURN(0);
+	}
+
+	RETURN(nodemap_check_resource_ids(mdt_info_req(info)->rq_export,
+					  la.la_uid, la.la_gid));
 }
 
 /* copied from lov/lov_ea.c, just for debugging, will be removed later */
@@ -881,6 +941,7 @@ int mdt_fix_reply(struct mdt_thread_info *info)
 			LASSERT(info->mti_attr.ma_lmm !=
 				req_capsule_server_get(pill, &RMF_MDT_MD));
 			req_capsule_shrink(pill, &RMF_MDT_MD, 0, RCL_SERVER);
+			md_packed = 0;
 		}
 	} else if (req_capsule_has_field(pill, &RMF_MDT_MD, RCL_SERVER)) {
 		req_capsule_shrink(pill, &RMF_MDT_MD, md_size, RCL_SERVER);
@@ -1255,13 +1316,16 @@ static int mdt_setattr_unpack_rec(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->sa_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->sa_cap);
-	uc->uc_suppgids[0] = rec->sa_suppgid;
-	uc->uc_suppgids[1] = -1;
 
 	rr->rr_fid1 = &rec->sa_fid;
 	la->la_valid = mdt_attr_valid_xlate(rec->sa_valid, rr, ma);
 	la->la_mode  = rec->sa_mode;
-	la->la_flags = rec->sa_attr_flags;
+
+	if (rec->sa_attr_flags & ~LUSTRE_FL_USER_VISIBLE) {
+		CDEBUG(D_INODE, "Unsupported flags: %x\n", rec->sa_attr_flags);
+		RETURN(-EOPNOTSUPP);
+	}
+	la->la_flags = rec->sa_attr_flags & LUSTRE_FL_USER_MODIFIABLE;
 
 	nodemap = nodemap_get_from_exp(info->mti_exp);
 	if (IS_ERR(nodemap))
@@ -1273,6 +1337,8 @@ static int mdt_setattr_unpack_rec(struct mdt_thread_info *info)
 				    NODEMAP_CLIENT_TO_FS, rec->sa_gid);
 	la->la_projid = nodemap_map_id(nodemap, NODEMAP_PROJID,
 				       NODEMAP_CLIENT_TO_FS, rec->sa_projid);
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->sa_suppgid);
+	uc->uc_suppgids[1] = -1;
 	nodemap_putref(nodemap);
 
 	la->la_size  = rec->sa_size;
@@ -1407,6 +1473,7 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct req_capsule *pill = info->mti_pill;
 	struct md_op_spec *sp = &info->mti_spec;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1420,8 +1487,12 @@ static int mdt_create_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->cr_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->cr_cap);
-	uc->uc_suppgids[0] = rec->cr_suppgid1;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->cr_suppgid1);
 	uc->uc_suppgids[1] = -1;
+	nodemap_putref(nodemap);
 	uc->uc_umask = rec->cr_umask;
 
 	rr->rr_fid1 = &rec->cr_fid1;
@@ -1512,6 +1583,7 @@ static int mdt_link_unpack(struct mdt_thread_info *info)
 	struct lu_attr *attr = &info->mti_attr.ma_attr;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct req_capsule *pill = info->mti_pill;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1525,8 +1597,12 @@ static int mdt_link_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->lk_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->lk_cap);
-	uc->uc_suppgids[0] = rec->lk_suppgid1;
-	uc->uc_suppgids[1] = rec->lk_suppgid2;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->lk_suppgid1);
+	uc->uc_suppgids[1] = nodemap_map_suppgid(nodemap, rec->lk_suppgid2);
+	nodemap_putref(nodemap);
 
 	attr->la_uid = rec->lk_fsuid;
 	attr->la_gid = rec->lk_fsgid;
@@ -1556,6 +1632,7 @@ static int mdt_unlink_unpack(struct mdt_thread_info *info)
 	struct lu_attr *attr = &info->mti_attr.ma_attr;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct req_capsule *pill = info->mti_pill;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1569,8 +1646,12 @@ static int mdt_unlink_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->ul_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->ul_cap);
-	uc->uc_suppgids[0] = rec->ul_suppgid1;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->ul_suppgid1);
 	uc->uc_suppgids[1] = -1;
+	nodemap_putref(nodemap);
 
 	attr->la_uid = rec->ul_fsuid;
 	attr->la_gid = rec->ul_fsgid;
@@ -1613,6 +1694,7 @@ static int mdt_rename_unpack(struct mdt_thread_info *info)
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct req_capsule *pill = info->mti_pill;
 	struct md_op_spec *spec = &info->mti_spec;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1626,8 +1708,12 @@ static int mdt_rename_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->rn_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->rn_cap);
-	uc->uc_suppgids[0] = rec->rn_suppgid1;
-	uc->uc_suppgids[1] = rec->rn_suppgid2;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->rn_suppgid1);
+	uc->uc_suppgids[1] = nodemap_map_suppgid(nodemap, rec->rn_suppgid2);
+	nodemap_putref(nodemap);
 
 	attr->la_uid = rec->rn_fsuid;
 	attr->la_gid = rec->rn_fsgid;
@@ -1666,6 +1752,7 @@ static int mdt_migrate_unpack(struct mdt_thread_info *info)
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct req_capsule *pill = info->mti_pill;
 	struct md_op_spec *spec = &info->mti_spec;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1679,8 +1766,12 @@ static int mdt_migrate_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->rn_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->rn_cap);
-	uc->uc_suppgids[0] = rec->rn_suppgid1;
-	uc->uc_suppgids[1] = rec->rn_suppgid2;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->rn_suppgid1);
+	uc->uc_suppgids[1] = nodemap_map_suppgid(nodemap, rec->rn_suppgid2);
+	nodemap_putref(nodemap);
 
 	attr->la_uid = rec->rn_fsuid;
 	attr->la_gid = rec->rn_fsgid;
@@ -1720,8 +1811,6 @@ static int mdt_migrate_unpack(struct mdt_thread_info *info)
 				struct lmv_user_md_v1 *lmu;
 
 				lmu = req_capsule_client_get(pill, &RMF_EADATA);
-				lmu->lum_hash_type |=
-					cpu_to_le32(LMV_HASH_FLAG_FIXED);
 				rr->rr_eadata = lmu;
 				spec->u.sp_ea.eadatalen = rr->rr_eadatalen;
 				spec->u.sp_ea.eadata = rr->rr_eadata;
@@ -1767,6 +1856,7 @@ static int mdt_open_unpack(struct mdt_thread_info *info)
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct ptlrpc_request *req = mdt_info_req(info);
 	struct md_op_spec *sp = &info->mti_spec;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1781,8 +1871,12 @@ static int mdt_open_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid = rec->cr_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->cr_cap);
-	uc->uc_suppgids[0] = rec->cr_suppgid1;
-	uc->uc_suppgids[1] = rec->cr_suppgid2;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->cr_suppgid1);
+	uc->uc_suppgids[1] = nodemap_map_suppgid(nodemap, rec->cr_suppgid2);
+	nodemap_putref(nodemap);
 	uc->uc_umask = rec->cr_umask;
 
 	rr->rr_fid1   = &rec->cr_fid1;
@@ -1856,6 +1950,7 @@ static int mdt_setxattr_unpack(struct mdt_thread_info *info)
 	struct lu_attr *attr = &info->mti_attr.ma_attr;
 	struct req_capsule *pill = info->mti_pill;
 	struct mdt_rec_setxattr *rec;
+	struct lu_nodemap *nodemap;
 	int rc;
 
 	ENTRY;
@@ -1870,8 +1965,12 @@ static int mdt_setxattr_unpack(struct mdt_thread_info *info)
 	uc->uc_fsgid  = rec->sx_fsgid;
 	uc->uc_cap = CAP_EMPTY_SET;
 	ll_set_capability_u32(&uc->uc_cap, rec->sx_cap);
-	uc->uc_suppgids[0] = rec->sx_suppgid1;
+	nodemap = nodemap_get_from_exp(info->mti_exp);
+	if (IS_ERR(nodemap))
+		RETURN(PTR_ERR(nodemap));
+	uc->uc_suppgids[0] = nodemap_map_suppgid(nodemap, rec->sx_suppgid1);
 	uc->uc_suppgids[1] = -1;
+	nodemap_putref(nodemap);
 
 	rr->rr_opcode = rec->sx_opcode;
 	rr->rr_fid1   = &rec->sx_fid;
@@ -2072,16 +2171,15 @@ int mdt_fids_different_target(struct mdt_thread_info *info,
 }
 
 /**
- * Check whether \a child is remote object on \a parent.
+ * mdt_is_remote_object() - Check whether @child is remote object on @parent.
+ * @info: thread environment
+ * @parent: parent object, it's the same as child object in getattr_by_fid
+ * @child: child object
  *
- * \param[in]  info	thread environment
- * \param[in]  parent	parent object, it's the same as child object in
- *			getattr_by_fid
- * \param[in]  child	child object
- *
- * \retval 1	is remote object.
- * \retval 0	isn't remote object.
- * \retval < 1  error code
+ * Return:
+ * * %1 is remote object.
+ * * %0 isn't remote object.
+ * * %negative  error code
  */
 int mdt_is_remote_object(struct mdt_thread_info *info,
 			 struct mdt_object *parent,

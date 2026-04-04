@@ -19,7 +19,6 @@
 #ifndef LOV_CL_INTERNAL_H
 #define LOV_CL_INTERNAL_H
 
-#include <libcfs/libcfs.h>
 #include <obd.h>
 #include <cl_object.h>
 #include "lov_internal.h"
@@ -221,7 +220,6 @@ struct lov_mirror_entry {
 enum lov_object_flags {
 	/* Layout is invalid, set when layout lock is lost */
 	LO_LAYOUT_INVALID	= 0x1,
-	LO_NEED_INODE_LOCK	= 0x2,
 };
 
 /*
@@ -556,11 +554,24 @@ enum {
 	CP_LOV_INDEX_EMPTY = -1U,
 };
 
+static inline bool lov_pages_is_empty(struct cl_dio_pages *cdp)
+{
+	return cdp->cdp_lov_index == CP_LOV_INDEX_EMPTY;
+}
+
 static inline bool lov_page_is_empty(const struct cl_page *cp)
 {
 	return cp->cp_lov_index == CP_LOV_INDEX_EMPTY;
 }
 
+
+int lov_dio_pages_init_empty(const struct lu_env *env, struct cl_object *obj,
+			     struct cl_dio_pages *cdp, pgoff_t index);
+int lov_dio_pages_init_composite(const struct lu_env *env,
+				 struct cl_object *obj,
+				 struct cl_dio_pages *cdp, pgoff_t index);
+int lov_dio_pages_init_foreign(const struct lu_env *env, struct cl_object *obj,
+			       struct cl_dio_pages *cdp, pgoff_t index);
 int   lov_page_init_empty(const struct lu_env *env, struct cl_object *obj,
 			   struct cl_page *page, pgoff_t index);
 int   lov_page_init_composite(const struct lu_env *env, struct cl_object *obj,
@@ -577,9 +588,6 @@ struct lu_object *lovsub_object_alloc(const struct lu_env *env,
 
 int lov_io_layout_at(struct lov_io *lio, __u64 offset);
 bool lov_io_layout_at_confirm(struct lov_io *lio, int entry, __u64 offset);
-
-#define lov_foreach_target(lov, var)                    \
-	for (var = 0; var < lov_targets_nr(lov); ++var)
 
 static inline struct lu_extent *lov_io_extent(struct lov_io *io, int i)
 {
@@ -713,11 +721,6 @@ static inline struct lov_io *cl2lov_io(const struct lu_env *env,
 	lio = container_of(ios, struct lov_io, lis_cl);
 	LASSERT(lio == lov_env_io(env));
 	return lio;
-}
-
-static inline int lov_targets_nr(const struct lov_device *lov)
-{
-	return lov->ld_lov->desc.ld_tgt_count;
 }
 
 static inline struct lov_thread_info *lov_env_info(const struct lu_env *env)

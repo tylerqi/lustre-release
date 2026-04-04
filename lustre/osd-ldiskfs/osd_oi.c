@@ -24,7 +24,6 @@
  */
 #include <obd.h>
 #include <obd_support.h>
-#include <libcfs/libcfs.h>
 
 /* fid_cpu_to_be() */
 #include <lustre_fid.h>
@@ -140,8 +139,8 @@ static struct inode *osd_oi_index_open(struct osd_thread_info *info,
 	struct inode  *inode;
 	int rc;
 
-	dentry = osd_lookup_one_len_unlocked(osd, name, osd_sb(osd)->s_root,
-					     strlen(name));
+	dentry = osd_lookup_noperm_unlocked(osd, &QSTR(name),
+					    osd_sb(osd)->s_root);
 	if (IS_ERR(dentry))
 		return ERR_CAST(dentry);
 
@@ -163,8 +162,8 @@ static struct inode *osd_oi_index_open(struct osd_thread_info *info,
 	if (rc)
 		return ERR_PTR(rc);
 
-	dentry = osd_lookup_one_len_unlocked(osd, name, osd_sb(osd)->s_root,
-					     strlen(name));
+	dentry = osd_lookup_noperm_unlocked(osd, &QSTR(name),
+					    osd_sb(osd)->s_root);
 	if (IS_ERR(dentry))
 		return ERR_CAST(dentry);
 
@@ -325,7 +324,8 @@ static int osd_remove_oi_one(struct osd_device *osd, struct dentry *parent,
 	struct dentry *child;
 	int rc;
 
-	child = osd_lookup_one_len_unlocked(osd, name, parent, namelen);
+	child = osd_lookup_noperm_unlocked(osd, &QSTR_LEN(name, namelen),
+					   parent);
 	if (IS_ERR(child)) {
 		rc = PTR_ERR(child);
 	} else {
@@ -504,13 +504,6 @@ void osd_oi_fini(struct osd_thread_info *info, struct osd_device *osd)
 
 	OBD_FREE_PTR_ARRAY(osd->od_oi_table, OSD_OI_FID_NR_MAX);
 	osd->od_oi_table = NULL;
-}
-
-static inline int fid_is_fs_root(const struct lu_fid *fid)
-{
-	/* Map root inode to special local object FID */
-	return (unlikely(fid_seq(fid) == FID_SEQ_LOCAL_FILE &&
-			 fid_oid(fid) == OSD_FS_ROOT_OID));
 }
 
 static int osd_oi_iam_lookup(struct osd_thread_info *oti,

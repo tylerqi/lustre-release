@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_xattr.c
  *
  * Lustre Metadata Target (mdt) extended attributes management.
  *
@@ -72,6 +52,9 @@ static int mdt_getxattr_pack_reply(struct mdt_thread_info *info)
 		if (!(exp_connect_flags(req->rq_export) & OBD_CONNECT_XATTR) &&
 		    !strncmp(xattr_name, user_string, sizeof(user_string) - 1))
 			RETURN(-EOPNOTSUPP);
+
+		if (strcmp(xattr_name, XATTR_LUSTRE_PIN) == 0)
+			xattr_name = XATTR_NAME_PIN;
 
 		size = mo_xattr_get(info->mti_env,
 				    mdt_object_child(info->mti_object),
@@ -247,7 +230,7 @@ int mdt_getxattr(struct mdt_thread_info *info)
 	ENTRY;
 
 	LASSERT(info->mti_object != NULL);
-	LASSERT(lu_object_assert_exists(&info->mti_object->mot_obj));
+	LASSERT(lu_object_exists(&info->mti_object->mot_obj));
 
 	CDEBUG(D_INODE, "getxattr "DFID"\n", PFID(&info->mti_body->mbo_fid1));
 
@@ -258,6 +241,10 @@ int mdt_getxattr(struct mdt_thread_info *info)
 	reqbody = req_capsule_client_get(info->mti_pill, &RMF_MDT_BODY);
 	if (reqbody == NULL)
 		RETURN(err_serious(-EFAULT));
+
+	rc = mdt_check_resource_ids(info, info->mti_object);
+	if (unlikely(rc))
+		RETURN(err_serious(rc));
 
 	rc = mdt_init_ucred(info, reqbody);
 	if (rc)
@@ -286,6 +273,10 @@ int mdt_getxattr(struct mdt_thread_info *info)
 	if (valid == OBD_MD_FLXATTR) {
 		const char *xattr_name = req_capsule_client_get(info->mti_pill,
 								&RMF_NAME);
+
+		if (strcmp(xattr_name, XATTR_LUSTRE_PIN) == 0)
+			xattr_name = XATTR_NAME_PIN;
+
 		rc = mo_xattr_get(info->mti_env, next, buf, xattr_name);
 		if (rc < 0)
 			GOTO(out, rc);
@@ -530,7 +521,7 @@ int mdt_reint_setxattr(struct mdt_thread_info *info,
 	__u64			 valid = attr->la_valid;
 	const char		*xattr_name = rr->rr_name.ln_name;
 	int			 xattr_len = rr->rr_eadatalen;
-	__u64			 lockpart = MDS_INODELOCK_UPDATE;
+	enum mds_ibits_locks	 lockpart = MDS_INODELOCK_UPDATE;
 	ktime_t			 kstart = ktime_get();
 	int			 rc;
 	ENTRY;
@@ -602,6 +593,16 @@ int mdt_reint_setxattr(struct mdt_thread_info *info,
 		}
 
 		lockpart |= MDS_INODELOCK_LAYOUT;
+	} else if ((strcmp(xattr_name, XATTR_LUSTRE_PIN) == 0)) {
+		struct mdt_device *mdt = info->mti_mdt;
+		struct lu_ucred *uc = mdt_ucred(info);
+
+		if (!cap_raised(uc->uc_cap, CAP_SYS_RESOURCE) &&
+		    !lustre_in_group_p(uc, mdt->mdt_enable_pin_gid) &&
+		    !(mdt->mdt_enable_pin_gid == -1))
+			GOTO(out, rc = -EPERM);
+
+		xattr_name = XATTR_NAME_PIN;
 	}
 
 	if (!strcmp(xattr_name, XATTR_NAME_ACL_ACCESS))
@@ -619,6 +620,10 @@ int mdt_reint_setxattr(struct mdt_thread_info *info,
 	obj = mdt_object_find_lock(info, rr->rr_fid1, lh, lockpart, LCK_EX);
 	if (IS_ERR(obj))
 		GOTO(out, rc = PTR_ERR(obj));
+
+	rc = mdt_check_resource_ids(info, obj);
+	if (unlikely(rc))
+		GOTO(out_unlock, rc);
 
 	tgt_vbr_obj_set(env, mdt_obj2dt(obj));
 	rc = mdt_version_get_check_save(info, obj, 0);

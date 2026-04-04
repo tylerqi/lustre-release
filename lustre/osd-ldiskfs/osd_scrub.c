@@ -646,11 +646,9 @@ static int osd_iit_iget(struct osd_thread_info *info, struct osd_device *dev,
 		RETURN(SCRUB_NEXT_CONTINUE);
 
 	 /* Skip project quota inode since it is greater than s_first_ino. */
-#ifdef HAVE_PROJECT_QUOTA
 	if (ldiskfs_has_feature_project(sb) &&
 	    pos == le32_to_cpu(LDISKFS_SB(sb)->s_es->s_prj_quota_inum))
 		RETURN(SCRUB_NEXT_CONTINUE);
-#endif
 
 	osd_id_gen(lid, pos, OSD_OII_NOGEN);
 	inode = osd_iget(info, dev, lid, LDISKFS_IGET_NO_CHECKS);
@@ -1279,17 +1277,7 @@ post:
 	       osd_scrub2name(scrub), scrub->os_pos_current, rc,
 	       scrub->os_file.sf_param & SP_DRYRUN ? " dryrun mode" : "");
 
-
 out:
-	if (scrub->os_ls_fids) {
-		OBD_FREE(scrub->os_ls_fids,
-			 scrub->os_ls_size * sizeof(struct lu_fid));
-
-		scrub->os_ls_size = 0;
-		scrub->os_ls_count = 0;
-		scrub->os_ls_fids = NULL;
-	}
-
 	osd_scrub_ois_fini(scrub, &scrub->os_inconsistent_items);
 	lu_env_fini(&env);
 
@@ -1301,6 +1289,18 @@ noenv:
 		/* scrub_stop() is waiting, we need to synchronize */
 		wait_var_event(scrub, kthread_should_stop());
 	wake_up_var(scrub);
+
+	/* a running iterator can be using os_ls_fids, so let's release
+	 * only when we're asked to stop by that iterator */
+	if (scrub->os_ls_fids) {
+		OBD_FREE(scrub->os_ls_fids,
+			 scrub->os_ls_size * sizeof(struct lu_fid));
+
+		scrub->os_ls_size = 0;
+		scrub->os_ls_count = 0;
+		scrub->os_ls_fids = NULL;
+	}
+
 	return rc;
 }
 
@@ -1309,7 +1309,6 @@ noenv:
 typedef int (*scandir_t)(struct osd_thread_info *, struct osd_device *,
 			 struct dentry *, filldir_t filldir);
 
-#ifdef HAVE_FILLDIR_USE_CTX
 static FILLDIR_TYPE
 osd_ios_varfid_fill(struct dir_context *buf, const char *name, int namelen,
 		    loff_t offset, __u64 ino, unsigned int d_type);
@@ -1325,16 +1324,6 @@ osd_ios_dl_fill(struct dir_context *buf, const char *name, int namelen,
 static FILLDIR_TYPE
 osd_ios_uld_fill(struct dir_context *buf, const char *name, int namelen,
 		 loff_t offset, __u64 ino, unsigned int d_type);
-#else
-static int osd_ios_varfid_fill(void *buf, const char *name, int namelen,
-			       loff_t offset, __u64 ino, unsigned int d_type);
-static int osd_ios_lf_fill(void *buf, const char *name, int namelen,
-			   loff_t offset, __u64 ino, unsigned int d_type);
-static int osd_ios_dl_fill(void *buf, const char *name, int namelen,
-			   loff_t offset, __u64 ino, unsigned int d_type);
-static int osd_ios_uld_fill(void *buf, const char *name, int namelen,
-			    loff_t offset, __u64 ino, unsigned int d_type);
-#endif
 
 static int
 osd_ios_general_scan(struct osd_thread_info *info, struct osd_device *dev,
@@ -1963,13 +1952,10 @@ osd_ios_scan_one(struct osd_thread_info *info, struct osd_device *dev,
  * It scans the /lost+found, and for the OST-object (with filter_fid
  * or filter_fid_18_23), move them back to its proper /O/<seq>/d<x>.
  */
-#ifdef HAVE_FILLDIR_USE_CTX
 static FILLDIR_TYPE do_osd_ios_lf_fill(struct dir_context *buf,
-#else
-static int osd_ios_lf_fill(void *buf,
-#endif
-			   const char *name, int namelen,
-			   loff_t offset, __u64 ino, unsigned int d_type)
+				       const char *name, int namelen,
+				       loff_t offset, u64 ino,
+				       unsigned int d_type)
 {
 	struct osd_ios_filldir_buf *fill_buf =
 		(struct osd_ios_filldir_buf *)buf;
@@ -1991,7 +1977,7 @@ static int osd_ios_lf_fill(void *buf,
 		RETURN(0);
 
 	scrub->os_lf_scanned++;
-	child = osd_lookup_one_len(dev, name, parent, namelen);
+	child = osd_lookup_noperm(dev, &QSTR_LEN(name, namelen), parent);
 	if (IS_ERR(child)) {
 		rc = PTR_ERR(child);
 		CDEBUG(D_LFSCK, "%s: cannot lookup child '%.*s': rc = %d\n",
@@ -2046,13 +2032,10 @@ put:
 }
 WRAP_FILLDIR_FN(do_, osd_ios_lf_fill)
 
-#ifdef HAVE_FILLDIR_USE_CTX
 static FILLDIR_TYPE do_osd_ios_varfid_fill(struct dir_context *buf,
-#else
-static int osd_ios_varfid_fill(void *buf,
-#endif
-			       const char *name, int namelen,
-			       loff_t offset, __u64 ino, unsigned int d_type)
+					   const char *name, int namelen,
+					   loff_t offset, u64 ino,
+					   unsigned int d_type)
 {
 	struct osd_ios_filldir_buf *fill_buf =
 		(struct osd_ios_filldir_buf *)buf;
@@ -2067,7 +2050,8 @@ static int osd_ios_varfid_fill(void *buf,
 	if (name[0] == '.')
 		RETURN(0);
 
-	child = osd_lookup_one_len(dev, name, fill_buf->oifb_dentry, namelen);
+	child = osd_lookup_noperm(dev, &QSTR_LEN(name, namelen),
+				  fill_buf->oifb_dentry);
 	if (IS_ERR(child))
 		RETURN(PTR_ERR(child));
 
@@ -2083,13 +2067,10 @@ static int osd_ios_varfid_fill(void *buf,
 }
 WRAP_FILLDIR_FN(do_, osd_ios_varfid_fill)
 
-#ifdef HAVE_FILLDIR_USE_CTX
 static FILLDIR_TYPE do_osd_ios_dl_fill(struct dir_context *buf,
-#else
-static int osd_ios_dl_fill(void *buf,
-#endif
-			   const char *name, int namelen,
-			   loff_t offset, __u64 ino, unsigned int d_type)
+				       const char *name, int namelen,
+				       loff_t offset, u64 ino,
+				       unsigned int d_type)
 {
 	struct osd_ios_filldir_buf *fill_buf =
 		(struct osd_ios_filldir_buf *)buf;
@@ -2116,7 +2097,8 @@ static int osd_ios_dl_fill(void *buf,
 	if (map->olm_name == NULL)
 		RETURN(0);
 
-	child = osd_lookup_one_len(dev, name, fill_buf->oifb_dentry, namelen);
+	child = osd_lookup_noperm(dev, &QSTR_LEN(name, namelen),
+				  fill_buf->oifb_dentry);
 	if (IS_ERR(child))
 		RETURN(PTR_ERR(child));
 
@@ -2129,13 +2111,10 @@ static int osd_ios_dl_fill(void *buf,
 }
 WRAP_FILLDIR_FN(do_, osd_ios_dl_fill)
 
-#ifdef HAVE_FILLDIR_USE_CTX
 static FILLDIR_TYPE do_osd_ios_uld_fill(struct dir_context *buf,
-#else
-static int osd_ios_uld_fill(void *buf,
-#endif
-			    const char *name, int namelen,
-			    loff_t offset, __u64 ino, unsigned int d_type)
+					const char *name, int namelen,
+					loff_t offset, u64 ino,
+					unsigned int d_type)
 {
 	struct osd_ios_filldir_buf *fill_buf =
 		(struct osd_ios_filldir_buf *)buf;
@@ -2151,7 +2130,8 @@ static int osd_ios_uld_fill(void *buf,
 	if (name[0] != '[')
 		RETURN(0);
 
-	child = osd_lookup_one_len(dev, name, fill_buf->oifb_dentry, namelen);
+	child = osd_lookup_noperm(dev, &QSTR_LEN(name, namelen),
+				  fill_buf->oifb_dentry);
 	if (IS_ERR(child))
 		RETURN(PTR_ERR(child));
 
@@ -2169,13 +2149,10 @@ static int osd_ios_uld_fill(void *buf,
 }
 WRAP_FILLDIR_FN(do_, osd_ios_uld_fill)
 
-#ifdef HAVE_FILLDIR_USE_CTX
 static FILLDIR_TYPE do_osd_ios_root_fill(struct dir_context *buf,
-#else
-static int osd_ios_root_fill(void *buf,
-#endif
-			     const char *name, int namelen,
-			     loff_t offset, __u64 ino, unsigned int d_type)
+					 const char *name, int namelen,
+					 loff_t offset, u64 ino,
+					 unsigned int d_type)
 {
 	struct osd_ios_filldir_buf *fill_buf =
 		(struct osd_ios_filldir_buf *)buf;
@@ -2202,7 +2179,8 @@ static int osd_ios_root_fill(void *buf,
 	if (map->olm_name == NULL)
 		RETURN(0);
 
-	child = osd_lookup_one_len(dev, name, fill_buf->oifb_dentry, namelen);
+	child = osd_lookup_noperm(dev, &QSTR_LEN(name, namelen),
+				  fill_buf->oifb_dentry);
 	if (IS_ERR(child))
 		RETURN(PTR_ERR(child));
 	else if (!child->d_inode)
@@ -2288,8 +2266,7 @@ osd_ios_ROOT_scan(struct osd_thread_info *info, struct osd_device *dev,
 	spin_lock(&scrub->os_lock);
 	scrub->os_convert_igif = 1;
 	spin_unlock(&scrub->os_lock);
-	child = osd_lookup_one_len_unlocked(dev, dot_lustre_name, dentry,
-					    strlen(dot_lustre_name));
+	child = osd_lookup_noperm_unlocked(dev, &QSTR(dot_lustre_name), dentry);
 	if (IS_ERR(child)) {
 		if (PTR_ERR(child) != -ENOENT)
 			RETURN(PTR_ERR(child));
@@ -2363,8 +2340,7 @@ osd_ios_OBJECTS_scan(struct osd_thread_info *info, struct osd_device *dev,
 			RETURN(rc);
 	}
 
-	child = osd_lookup_one_len_unlocked(dev, ADMIN_USR, dentry,
-					    strlen(ADMIN_USR));
+	child = osd_lookup_noperm_unlocked(dev, &QSTR(ADMIN_USR), dentry);
 	if (IS_ERR(child)) {
 		rc = PTR_ERR(child);
 	} else {
@@ -2379,8 +2355,7 @@ osd_ios_OBJECTS_scan(struct osd_thread_info *info, struct osd_device *dev,
 	if (rc != 0 && rc != -ENOENT)
 		GOTO(out, rc);
 
-	child = osd_lookup_one_len_unlocked(dev, ADMIN_GRP, dentry,
-					    strlen(ADMIN_GRP));
+	child = osd_lookup_noperm_unlocked(dev, &QSTR(ADMIN_GRP), dentry);
 	if (IS_ERR(child))
 		GOTO(out, rc = PTR_ERR(child));
 
@@ -2444,9 +2419,9 @@ static void osd_initial_OI_scrub(struct osd_thread_info *info,
 			continue;
 		}
 
-		child = osd_lookup_one_len_unlocked(dev, map->olm_name,
-						    osd_sb(dev)->s_root,
-						    map->olm_namelen);
+		child = osd_lookup_noperm_unlocked(dev, &QSTR_LEN(map->olm_name,
+						   map->olm_namelen),
+						   osd_sb(dev)->s_root);
 		if (PTR_ERR(child) == -ENOENT ||
 		    (!IS_ERR(child) && !child->d_inode))
 			osd_scrub_refresh_mapping(info, dev, &map->olm_fid,
@@ -3032,7 +3007,7 @@ static int osd_scan_dir(const struct lu_env *env, struct osd_device *dev,
 	if (IS_ERR(oie))
 		RETURN(PTR_ERR(oie));
 
-	oie->oie_file->f_pos = 0;
+	oie->oie_file.f_pos = 0;
 	rc = osd_ldiskfs_it_fill(env, (struct dt_it *)oie);
 	if (rc > 0)
 		rc = -ENODATA;
@@ -3052,8 +3027,8 @@ static int osd_scan_dir(const struct lu_env *env, struct osd_device *dev,
 		if (oie->oie_it_dirent <= oie->oie_rd_dirent)
 			continue;
 
-		if (oie->oie_file->f_pos ==
-		    ldiskfs_get_htree_eof(oie->oie_file))
+		if (oie->oie_file.f_pos ==
+		    ldiskfs_get_htree_eof(&oie->oie_file))
 			break;
 
 		rc = osd_ldiskfs_it_fill(env, (struct dt_it *)oie);
@@ -3524,4 +3499,65 @@ static int osd_scan_O_main(const struct lu_env *env, struct osd_device *dev)
 {
 	return osd_scan_dir(env, dev, dev->od_ost_map->om_root->d_inode,
 			    osd_scan_O_seq);
+}
+
+static int osd_seq_dir_helper(const struct lu_env *env,
+			       struct osd_device *osd, struct inode *dir,
+			       struct osd_it_ea *oie)
+{
+	struct osd_thread_info *info = osd_oti_get(env);
+	struct lu_fid *fid = &info->oti_fid;
+	struct inode *inode;
+	struct osd_inode_id id;
+	char *name = NULL;
+	__u64 seq;
+	int rc = 0;
+
+	ENTRY;
+
+	osd_id_gen(&id, oie->oie_dirent->oied_ino, OSD_OII_NOGEN);
+	inode = osd_iget(info, osd, &id, 0);
+	if (IS_ERR(inode))
+		RETURN(PTR_ERR(inode));
+
+	if (!S_ISDIR(inode->i_mode))
+		GOTO(out, rc);
+
+	OBD_ALLOC(name, oie->oie_dirent->oied_namelen + 1);
+	if (name == NULL)
+		GOTO(out, rc = -ENOMEM);
+	memcpy(name, oie->oie_dirent->oied_name,
+	       oie->oie_dirent->oied_namelen);
+	name[oie->oie_dirent->oied_namelen] = '\0';
+
+	rc = kstrtoull(name, 16, &seq);
+	if (!rc && seq >= FID_SEQ_NORMAL && seq > fid_seq(fid))
+		fid->f_seq = seq;
+
+	OBD_FREE(name, oie->oie_dirent->oied_namelen + 1);
+out:
+	iput(inode);
+	RETURN(rc);
+}
+
+int osd_last_seq_get(const struct lu_env *env, struct dt_device *dt,
+		     __u64 *seq)
+{
+	struct osd_thread_info *info = osd_oti_get(env);
+	struct osd_device *osd = osd_dt_dev(dt);
+	struct lu_fid *fid = &info->oti_fid;
+	int rc;
+
+	ENTRY;
+
+	if (!osd->od_is_ost)
+		RETURN(-EINVAL);
+
+	fid_zero(fid);
+	rc = osd_scan_dir(env, osd, osd->od_ost_map->om_root->d_inode,
+			  osd_seq_dir_helper);
+	if (!rc)
+		*seq = fid_seq(fid);
+
+	RETURN(rc);
 }

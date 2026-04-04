@@ -17,7 +17,6 @@
 
 #define DEBUG_SUBSYSTEM S_FLD
 
-#include <libcfs/libcfs.h>
 #include <linux/module.h>
 #include <linux/math64.h>
 #include <linux/delay.h>
@@ -388,9 +387,9 @@ again:
 			rc = -EAGAIN;
 		}
 		if (rc == -EAGAIN) {
-			ptlrpc_req_put(req);
 			if (msleep_interruptible(2 * MSEC_PER_SEC))
 				GOTO(out_req, rc = -EINTR);
+			ptlrpc_req_put(req);
 			rc = 0;
 			goto again;
 		}
@@ -418,41 +417,42 @@ out_req:
 	return rc;
 }
 
-int fld_client_lookup(struct lu_client_fld *fld, u64 seq, u32 *mds,
-		      u32 flags, const struct lu_env *env)
+int fld_client_lookup(struct lu_client_fld *fld, u64 seq, u32 flags,
+		      const struct lu_env *env, struct lu_seq_range *res)
 {
-	struct lu_seq_range res = { 0 };
 	struct lu_fld_target *target;
 	struct lu_fld_target *origin;
 	int rc;
 
 	ENTRY;
 
-	rc = fld_cache_lookup(fld->lcf_cache, seq, &res);
-	if (rc == 0) {
-		*mds = res.lsr_index;
+	LASSERT(fld != NULL);
+	LASSERT(res != NULL);
+
+	rc = fld_cache_lookup(fld->lcf_cache, seq, res);
+	if (rc == 0)
 		RETURN(0);
-	}
 
 	/* Can not find it in the cache */
 	target = fld_client_get_target(fld, seq);
 	LASSERT(target != NULL);
 	origin = target;
+
 again:
 	CDEBUG(D_INFO, "%s: Lookup fld entry (seq: %#llx) on target %s (idx %llu)\n",
 	       fld->lcf_name, seq, fld_target_name(target), target->ft_idx);
 
-	res.lsr_start = seq;
-	fld_range_set_type(&res, flags);
+	res->lsr_start = seq;
+	fld_range_set_type(res, flags);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	if (target->ft_srv) {
 		LASSERT(env != NULL);
-		rc = fld_server_lookup(env, target->ft_srv, seq, &res);
+		rc = fld_server_lookup(env, target->ft_srv, seq, res);
 	} else
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	{
-		rc = fld_client_rpc(target->ft_exp, &res, FLD_QUERY, NULL);
+		rc = fld_client_rpc(target->ft_exp, res, FLD_QUERY, NULL);
 	}
 
 	if (rc == -ESHUTDOWN) {
@@ -479,10 +479,8 @@ again:
 		if (target != origin)
 			goto again;
 	}
-	if (rc == 0) {
-		*mds = res.lsr_index;
-		fld_cache_insert(fld->lcf_cache, &res);
-	}
+	if (rc == 0)
+		fld_cache_insert(fld->lcf_cache, res);
 
 	RETURN(rc);
 }
@@ -501,11 +499,11 @@ static int __init fld_init(void)
 	if (rc)
 		return rc;
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	rc = fld_server_mod_init();
 	if (rc)
 		return rc;
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 	fld_debugfs_dir = debugfs_create_dir(LUSTRE_FLD_NAME,
 					     debugfs_lustre_root);
@@ -514,10 +512,9 @@ static int __init fld_init(void)
 
 static void __exit fld_exit(void)
 {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	fld_server_mod_exit();
-#endif /* HAVE_SERVER_SUPPORT */
-
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	debugfs_remove_recursive(fld_debugfs_dir);
 }
 
@@ -526,5 +523,5 @@ MODULE_DESCRIPTION("Lustre FID Location Database");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(fld_init);
+late_initcall_sync(fld_init);
 module_exit(fld_exit);

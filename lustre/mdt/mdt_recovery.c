@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_recovery.c
  *
  * Lustre Metadata Target (mdt) recovery-related methods
  *
@@ -39,32 +19,6 @@
 #define DEBUG_SUBSYSTEM S_MDS
 
 #include "mdt_internal.h"
-
-struct lu_buf *mdt_buf(const struct lu_env *env, void *area, ssize_t len)
-{
-	struct lu_buf *buf;
-	struct mdt_thread_info *mti;
-
-	mti = lu_context_key_get(&env->le_ctx, &mdt_thread_key);
-	buf = &mti->mti_buf;
-	buf->lb_buf = area;
-	buf->lb_len = len;
-	return buf;
-}
-
-const struct lu_buf *mdt_buf_const(const struct lu_env *env,
-				   const void *area, ssize_t len)
-{
-	struct lu_buf *buf;
-	struct mdt_thread_info *mti;
-
-	mti = lu_context_key_get(&env->le_ctx, &mdt_thread_key);
-	buf = &mti->mti_buf;
-
-	buf->lb_buf = (void *)area;
-	buf->lb_len = len;
-	return buf;
-}
 
 /* reconstruction code */
 static void mdt_steal_ack_locks(struct ptlrpc_request *req)
@@ -161,7 +115,8 @@ void mdt_reconstruct_generic(struct mdt_thread_info *mti,
 }
 
 /**
- * Generate fake attributes for a non-existing object
+ * mdt_fake_ma() - Generate fake attributes for a non-existing object
+ * @ma: attributes to fill
  *
  * While the client was waiting for the reply, the original transaction
  * got committed and corresponding rep-ack lock got released, then another
@@ -169,8 +124,6 @@ void mdt_reconstruct_generic(struct mdt_thread_info *mti,
  * attributes back. So we fake them and set nlink=0, so the client will
  * be able to detect a non-existing object and drop it from the cache
  * immediately.
- *
- * \param[out] ma	attributes to fill
  */
 static void mdt_fake_ma(struct md_attr *ma)
 {

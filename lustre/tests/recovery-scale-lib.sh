@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 # global variables and functions used by:
 # recovery-mds-scale, recovery-oss-scale and recovery-random-scale
@@ -97,7 +97,7 @@ summary_and_cleanup () {
 
 	# stop vmstat on OSS nodes
 	if [[ -n "$VMSTAT" ]]; then
-		stop_process $(comma_list $(osts_nodes)) "$VMSTAT_PID_FILE"
+		stop_process $(osts_nodes) "$VMSTAT_PID_FILE"
 	fi
 
 	# stop the client loads
@@ -129,7 +129,7 @@ failover_target() {
 
 	# start vmstat on OSS nodes
 	if [[ -n "$VMSTAT" ]]; then
-		start_vmstat $(comma_list $(osts_nodes)) "$VMSTAT_PID_FILE"
+		start_vmstat $(osts_nodes) "$VMSTAT_PID_FILE"
 	fi
 
 	# start client loads

@@ -39,7 +39,7 @@
  *
  * The qmt_device_type structure is registered when the lquota module is
  * loaded and all the steps described above are automatically done when the MDT
- * set up the Quota Master Target via calls to class_attach/class_setup, see
+ * set up the Quota Master Target via calls to class_attach_name/class_setup, see
  * mdt_quota_init() for more details.
  *
  * Author: Johann Lombardi <johann.lombardi@intel.com>
@@ -204,6 +204,7 @@ static int qmt_device_init0(const struct lu_env *env, struct qmt_device *qmt,
 	if (rc < 0)
 		RETURN(rc);
 
+	atomic_set(&qmt->qmt_lqa_num, 0);
 	/* look-up the obd_device associated with the qmt */
 	obd = class_name2obd(qmt->qmt_svname);
 	if (obd == NULL)
@@ -423,6 +424,7 @@ static const struct obd_ops qmt_obd_ops = {
 	.o_pool_rem	= qmt_pool_rem,
 	.o_pool_add	= qmt_pool_add,
 	.o_pool_del	= qmt_pool_del,
+	.o_iocontrol	= qmt_iocontrol,
 };
 
 /*
@@ -457,7 +459,7 @@ static int qmt_device_prepare(const struct lu_env *env,
 
 	qmt->qmt_root = qmt_root;
 	/* initialize on-disk indexes associated with each pool */
-	rc = qmt_pool_prepare(env, qmt, qmt_root, NULL);
+	rc = qmt_pool_prepare_all(env, qmt, qmt_root);
 	RETURN(rc);
 }
 

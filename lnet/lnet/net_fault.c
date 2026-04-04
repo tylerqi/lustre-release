@@ -12,6 +12,9 @@
 #define DEBUG_SUBSYSTEM S_LNET
 
 #include <linux/random.h>
+#include <lustre_compat/linux/timer.h>
+#include <lustre_compat/linux/linux-misc.h>
+
 #include <lnet/lib-lnet.h>
 #include <uapi/linux/lnet/lnetctl.h>
 
@@ -164,14 +167,18 @@ lnet_fault_stat_inc(struct lnet_fault_stat *stat, unsigned int type)
 	}
 }
 
-/**
- * LNet message drop simulation
- */
+/* LNet message drop simulation */
 
 /**
- * Add a new drop rule to LNet
+ * lnet_drop_rule_add() - Add a new drop rule to LNet
+ * @attr: attributes of the drop rule
+ *
  * There is no check for duplicated drop rule, all rules will be checked for
  * incoming message.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int lnet_drop_rule_add(struct lnet_fault_large_attr *attr)
 {
@@ -180,8 +187,7 @@ int lnet_drop_rule_add(struct lnet_fault_large_attr *attr)
 
 	if (!((attr->u.drop.da_rate == 0) ^ (attr->u.drop.da_interval == 0))) {
 		CDEBUG(D_NET,
-		       "please provide either drop rate or drop interval, "
-		       "but not both at the same time %d/%d\n",
+		       "Invalid drop rule specifies rate and interval %d/%d\n",
 		       attr->u.drop.da_rate, attr->u.drop.da_interval);
 		RETURN(-EINVAL);
 	}
@@ -201,7 +207,15 @@ int lnet_drop_rule_add(struct lnet_fault_large_attr *attr)
 		rule->dr_drop_time = ktime_get_seconds() +
 				     get_random_u32_below(attr->u.drop.da_interval);
 	} else {
-		rule->dr_drop_at = get_random_u32_below(attr->u.drop.da_rate);
+		/* Special case for da_rate == 2 so that the first matched
+		 * message is always dropped. This behavior is required by some
+		 * sanity-lnet test cases.
+		 */
+		if (attr->u.drop.da_rate == 2)
+			rule->dr_drop_at = 0;
+		else
+			rule->dr_drop_at =
+				get_random_u32_below(attr->u.drop.da_rate);
 	}
 
 	lnet_net_lock(LNET_LOCK_EX);
@@ -215,11 +229,17 @@ int lnet_drop_rule_add(struct lnet_fault_large_attr *attr)
 }
 
 /**
- * Remove matched drop rules from lnet, all rules that can match \a src and
- * \a dst will be removed.
- * If \a src is zero, then all rules have \a dst as destination will be remove
- * If \a dst is zero, then all rules have \a src as source will be removed
- * If both of them are zero, all rules will be removed
+ * lnet_drop_rule_del() - Remove matched drop rules from lnet
+ * @src: source Network Identifier (NID)
+ * @dst: destination Network Identifier (NID)
+ *
+ * Remove matched drop rules from lnet, all rules that can match @src and
+ * @dst will be removed.
+ *
+ * Return:
+ * * If @src is %zero, then all rules have @dst as destination will be remove
+ * * If @dst is %zero, then all rules have @src as source will be removed
+ * * If both of them are %zero, all rules will be removed
  */
 int lnet_drop_rule_del(struct lnet_nid *src, struct lnet_nid *dst)
 {
@@ -259,7 +279,14 @@ int lnet_drop_rule_del(struct lnet_nid *src, struct lnet_nid *dst)
 }
 
 /**
- * List drop rule at position of \a pos
+ * lnet_drop_rule_list() - List drop rule at position of @pos
+ * @pos: position of the drop rule to retrieve from list
+ * @attr: attributes of the drop rule [out]
+ * @stat: fault simluation stats of the drop rule [out]
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int
 lnet_drop_rule_list(int pos, struct lnet_fault_large_attr *attr,
@@ -316,7 +343,7 @@ int lnet_drop_rule_collect(struct lnet_genl_fault_rule_list *rlist)
 }
 
 /**
- * reset counters for all drop rules
+ * lnet_drop_rule_reset() - reset counters for all drop rules
  */
 void lnet_drop_rule_reset(void)
 {
@@ -389,8 +416,22 @@ lnet_fault_match_health(enum lnet_msg_hstatus *hstatus, __u32 mask)
 }
 
 /**
+ * drop_rule_match() - Check @src/@dst NID
+ * @rule: current state of the drop rule
+ * @src: source Network Identifier (NID)
+ * @local_nid: local Network Identifier (NID)
+ * @dst: destination Network Identifier (NID)
+ * @type: LNet message type (LNET_MSG_PUT, LNET_MSG_GET)
+ * @portal: portal associated with the message
+ * @hstatus: if %NULL no health check is needed. Else, update with a health
+ *           status code
+ *
  * check source/destination NID, portal, message type and drop rate,
  * decide whether should drop this message or not
+ *
+ * Return:
+ * * %true message matching rule can be dropped
+ * * %false message matching rule cannot be dropped
  */
 static bool
 drop_rule_match(struct lnet_drop_rule *rule,
@@ -476,7 +517,16 @@ drop_matched:
 }
 
 /**
- * Check if message from \a src to \a dst can match any existed drop rule
+ * lnet_drop_rule_match() - Check if message from @src to @dst can match any
+ *                          existed drop rule
+ * @hdr: LNet message header
+ * @local_nid: local Network Identifier (NID)
+ * @hstatus: if %NULL no health check is needed. Else, update with a health
+ *           status code
+ *
+ * Return:
+ * * %true LNet drop rule matched and it should be dropped.
+ * * %false LNet drop rule did not matched the message
  */
 bool
 lnet_drop_rule_match(struct lnet_hdr *hdr,
@@ -509,9 +559,8 @@ lnet_drop_rule_match(struct lnet_hdr *hdr,
 	return drop;
 }
 
-/**
- * LNet Delay Simulation
- */
+/* LNet Delay Simulation */
+
 /** timestamp (second) to send delayed message */
 #define msg_delay_send		 msg_ev.hdr_data
 
@@ -525,7 +574,7 @@ struct lnet_delay_rule {
 	/** lock to protect \a below members */
 	spinlock_t			dl_lock;
 	/** refcount of delay rule */
-	atomic_t			dl_refcount;
+	struct kref		dl_refcount;
 	/**
 	 * the message sequence to delay, which means message is delayed when
 	 * dl_stat.fs_count == dl_delay_at
@@ -567,20 +616,33 @@ struct delay_daemon_data {
 static struct delay_daemon_data	delay_dd;
 
 static void
-delay_rule_decref(struct lnet_delay_rule *rule)
+delay_rule_free(struct kref *kref)
 {
-	if (atomic_dec_and_test(&rule->dl_refcount)) {
-		LASSERT(list_empty(&rule->dl_sched_link));
-		LASSERT(list_empty(&rule->dl_msg_list));
-		LASSERT(list_empty(&rule->dl_link));
+	struct lnet_delay_rule *rule = container_of(kref,
+						    struct lnet_delay_rule,
+						    dl_refcount);
 
-		CFS_FREE_PTR(rule);
-	}
+	LASSERT(list_empty(&rule->dl_sched_link));
+	LASSERT(list_empty(&rule->dl_msg_list));
+	LASSERT(list_empty(&rule->dl_link));
+	CFS_FREE_PTR(rule);
 }
 
 /**
+ * delay_rule_match() - check @src/@dst NID, portal, message type and delay rate
+ * @rule: current state of the drop rule
+ * @src: source Network Identifier (NID)
+ * @dst: destination Network Identifier (NID)
+ * @type: LNet message type (LNET_MSG_PUT, LNET_MSG_GET)
+ * @portal: portal associated with the message
+ * @msg: network message in transit
+ *
  * check source/destination NID, portal, message type and delay rate,
  * decide whether should delay this message or not
+ *
+ * Return:
+ * * %true message matching delay rule
+ * * %false message has no matching delay rule
  */
 static bool
 delay_rule_match(struct lnet_delay_rule *rule, struct lnet_nid *src,
@@ -651,8 +713,16 @@ delay_rule_match(struct lnet_delay_rule *rule, struct lnet_nid *src,
 }
 
 /**
- * check if \a msg can match any Delay Rule, receiving of this message
- * will be delayed if there is a match.
+ * lnet_delay_rule_match_locked() - check if @msg can match any Delay Rule
+ * @hdr: LNet message header
+ * @msg: network message in transit
+ *
+ * Check if @msg can match any Delay Rule, receiving of this message will be
+ * delayed if there is a match.
+ *
+ * Return:
+ * * %true message matching delay rule
+ * * %false message has no matching delay rule
  */
 bool
 lnet_delay_rule_match_locked(struct lnet_hdr *hdr, struct lnet_msg *msg)
@@ -780,7 +850,7 @@ delayed_msg_process(struct list_head *msg_list, bool drop)
 }
 
 /**
- * Process delayed messages for scheduled rules
+ * lnet_delay_rule_check() - Process delayed messages for scheduled rules
  * This function can either be called by delay_rule_daemon, or by lnet_finalise
  */
 void
@@ -805,14 +875,15 @@ lnet_delay_rule_check(void)
 		spin_unlock_bh(&delay_dd.dd_lock);
 
 		delayed_msg_check(rule, false, &msgs);
-		delay_rule_decref(rule); /* -1 for delay_dd.dd_sched_rules */
+		/* -1 for delay_dd.dd_sched_rules */
+		kref_put(&rule->dl_refcount, delay_rule_free);
 	}
 
 	if (!list_empty(&msgs))
 		delayed_msg_process(&msgs, false);
 }
 
-/** deamon thread to handle delayed messages */
+/* deamon thread to handle delayed messages */
 static int
 lnet_delay_rule_daemon(void *arg)
 {
@@ -841,7 +912,7 @@ delay_timer_cb(cfs_timer_cb_arg_t data)
 
 	spin_lock_bh(&delay_dd.dd_lock);
 	if (list_empty(&rule->dl_sched_link) && delay_dd.dd_running) {
-		atomic_inc(&rule->dl_refcount);
+		kref_get(&rule->dl_refcount);
 		list_add_tail(&rule->dl_sched_link, &delay_dd.dd_sched_rules);
 		wake_up(&delay_dd.dd_waitq);
 	}
@@ -849,9 +920,15 @@ delay_timer_cb(cfs_timer_cb_arg_t data)
 }
 
 /**
- * Add a new delay rule to LNet
+ * lnet_delay_rule_add() - Add a new delay rule to LNet
+ * @attr: attributes of the delay add rule
+ *
  * There is no check for duplicated delay rule, all rules will be checked for
  * incoming message.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int
 lnet_delay_rule_add(struct lnet_fault_large_attr *attr)
@@ -920,7 +997,7 @@ lnet_delay_rule_add(struct lnet_fault_large_attr *attr)
 	rule->dl_msg_send = -1;
 
 	lnet_net_lock(LNET_LOCK_EX);
-	atomic_set(&rule->dl_refcount, 1);
+	kref_init(&rule->dl_refcount);
 	list_add(&rule->dl_link, &the_lnet.ln_delay_rules);
 	lnet_net_unlock(LNET_LOCK_EX);
 
@@ -937,14 +1014,22 @@ lnet_delay_rule_add(struct lnet_fault_large_attr *attr)
 }
 
 /**
- * Remove matched Delay Rules from lnet, if \a shutdown is true or both \a src
- * and \a dst are zero, all rules will be removed, otherwise only matched rules
+ * lnet_delay_rule_del() - Remove matched Delay Rules from lnet
+ * @src: source Network Identifier (NID)
+ * @dst: destination Network Identifier (NID)
+ * @shutdown: if @shutdown is true or both @src and @dst are zero, all rules
+ *            will be removed, otherwise only matched rules will be removed.
+ *
+ * Remove matched Delay Rules from lnet, if @shutdown is true or both @src
+ * and @dst are zero, all rules will be removed, otherwise only matched rules
  * will be removed.
- * If \a src is zero, then all rules have \a dst as destination will be remove
- * If \a dst is zero, then all rules have \a src as source will be removed
  *
  * When a delay rule is removed, all delayed messages of this rule will be
  * processed immediately.
+ *
+ * Return:
+ * * If @src is %zero, then all rules have @dst as destination will be remove
+ * * If @dst is %zero, then all rules have @src as source will be removed
  */
 int
 lnet_delay_rule_del(struct lnet_nid *src, struct lnet_nid *dst, bool shutdown)
@@ -990,7 +1075,8 @@ lnet_delay_rule_del(struct lnet_nid *src, struct lnet_nid *dst, bool shutdown)
 
 		timer_delete_sync(&rule->dl_timer);
 		delayed_msg_check(rule, true, &msg_list);
-		delay_rule_decref(rule); /* -1 for the_lnet.ln_delay_rules */
+		/* -1 for the_lnet.ln_delay_rules */
+		kref_put(&rule->dl_refcount, delay_rule_free);
 		n++;
 	}
 
@@ -1011,7 +1097,14 @@ lnet_delay_rule_del(struct lnet_nid *src, struct lnet_nid *dst, bool shutdown)
 }
 
 /**
- * List Delay Rule at position of \a pos
+ * lnet_delay_rule_list() - List Delay Rule at position of @pos
+ * @pos: position of the delay rule to retrieve from list
+ * @attr: attributes of the delay rule [out]
+ * @stat: fault simluation stats of the delay rule [out]
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int
 lnet_delay_rule_list(int pos, struct lnet_fault_large_attr *attr,
@@ -1068,7 +1161,7 @@ int lnet_delay_rule_collect(struct lnet_genl_fault_rule_list *rlist)
 }
 
 /**
- * reset counters for all Delay Rules
+ * lnet_delay_rule_reset() - reset counters for all Delay Rules
  */
 void
 lnet_delay_rule_reset(void)

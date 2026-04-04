@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -64,6 +44,7 @@
 #include <ctype.h>
 
 #include <ext2fs/ext2fs.h>
+#include <ext2fs/quotaio.h>
 
 #ifndef BLKGETSIZE64
 #include <linux/fs.h> /* for BLKGETSIZE64 */
@@ -78,7 +59,6 @@
 #include "mount_utils.h"
 
 #define MAX_HW_SECTORS_KB_PATH	"queue/max_hw_sectors_kb"
-#define MAX_SECTORS_KB_PATH	"queue/max_sectors_kb"
 #define SCHEDULER_PATH		"queue/scheduler"
 #define STRIPE_CACHE_SIZE	"md/stripe_cache_size"
 
@@ -87,8 +67,9 @@
 extern char *progname;
 
 static ext2_filsys backfs;
-static int open_flags = EXT2_FLAG_64BITS | EXT2_FLAG_SKIP_MMP |
-			EXT2_FLAG_IGNORE_SB_ERRORS | EXT2_FLAG_SUPER_ONLY;
+static int open_flags_ro = EXT2_FLAG_64BITS | EXT2_FLAG_SKIP_MMP |
+			   EXT2_FLAG_IGNORE_SB_ERRORS | EXT2_FLAG_SUPER_ONLY;
+static int open_flags_rw = EXT2_FLAG_RW | EXT2_FLAG_64BITS;
 
 /* keep it less than LL_FID_NAMELEN */
 #define DUMMY_FILE_NAME_LEN             25
@@ -137,144 +118,296 @@ out:
 	return ret;
 }
 
+static int translate_error(errcode_t err)
+{
+	int ret = err;
+
+	/* Translate ext2 error to unix error code */
+	if (err < EXT2_ET_BASE)
+		return ret;
+	switch (err) {
+	case EXT2_ET_NO_MEMORY:
+	case EXT2_ET_TDB_ERR_OOM:
+		ret = ENOMEM;
+		break;
+	case EXT2_ET_INVALID_ARGUMENT:
+	case EXT2_ET_LLSEEK_FAILED:
+		ret = EINVAL;
+		break;
+	case EXT2_ET_NO_DIRECTORY:
+		ret = ENOTDIR;
+		break;
+	case EXT2_ET_FILE_NOT_FOUND:
+		ret = ENOENT;
+		break;
+	case EXT2_ET_DIR_NO_SPACE:
+	case EXT2_ET_TOOSMALL:
+	case EXT2_ET_BLOCK_ALLOC_FAIL:
+	case EXT2_ET_INODE_ALLOC_FAIL:
+	case EXT2_ET_EA_NO_SPACE:
+		ret = ENOSPC;
+		break;
+	case EXT2_ET_SYMLINK_LOOP:
+		ret = EMLINK;
+		break;
+	case EXT2_ET_FILE_TOO_BIG:
+		ret = EFBIG;
+		break;
+	case EXT2_ET_TDB_ERR_EXISTS:
+	case EXT2_ET_FILE_EXISTS:
+		ret = EEXIST;
+		break;
+	case EXT2_ET_MMP_FAILED:
+	case EXT2_ET_MMP_FSCK_ON:
+		ret = EBUSY;
+		break;
+	case EXT2_ET_EA_KEY_NOT_FOUND:
+		ret = ENOENT;
+		break;
+	case EXT2_ET_MAGIC_EXT2_FILE:
+		ret = EFAULT;
+		break;
+	case EXT2_ET_UNIMPLEMENTED:
+		ret = EOPNOTSUPP;
+		break;
+	case EXT2_ET_MAGIC_EXT2FS_FILSYS:
+	case EXT2_ET_MAGIC_BADBLOCKS_LIST:
+	case EXT2_ET_MAGIC_BADBLOCKS_ITERATE:
+	case EXT2_ET_MAGIC_INODE_SCAN:
+	case EXT2_ET_MAGIC_IO_CHANNEL:
+	case EXT2_ET_MAGIC_UNIX_IO_CHANNEL:
+	case EXT2_ET_MAGIC_IO_MANAGER:
+	case EXT2_ET_MAGIC_BLOCK_BITMAP:
+	case EXT2_ET_MAGIC_INODE_BITMAP:
+	case EXT2_ET_MAGIC_GENERIC_BITMAP:
+	case EXT2_ET_MAGIC_TEST_IO_CHANNEL:
+	case EXT2_ET_MAGIC_DBLIST:
+	case EXT2_ET_MAGIC_ICOUNT:
+	case EXT2_ET_MAGIC_PQ_IO_CHANNEL:
+	case EXT2_ET_MAGIC_E2IMAGE:
+	case EXT2_ET_MAGIC_INODE_IO_CHANNEL:
+	case EXT2_ET_MAGIC_EXTENT_HANDLE:
+	case EXT2_ET_BAD_MAGIC:
+	case EXT2_ET_MAGIC_EXTENT_PATH:
+	case EXT2_ET_MAGIC_GENERIC_BITMAP64:
+	case EXT2_ET_MAGIC_BLOCK_BITMAP64:
+	case EXT2_ET_MAGIC_INODE_BITMAP64:
+	case EXT2_ET_MAGIC_RESERVED_13:
+	case EXT2_ET_MAGIC_RESERVED_14:
+	case EXT2_ET_MAGIC_RESERVED_15:
+	case EXT2_ET_MAGIC_RESERVED_16:
+	case EXT2_ET_MAGIC_RESERVED_17:
+	case EXT2_ET_MAGIC_RESERVED_18:
+	case EXT2_ET_MAGIC_RESERVED_19:
+	case EXT2_ET_MMP_MAGIC_INVALID:
+	case EXT2_ET_MAGIC_EA_HANDLE:
+	case EXT2_ET_DIR_CORRUPTED:
+	case EXT2_ET_CORRUPT_SUPERBLOCK:
+	case EXT2_ET_RESIZE_INODE_CORRUPT:
+	case EXT2_ET_TDB_ERR_CORRUPT:
+	case EXT2_ET_UNDO_FILE_CORRUPT:
+	case EXT2_ET_FILESYSTEM_CORRUPTED:
+	case EXT2_ET_CORRUPT_JOURNAL_SB:
+	case EXT2_ET_INODE_CORRUPTED:
+	case EXT2_ET_EA_INODE_CORRUPTED:
+		ret = EUCLEAN;
+		break;
+	default:
+		ret = EIO;
+		break;
+	}
+
+	return ret;
+}
+
+
+static errcode_t open_backfs_rw(char *dev, int flags, int force)
+{
+	errcode_t retval;
+
+	if (backfs && !(backfs->flags & EXT2_FLAG_RW))
+		ext2fs_close_free(&backfs);
+
+	if (!backfs) {
+		retval = ext2fs_open(dev, open_flags_rw | flags,
+				     0, 0, unix_io_manager, &backfs);
+		if (retval) {
+			fprintf(stderr,
+				"Error while trying to open %s\n", dev);
+			return retval;
+		}
+
+		if (((backfs->super->s_state & EXT2_ERROR_FS) ||
+		     !(backfs->super->s_state & EXT2_VALID_FS) ||
+		     ext2fs_has_feature_journal_needs_recovery(backfs->super)) &&
+		    !force) {
+			fprintf(stderr,
+				"Filesystem is not clean, please run e2fsck\n");
+			ext2fs_close_free(&backfs);
+			return EXT2_ET_FILESYSTEM_CORRUPTED;
+		}
+	}
+
+	return 0;
+}
+
+static errcode_t write_quota_inodes(ext2_filsys fs, unsigned int qtype_bits)
+{
+	errcode_t retval;
+	quota_ctx_t qctx;
+
+	retval = quota_init_context(&qctx, fs, qtype_bits);
+	if (retval) {
+		fprintf(stderr, "Error while initializing quota context\n");
+		return retval;
+	}
+	quota_compute_usage(qctx);
+	retval = quota_write_inode(qctx, QUOTA_ALL_BIT);
+	if (retval) {
+		fprintf(stderr, "Error while writing quota inodes\n");
+		return retval;
+	}
+	quota_release_context(&qctx);
+
+	return 0;
+}
+
 /* Write the server config files */
 int ldiskfs_write_ldd(struct mkfs_opts *mop)
 {
-	char mntpt[] = "/tmp/mntXXXXXX";
-	char filepnm[192];
+	errcode_t retval;
+	ext2_ino_t configs_ino, mountdata_ino;
+	ext2_file_t mountdata_file;
+	struct ext2_inode inode;
+	unsigned int written;
 	char *dev;
-	int ret = 0;
-	int fd;
-	size_t total_written;
-	size_t write_cnt;
-
-	/* Mount this device temporarily in order to write these files */
-	if (!mkdtemp(mntpt)) {
-		fprintf(stderr, "%s: Can't create temp mount point %s: %s\n",
-			progname, mntpt, strerror(errno));
-		return errno;
-	}
 
 	dev = mop->mo_device;
 	if (mop->mo_flags & MO_IS_LOOP)
 		dev = mop->mo_loopdev;
 
+	retval = open_backfs_rw(dev, 0, 0);
+	if (retval)
+		return translate_error(retval);
+	retval = ext2fs_read_bitmaps(backfs);
+	if (retval)
+		return translate_error(retval);
+
 	/* Multiple mount protection enabled if failover node specified */
-	if (mop->mo_flags & MO_FAILOVER) {
-		if (!backfs)
-			ext2fs_open(dev, open_flags, 0, 0,
-				    unix_io_manager, &backfs);
-		if (!backfs || !ext2fs_has_feature_mmp(backfs->super)) {
-			if (is_e2fsprogs_feature_supp("-O mmp")) {
-				char *command = filepnm;
-
-				snprintf(command, sizeof(filepnm),
-					 TUNE2FS" -O mmp '%s' >/dev/null 2>&1",
-					 dev);
-				ret = run_command(command, sizeof(filepnm));
-				if (ret)
-					fprintf(stderr,
-						"%s: Unable to set 'mmp' on %s: %d\n",
-						progname, dev, ret);
-			} else {
-				disp_old_e2fsprogs_msg("mmp", 1);
-			}
-			/* avoid stale cache after following operations */
-			if (backfs) {
-				ext2fs_close(backfs);
-				backfs = NULL;
-			}
-		}
-	}
-
-	ret = mount(dev, mntpt, MT_STR(&mop->mo_ldd), 0,
-		(mop->mo_mountopts == NULL) ?
-		"errors=remount-ro" : mop->mo_mountopts);
-	if (ret) {
-		fprintf(stderr, "%s: Unable to mount %s: %s\n",
-			progname, dev, strerror(errno));
-		ret = errno;
-		if (errno == ENODEV) {
-			fprintf(stderr, "Is the %s module available?\n",
-				MT_STR(&mop->mo_ldd));
-		}
-		goto out_rmdir;
-	}
-
-	/* Set up initial directories */
-	sprintf(filepnm, "%s/%s", mntpt, MOUNT_CONFIGS_DIR);
-	ret = mkdir(filepnm, 0777);
-	if ((ret != 0) && (errno != EEXIST)) {
-		fprintf(stderr, "%s: Can't make configs dir %s (%s)\n",
-			progname, filepnm, strerror(errno));
-		ret = errno;
-		goto out_umnt;
-	} else if (errno == EEXIST) {
-		ret = 0;
-	}
-
-	/* Save the persistent mount data into a file. Lustre must pre-read
-	   this file to get the real mount options. */
-	vprint("Writing %s\n", MOUNT_DATA_FILE);
-	sprintf(filepnm, "%s/%s", mntpt, MOUNT_DATA_FILE);
-	fd = open(filepnm, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (fd < 0) {
-		fprintf(stderr, "%s: Unable to create %s file: %s\n", progname,
-			filepnm, strerror(errno));
-		ret = errno;
-		goto out_umnt;
-	}
-	total_written = 0;
-	while (total_written < sizeof(mop->mo_ldd)) {
-		write_cnt = write(fd, &mop->mo_ldd + total_written,
-				  sizeof(mop->mo_ldd) - total_written);
-		if (write_cnt < 0) {
+	if (mop->mo_flags & MO_FAILOVER &&
+	    !ext2fs_has_feature_mmp(backfs->super)) {
+		retval = ext2fs_mmp_init(backfs);
+		if (!retval) {
+			ext2fs_set_feature_mmp(backfs->super);
+			ext2fs_mark_super_dirty(backfs);
+			ext2fs_flush(backfs);
+		} else
 			fprintf(stderr,
-				"%s: Unable to write to file (%s): %s\n",
-				progname, filepnm, strerror(errno));
-			ret = errno;
-			goto close_fd;
+				"Error enabling multi-mount protection\n");
+	}
+
+	retval = ext2fs_namei(backfs, EXT2_ROOT_INO, EXT2_ROOT_INO,
+			      MOUNT_CONFIGS_DIR, &configs_ino);
+	if (retval) {
+		if (retval != EXT2_ET_FILE_NOT_FOUND)
+			return translate_error(retval);
+		retval = ext2fs_new_inode(backfs, EXT2_ROOT_INO,
+					  LINUX_S_IFDIR | 0777,
+					  NULL, &configs_ino);
+		if (retval)
+			return translate_error(retval);
+		retval = ext2fs_mkdir(backfs, EXT2_ROOT_INO, configs_ino,
+				      MOUNT_CONFIGS_DIR);
+		if (retval == EXT2_ET_DIR_NO_SPACE) {
+			retval = ext2fs_expand_dir(backfs, EXT2_ROOT_INO);
+			if (retval)
+				return translate_error(retval);
+			retval = ext2fs_mkdir(backfs, EXT2_ROOT_INO,
+					      configs_ino,
+					      MOUNT_CONFIGS_DIR);
 		}
-		total_written += write_cnt;
+		if (retval) {
+			fprintf(stderr, "Error creating config dir '%s'\n",
+				MOUNT_CONFIGS_DIR);
+			return translate_error(retval);
+		}
 	}
-	if (fsync(fd) < 0) {
-		fprintf(stderr, "%s: Unable to fsync file (%s): %s\n", progname,
-			filepnm, strerror(errno));
-		ret = errno;
+	retval = ext2fs_namei(backfs, EXT2_ROOT_INO, configs_ino,
+			      CONFIGS_FILE, &mountdata_ino);
+	if (retval) {
+		if (retval != EXT2_ET_FILE_NOT_FOUND)
+			return translate_error(retval);
+		retval = ext2fs_new_inode(backfs, configs_ino, LINUX_S_IFREG |
+					  0644, NULL, &mountdata_ino);
+		if (retval)
+			return translate_error(retval);
+		retval = ext2fs_link(backfs, configs_ino, CONFIGS_FILE,
+				     mountdata_ino, EXT2_FT_REG_FILE);
+		if (retval == EXT2_ET_DIR_NO_SPACE) {
+			retval = ext2fs_expand_dir(backfs, configs_ino);
+			if (retval)
+				return translate_error(retval);
+			retval = ext2fs_link(backfs, configs_ino, CONFIGS_FILE,
+					     mountdata_ino, EXT2_FT_REG_FILE);
+		}
+		if (retval) {
+			fprintf(stderr, "Error while creating file %s\n",
+				CONFIGS_FILE);
+			return translate_error(retval);
+		}
+		ext2fs_inode_alloc_stats2(backfs, mountdata_ino, 1, 0);
+		memset(&inode, 0, sizeof(inode));
+		inode.i_mode = LINUX_S_IFREG | 0644;
+		inode.i_atime = inode.i_ctime = inode.i_mtime =
+			backfs->now ? backfs->now : time(0);
+		inode.i_links_count = 1;
+		if (ext2fs_has_feature_inline_data(backfs->super)) {
+			inode.i_flags |= EXT4_INLINE_DATA_FL;
+		} else if (ext2fs_has_feature_extents(backfs->super)) {
+			ext2_extent_handle_t handle;
+
+			inode.i_flags &= ~EXT4_EXTENTS_FL;
+			retval = ext2fs_extent_open2(backfs, mountdata_ino,
+						     &inode, &handle);
+			if (retval)
+				return translate_error(retval);
+			ext2fs_extent_free(handle);
+		}
+
+		retval = ext2fs_write_new_inode(backfs, mountdata_ino, &inode);
+		if (retval)
+			return translate_error(retval);
+		if (inode.i_flags & EXT4_INLINE_DATA_FL) {
+			retval = ext2fs_inline_data_init(backfs,
+							 mountdata_ino);
+			if (retval)
+				return translate_error(retval);
+		}
+	}
+	retval = ext2fs_file_open(backfs, mountdata_ino,
+				  EXT2_FILE_WRITE, &mountdata_file);
+	if (retval)
+		return translate_error(retval);
+	retval = ext2fs_file_write(mountdata_file, &mop->mo_ldd,
+				   sizeof(mop->mo_ldd), &written);
+	ext2fs_file_close(mountdata_file);
+	if (retval || written == 0) {
+		fprintf(stderr, "Error while writing to file %s\n",
+			MOUNT_DATA_FILE);
+		if (!retval)
+			retval = EXT2_ET_SHORT_WRITE;
+		return translate_error(retval);
 	}
 
-close_fd:
-	if (close(fd) < 0) {
-		fprintf(stderr, "%s: Error while closing file (%s): %s\n",
-			progname, filepnm, strerror(errno));
-		/* Don't overwrite errno if already set in previous failure */
-		if (ret == 0)
-			ret = errno;
+	if (ext2fs_has_feature_quota(backfs->super)) {
+		retval = write_quota_inodes(backfs, 0);
+		if (retval)
+			return translate_error(retval);
 	}
-out_umnt:
-	umount(mntpt);
-out_rmdir:
-	rmdir(mntpt);
-	return ret;
-}
+	/* close the fs to write bitmaps, before the first mount happens */
+	ext2fs_close_free(&backfs);
 
-static int readcmd(char *cmd, char *buf, int len)
-{
-	FILE *fp;
-	int red;
-
-	fp = popen(cmd, "r");
-	if (!fp)
-		return errno;
-
-	red = fread(buf, 1, len, fp);
-	pclose(fp);
-
-	/* strip trailing newline */
-	if (buf[red - 1] == '\n')
-		buf[red - 1] = '\0';
-
-	return (red == 0) ? -ENOENT : 0;
+	return 0;
 }
 
 int ldiskfs_read_ldd(char *dev, struct lustre_disk_data *mo_ldd)
@@ -283,15 +416,13 @@ int ldiskfs_read_ldd(char *dev, struct lustre_disk_data *mo_ldd)
 	ext2_ino_t ino;
 	ext2_file_t file;
 	unsigned int got;
-	char cmd[PATH_MAX];
-	int ret = 0;
 
 	if (!backfs) {
-		retval = ext2fs_open(dev, open_flags, 0, 0,
+		retval = ext2fs_open(dev, open_flags_ro, 0, 0,
 				     unix_io_manager, &backfs);
 		if (retval) {
 			fprintf(stderr, "Unable to open fs on %s\n", dev);
-			goto read_label;
+			return translate_error(retval);
 		}
 	}
 	retval = ext2fs_namei(backfs, EXT2_ROOT_INO, EXT2_ROOT_INO,
@@ -307,14 +438,16 @@ int ldiskfs_read_ldd(char *dev, struct lustre_disk_data *mo_ldd)
 		goto read_label;
 	}
 	retval = ext2fs_file_read(file, mo_ldd, sizeof(*mo_ldd), &got);
+	ext2fs_file_close(file);
 	if (retval || got == 0)
 		fprintf(stderr, "Failed to read file %s\n", MOUNT_DATA_FILE);
 read_label:
 	/* As long as we at least have the label, we're good to go */
-	snprintf(cmd, sizeof(cmd), E2LABEL" %s", dev);
-	ret = readcmd(cmd, mo_ldd->ldd_svname, sizeof(mo_ldd->ldd_svname) - 1);
+	memset(mo_ldd->ldd_svname, 0, sizeof(mo_ldd->ldd_svname));
+	strncpy(mo_ldd->ldd_svname, (char *)backfs->super->s_volume_name,
+		EXT2_LABEL_LEN);
 
-	return ret;
+	return 0;
 }
 
 int ldiskfs_erase_ldd(struct mkfs_opts *mop, char *param)
@@ -362,7 +495,7 @@ static int file_in_dev(char *file_name, char *dev_name)
 	errcode_t retval;
 
 	if (!backfs) {
-		retval = ext2fs_open(dev_name, open_flags, 0, 0,
+		retval = ext2fs_open(dev_name, open_flags_ro, 0, 0,
 				     unix_io_manager, &backfs);
 		if (retval)
 			return 0;
@@ -382,7 +515,6 @@ int ldiskfs_is_lustre(char *dev, unsigned *mount_type)
 
 	ret = file_in_dev(MOUNT_DATA_FILE, dev);
 	if (ret) {
-		/* in the -1 case, 'extents' means IS a lustre target */
 		*mount_type = LDD_MT_LDISKFS;
 		return 1;
 	}
@@ -447,12 +579,13 @@ static bool is_e2fsprogs_feature_supp(const char *feature)
 }
 
 /**
- * append_unique: append @key or @key=@val pair to @buf only if @key does not
- *                exists
- *      @buf: buffer to hold @key or @key=@val
- *      @prefix: prefix string before @key
- *      @key: key string
- *      @val: value string if it's a @key=@val pair
+ * append_unique() -  append @key or @key=@val pair to @buf only if @key does
+ *                    not exists
+ * @buf: buffer to hold @key or @key=@val
+ * @prefix: prefix string before @key
+ * @key: key string
+ * @val: value string if it's a @key=@val pair
+ * @maxbuflen: max len of @buf
  */
 static void append_unique(char *buf, char *prefix, char *key, char *val,
 			  size_t maxbuflen)
@@ -494,15 +627,9 @@ static int enable_default_ext4_features(struct mkfs_opts *mop, char *anchor,
 
 	append_unique(anchor, user_spec ? "," : " -O ",
 		      "uninit_bg", NULL, maxbuflen);
-	if (IS_OST(&mop->mo_ldd)) {
-		append_unique(anchor, ",", "extents", NULL, maxbuflen);
-	} else if (IS_MDT(&mop->mo_ldd)) {
-		if (enable_64bit)
-			append_unique(anchor, ",", "extents", NULL, maxbuflen);
-		else
-			append_unique(anchor, ",", "^extents", NULL, maxbuflen);
+	append_unique(anchor, ",", "extents", NULL, maxbuflen);
+	if (IS_MDT(&mop->mo_ldd))
 		append_unique(anchor, ",", "dirdata", NULL, maxbuflen);
-	}
 
 	/* Multiple mount protection enabled only if failover node specified */
 	if (mop->mo_flags & MO_FAILOVER) {
@@ -570,11 +697,12 @@ static int enable_default_ext4_features(struct mkfs_opts *mop, char *anchor,
 }
 
 /**
- * moveopts_to_end: find the option string, move remaining strings to
- *                  where option string starts, and append the option
- *                  string at the end
- *      @start: where the option string starts before the move
- *      RETURN: where the option string starts after the move
+ * moveopts_to_end() -  find the option string, move remaining strings to
+ *                      where option string starts, and append the option
+ *                      string at the end
+ * @start: where the option string starts before the move
+ *
+ * Return the option string starts after the move
  */
 static char *moveopts_to_end(char *start)
 {
@@ -975,8 +1103,11 @@ int ldiskfs_prepare_lustre(struct mkfs_opts *mop,
 
 int ldiskfs_fix_mountopts(struct mkfs_opts *mop, char *mountopts, size_t len)
 {
-	if (strstr(mountopts, "errors=") == NULL)
-		strscat(mountopts, ",errors=remount-ro", len);
+	if (strstr(mountopts, "errors=") == NULL) {
+		if (strlen(mountopts) != 0)
+			strscat(mountopts, ",", len);
+		strscat(mountopts, "errors=remount-ro", len);
+	}
 
 	return 0;
 }
@@ -1056,77 +1187,6 @@ static int tune_md_stripe_cache_size(const char *sys_path,
 				path, strerror(errno));
 		return rc;
 	}
-
-	return 0;
-}
-
-static int tune_max_sectors_kb(const char *sys_path, struct mount_opts *mop)
-{
-	char path[PATH_MAX];
-	unsigned long max_hw_sectors_kb;
-	unsigned long old_max_sectors_kb;
-	unsigned long new_max_sectors_kb;
-	char buf[3 * sizeof(old_max_sectors_kb) + 2];
-	int rc;
-
-	if (mop->mo_max_sectors_kb >= 0) {
-		new_max_sectors_kb = mop->mo_max_sectors_kb;
-		goto have_new_max_sectors_kb;
-	}
-
-	snprintf(path, sizeof(path), "%s/%s", sys_path, MAX_HW_SECTORS_KB_PATH);
-	rc = read_file(path, buf, sizeof(buf));
-	if (rc != 0) {
-		/* No MAX_HW_SECTORS_KB_PATH isn't necessary an
-		 * error for some devices. */
-		return 0;
-	}
-
-	max_hw_sectors_kb = strtoul(buf, NULL, 0);
-	if (max_hw_sectors_kb == 0 || max_hw_sectors_kb == ULLONG_MAX) {
-		/* No digits at all or something weird. */
-		return 0;
-	}
-
-	new_max_sectors_kb = max_hw_sectors_kb;
-
-	/* Don't increase IO request size limit past 16MB.  It is
-	 * about PTLRPC_MAX_BRW_SIZE, but that isn't in a public
-	 * header.  Note that even though the block layer allows
-	 * larger values, setting max_sectors_kb = 32768 causes
-	 * crashes (LU-6974). */
-	if (new_max_sectors_kb > 16 * 1024)
-		new_max_sectors_kb = 16 * 1024;
-
-have_new_max_sectors_kb:
-	snprintf(path, sizeof(path), "%s/%s", sys_path, MAX_SECTORS_KB_PATH);
-	rc = read_file(path, buf, sizeof(buf));
-	if (rc != 0) {
-		/* No MAX_SECTORS_KB_PATH isn't necessary an error for
-		 * some devices. */
-		return 0;
-	}
-
-	old_max_sectors_kb = strtoul(buf, NULL, 0);
-	if (old_max_sectors_kb == 0 || old_max_sectors_kb == ULLONG_MAX) {
-		/* No digits at all or something weird. */
-		return 0;
-	}
-
-	if (new_max_sectors_kb <= old_max_sectors_kb)
-		return 0;
-
-	snprintf(buf, sizeof(buf), "%lu", new_max_sectors_kb);
-	rc = write_file(path, buf);
-	if (rc != 0) {
-		if (verbose)
-			fprintf(stderr, "warning: cannot write '%s': %s\n",
-				path, strerror(errno));
-		return rc;
-	}
-
-	fprintf(stderr, "%s: increased '%s' from %lu to %lu\n",
-		progname, path, old_max_sectors_kb, new_max_sectors_kb);
 
 	return 0;
 }
@@ -1229,9 +1289,7 @@ static int tune_block_dev_slaves(const char *sys_path, struct mount_opts *mop)
 	return rc;
 }
 
-/* This is to tune the kernel for good SCSI performance.
- * For that we set the value of /sys/block/{dev}/queue/max_sectors_kb
- * to the value of /sys/block/{dev}/queue/max_hw_sectors_kb */
+/* This is to tune the kernel for good SCSI performance. */
 static int tune_block_dev(const char *src, struct mount_opts *mop)
 {
 	struct stat st;
@@ -1301,10 +1359,9 @@ have_whole_dev:
 	if (major(st.st_rdev) == MD_MAJOR) {
 		rc = tune_md_stripe_cache_size(real_sys_path, mop);
 	} else {
-		/* Ignore errors from tune_max_sectors_kb() and
-		 * tune_scheduler(). The worst that will happen is a block
-		 * device with an "incorrect" scheduler. */
-		tune_max_sectors_kb(real_sys_path, mop);
+		/* Ignore errors from tune_scheduler(). The worst that will
+		 * happen is a block device with an "incorrect" scheduler.
+		 */
 		tune_block_dev_scheduler(real_sys_path, DEFAULT_SCHEDULER);
 
 		/* If device is multipath device then tune its slave
@@ -1325,104 +1382,390 @@ int ldiskfs_tune_lustre(char *dev, struct mount_opts *mop)
 
 int ldiskfs_label_lustre(struct mount_opts *mop)
 {
-	char label_cmd[PATH_MAX];
-	int rc;
+	errcode_t retval;
+	int mnt_flags, fd;
+	char mntpt[PATH_MAX + 1];
+	struct ext2_super_block *sb;
 
-	snprintf(label_cmd, sizeof(label_cmd),
-		 TUNE2FS" -f -L '%s' '%s' >/dev/null 2>&1",
-		 mop->mo_ldd.ldd_svname, mop->mo_source);
-	rc = run_command(label_cmd, sizeof(label_cmd));
+	if (strlen(mop->mo_ldd.ldd_svname) > EXT2_LABEL_LEN) {
+		fprintf(stderr,
+			"Warning: label '%s' too long, truncating to '%.*s'\n",
+			mop->mo_ldd.ldd_svname, EXT2_LABEL_LEN,
+			mop->mo_ldd.ldd_svname);
+		mop->mo_ldd.ldd_svname[EXT2_LABEL_LEN] = '\0';
+	}
 
-	return rc;
+	retval = ext2fs_check_mount_point(mop->mo_source, &mnt_flags,
+					  mntpt, sizeof(mntpt));
+	if (!retval && (mnt_flags & EXT2_MF_MOUNTED)) {
+		int ret;
+
+		fd = open(mntpt, O_RDONLY);
+		if (fd < 0)
+			goto old_method;
+		ret = ioctl(fd, FS_IOC_SETFSLABEL, mop->mo_ldd.ldd_svname);
+		close(fd);
+		if (ret == 0)
+			return 0;
+	}
+
+old_method:
+	/*
+	 * label_lustre is called after the target is mounted, skip mmp
+	 * and skip the unclean checks.
+	 */
+	retval = open_backfs_rw(mop->mo_source,
+				EXT2_FLAG_SUPER_ONLY | EXT2_FLAG_SKIP_MMP, 1);
+	if (retval)
+		return translate_error(retval);
+
+	sb = backfs->super;
+	memset(sb->s_volume_name, 0, sizeof(sb->s_volume_name));
+	strncpy((char *)sb->s_volume_name, mop->mo_ldd.ldd_svname,
+		EXT2_LABEL_LEN);
+	ext2fs_mark_super_dirty(backfs);
+	ext2fs_close_free(&backfs);
+
+	return 0;
+}
+
+int ldiskfs_label_read(char *dev, struct lustre_disk_data *ldd)
+{
+	errcode_t retval;
+	int mnt_flags, fd;
+	char mntpt[PATH_MAX + 1];
+
+	retval = ext2fs_check_mount_point(dev, &mnt_flags,
+					  mntpt, sizeof(mntpt));
+	if (!retval && (mnt_flags & EXT2_MF_MOUNTED)) {
+		int ret;
+
+		fd = open(mntpt, O_RDONLY);
+		if (fd < 0)
+			goto old_method;
+		memset(ldd->ldd_svname, 0, sizeof(ldd->ldd_svname));
+		ret = ioctl(fd, FS_IOC_GETFSLABEL, ldd->ldd_svname);
+		close(fd);
+		if (ret == 0)
+			return 0;
+	}
+
+old_method:
+	/*
+	 * device label could be changed after journal recovery,
+	 * reopen the fs to get the latest label.
+	 */
+	if (backfs)
+		ext2fs_close_free(&backfs);
+	retval = ext2fs_open(dev, open_flags_ro, 0, 0,
+			     unix_io_manager, &backfs);
+	if (retval) {
+		fprintf(stderr, "Unable to open fs on %s\n",
+			dev);
+		return translate_error(retval);
+	}
+
+	memset(ldd->ldd_svname, 0, sizeof(ldd->ldd_svname));
+	strncpy(ldd->ldd_svname, (char *)backfs->super->s_volume_name,
+		EXT2_LABEL_LEN);
+
+	return 0;
+}
+
+struct cfg_entry {
+	struct list_head ce_list;
+	ext2_ino_t ino;
+	char name[];
+};
+
+struct rename_params {
+	struct list_head *cfg_list;
+	const char *oldname;
+};
+
+static int rename_fsname_iter(ext2_ino_t dir,
+			      int flags,
+			      struct ext2_dir_entry *de,
+			      int offset,
+			      int blocksize,
+			      char *buf, void *priv_data)
+{
+	struct rename_params *params = (struct rename_params *)priv_data;
+	struct cfg_entry *ce;
+	const char *oldname = params->oldname;
+	int old_namelen = strlen(oldname);
+	int namelen = ext2fs_dirent_name_len(de);
+	char name[EXT2_NAME_LEN];
+	char *ptr;
+
+	if (namelen <= old_namelen)
+		return 0;
+
+	/* Construct null terminated name for strrchr */
+	memcpy(name, de->name, namelen);
+	name[namelen] = '\0';
+
+	ptr = strrchr(name, '-');
+	if (!ptr || (ptr - name) != old_namelen)
+		return 0;
+
+	if (strncmp(name, oldname, old_namelen) != 0)
+		return 0;
+
+	ce = malloc(sizeof(*ce) + namelen + 1);
+	if (!ce) {
+		fprintf(stderr, "Fail to init item for %s\n", name);
+		return DIRENT_ABORT;
+	}
+
+	INIT_LIST_HEAD(&ce->ce_list);
+	ce->ino = de->inode;
+	memcpy(ce->name, de->name, namelen);
+	ce->name[namelen] = '\0';
+
+	list_add(&ce->ce_list, params->cfg_list);
+
+	return 0;
 }
 
 int ldiskfs_rename_fsname(struct mkfs_opts *mop, const char *oldname)
 {
-	struct mount_opts opts;
+	errcode_t retval;
+	ext2_ino_t ino;
+	ext2_file_t file;
+	unsigned int size;
 	struct lustre_disk_data *ldd = &mop->mo_ldd;
-	char mntpt[] = "/tmp/mntXXXXXX";
+	struct lr_server_data lsd;
+	struct rename_params params;
+	struct cfg_entry *ce;
+	struct list_head cfg_list;
+	int old_namelen = strlen(oldname);
+	int new_namelen = strlen(ldd->ldd_fsname);
 	char *dev;
-	int ret;
 
-	/* Change the filesystem label. */
-	opts.mo_ldd = *ldd;
-	opts.mo_source = mop->mo_device;
-	ret = ldiskfs_label_lustre(&opts);
-	if (ret) {
-		if (errno != 0)
-			ret = errno;
-		fprintf(stderr, "Can't change filesystem label: %s\n",
-			strerror(ret));
-		return ret;
-	}
-
-	/* Mount this device temporarily in order to write these files */
-	if (mkdtemp(mntpt) == NULL) {
-		if (errno != 0)
-			ret = errno;
-		else
-			ret = EINVAL;
-		fprintf(stderr, "Can't create temp mount point %s: %s\n",
-			mntpt, strerror(ret));
-		return ret;
-	}
+	INIT_LIST_HEAD(&cfg_list);
 
 	if (mop->mo_flags & MO_IS_LOOP)
 		dev = mop->mo_loopdev;
 	else
 		dev = mop->mo_device;
-	ret = mount(dev, mntpt, MT_STR(ldd), 0, ldd->ldd_mount_opts);
-	if (ret) {
-		if (errno != 0)
-			ret = errno;
-		fprintf(stderr, "Unable to mount %s: %s\n",
-			dev, strerror(ret));
-		if (ret == ENODEV)
-			fprintf(stderr, "Is the %s module available?\n",
-				MT_STR(ldd));
-		goto out_rmdir;
+
+	retval = open_backfs_rw(dev, 0, 0);
+	if (retval)
+		return translate_error(retval);
+	retval = ext2fs_read_bitmaps(backfs);
+	if (retval)
+		return translate_error(retval);
+
+	/* Change the filesystem label. */
+	if (strlen(ldd->ldd_svname) > EXT2_LABEL_LEN) {
+		fprintf(stderr,
+			"Warning: label '%s' too long, truncating to '%.*s'\n",
+			ldd->ldd_svname, EXT2_LABEL_LEN, ldd->ldd_svname);
+		ldd->ldd_svname[EXT2_LABEL_LEN] = '\0';
+	}
+	memset(backfs->super->s_volume_name, 0,
+	       sizeof(backfs->super->s_volume_name));
+	strncpy((char *)backfs->super->s_volume_name, ldd->ldd_svname,
+		EXT2_LABEL_LEN);
+	ext2fs_mark_super_dirty(backfs);
+	ext2fs_flush(backfs);
+
+	retval = ext2fs_namei(backfs, EXT2_ROOT_INO, EXT2_ROOT_INO,
+			      LAST_RCVD, &ino);
+	if (retval) {
+		if (retval == EXT2_ET_FILE_NOT_FOUND)
+			goto config;
+
+		return translate_error(retval);
+	}
+	retval = ext2fs_file_open(backfs, ino, EXT2_FILE_WRITE, &file);
+	if (retval) {
+		fprintf(stderr, "Unable to open %s\n", LAST_RCVD);
+		return translate_error(retval);
+	}
+	retval = ext2fs_file_read(file, &lsd, sizeof(lsd), &size);
+	if (retval || size != sizeof(lsd)) {
+		fprintf(stderr, "Unable to read %s\n", LAST_RCVD);
+		if (!retval)
+			retval = EXT2_ET_SHORT_READ;
+		ext2fs_file_close(file);
+		return translate_error(retval);
+	}
+	retval = ext2fs_file_lseek(file, 0, EXT2_SEEK_SET, NULL);
+	if (retval) {
+		fprintf(stderr, "Unable to lseek %s\n", LAST_RCVD);
+		ext2fs_file_close(file);
+		return translate_error(retval);
 	}
 
-	ret = lustre_rename_fsname(mop, mntpt, oldname);
-	umount(mntpt);
+	/* replace fsname in lr_server_data::lsd_uuid. */
+	if (old_namelen > new_namelen)
+		memmove(lsd.lsd_uuid + new_namelen,
+			lsd.lsd_uuid + old_namelen,
+			sizeof(lsd.lsd_uuid) - old_namelen);
+	else if (old_namelen < new_namelen)
+		memmove(lsd.lsd_uuid + new_namelen,
+			lsd.lsd_uuid + old_namelen,
+			sizeof(lsd.lsd_uuid) - new_namelen);
+	memcpy(lsd.lsd_uuid, ldd->ldd_fsname, new_namelen);
+	retval = ext2fs_file_write(file, &lsd, sizeof(lsd), &size);
+	if (retval || size != sizeof(lsd)) {
+		fprintf(stderr, "Unable to write %s\n", LAST_RCVD);
+		if (!retval)
+			retval = EXT2_ET_SHORT_WRITE;
+		ext2fs_file_close(file);
+		return translate_error(retval);
+	}
+	ext2fs_file_close(file);
 
-out_rmdir:
-	rmdir(mntpt);
-	return ret;
+config:
+	retval = ext2fs_namei(backfs, EXT2_ROOT_INO, EXT2_ROOT_INO,
+			      MOUNT_CONFIGS_DIR, &ino);
+	if (retval) {
+		fprintf(stderr, "Unable to open dir %s\n", MOUNT_CONFIGS_DIR);
+		return translate_error(retval);
+	}
+	params.cfg_list = &cfg_list;
+	params.oldname = oldname;
+	retval = ext2fs_dir_iterate2(backfs, ino, 0, NULL,
+				     rename_fsname_iter, &params);
+	if (retval) {
+		fprintf(stderr, "Unable to iterate dir %s\n",
+			MOUNT_CONFIGS_DIR);
+		return translate_error(retval);
+	}
+
+	while (!list_empty(&cfg_list)) {
+		ce = list_entry(cfg_list.next, struct cfg_entry, ce_list);
+		if (IS_MGS(ldd)) {
+			struct ext2_xattr_handle *h;
+
+			retval = ext2fs_xattrs_open(backfs, ce->ino, &h);
+			if (retval)
+				break;
+			retval = ext2fs_xattrs_read(h);
+			if (retval)
+				break;
+			retval = ext2fs_xattr_set(h, XATTR_TARGET_RENAME,
+						  ldd->ldd_fsname,
+						  strlen(ldd->ldd_fsname));
+			ext2fs_xattrs_close(&h);
+			if (retval)
+				break;
+		} else {
+			struct ext2_inode_large inode;
+
+			retval = ext2fs_unlink(backfs, ino, ce->name, 0, 0);
+			if (retval)
+				break;
+			memset(&inode, 0, sizeof(inode));
+			retval = ext2fs_read_inode_full(backfs, ino,
+				(struct ext2_inode *)&inode, sizeof(inode));
+			if (retval)
+				break;
+			inode.i_mtime = inode.i_ctime =
+				backfs->now ? backfs->now : time(0);
+			retval = ext2fs_write_inode_full(backfs, ino,
+					(struct ext2_inode *)&inode,
+					sizeof(inode));
+			if (retval)
+				break;
+			memset(&inode, 0, sizeof(inode));
+			retval = ext2fs_read_inode_full(backfs, ce->ino,
+				(struct ext2_inode *)&inode, sizeof(inode));
+			if (retval)
+				break;
+			if (!inode.i_links_count) {
+				list_del(&ce->ce_list);
+				free(ce);
+				continue;
+			}
+			inode.i_links_count--;
+			inode.i_ctime = backfs->now ? backfs->now : time(0);
+			if (inode.i_links_count)
+				goto write_inode;
+
+			inode.i_dtime = backfs->now ? backfs->now : time(0);
+			retval = ext2fs_free_ext_attr(backfs, ce->ino, &inode);
+			if (retval)
+				goto write_inode;
+			if (ext2fs_inode_has_valid_blocks2(backfs,
+					(struct ext2_inode *)&inode)) {
+				retval = ext2fs_punch(backfs, ce->ino,
+						(struct ext2_inode *)&inode,
+						NULL, 0, ~0ULL);
+				if (retval)
+					goto write_inode;
+			}
+
+			ext2fs_inode_alloc_stats2(backfs, ce->ino, -1,
+						  LINUX_S_ISDIR(inode.i_mode));
+
+write_inode:
+			retval = ext2fs_write_inode_full(backfs, ce->ino,
+					(struct ext2_inode *)&inode,
+					sizeof(inode));
+			if (retval)
+				break;
+		}
+		list_del(&ce->ce_list);
+		free(ce);
+	}
+
+	if (retval) {
+		fprintf(stderr, "Fail to %s %s/%s: %s\n",
+			IS_MGS(ldd) ? "setxattr" : "unlink",
+			MOUNT_CONFIGS_DIR, ce->name,
+			strerror(translate_error(retval)));
+		while (!list_empty(&cfg_list)) {
+			ce = list_entry(cfg_list.next, struct cfg_entry,
+					ce_list);
+			list_del(&ce->ce_list);
+			free(ce);
+		}
+		return translate_error(retval);
+	}
+
+	if (ext2fs_has_feature_quota(backfs->super)) {
+		retval = write_quota_inodes(backfs, 0);
+		if (retval)
+			return translate_error(retval);
+	}
+
+	return 0;
 }
 
 /* Enable quota accounting */
 int ldiskfs_enable_quota(struct mkfs_opts *mop)
 {
+	errcode_t retval;
 	char *dev;
-	char cmd[512];
-	int cmdsz = sizeof(cmd), ret;
-
-	if (!is_e2fsprogs_feature_supp("-O quota")) {
-		fprintf(stderr, "%s: \"-O quota\" is is not supported by "
-			"current e2fsprogs\n", progname);
-		return EINVAL;
-	}
 
 	dev = mop->mo_device;
 	if (mop->mo_flags & MO_IS_LOOP)
 		dev = mop->mo_loopdev;
 
+	retval = open_backfs_rw(dev, 0, 0);
+	if (retval)
+		return translate_error(retval);
+
 	/* Quota feature is already enabled? */
-	if (!backfs)
-		ext2fs_open(dev, open_flags, 0, 0, unix_io_manager, &backfs);
-	if (backfs && ext2fs_has_feature_quota(backfs->super)) {
+	if (ext2fs_has_feature_quota(backfs->super)) {
 		vprint("Quota feature is already enabled.\n");
 		return 0;
 	}
 
-	/* Turn on quota feature by "tune2fs -O quota" */
-	snprintf(cmd, cmdsz, "%s -O quota %s", TUNE2FS, dev);
-	ret = run_command(cmd, cmdsz);
-	if (ret)
-		fprintf(stderr, "command:%s (%d)", cmd, ret);
+	/* Turn on quota feature */
+	retval = write_quota_inodes(backfs, QUOTA_USR_BIT | QUOTA_GRP_BIT);
+	if (retval)
+		return translate_error(retval);
 
-	return ret;
+	ext2fs_set_feature_quota(backfs->super);
+	ext2fs_mark_super_dirty(backfs);
+	ext2fs_flush(backfs);
+
+	return 0;
 }
 
 int ldiskfs_init(void)
@@ -1435,10 +1778,8 @@ int ldiskfs_init(void)
 
 void ldiskfs_fini(void)
 {
-	if (backfs) {
-		ext2fs_close(backfs);
-		backfs = NULL;
-	}
+	if (backfs)
+		ext2fs_close_free(&backfs);
 }
 
 #ifndef PLUGIN_DIR
@@ -1455,6 +1796,7 @@ struct module_backfs_ops ldiskfs_ops = {
 	.fix_mountopts		= ldiskfs_fix_mountopts,
 	.tune_lustre		= ldiskfs_tune_lustre,
 	.label_lustre		= ldiskfs_label_lustre,
+	.label_read		= ldiskfs_label_read,
 	.enable_quota		= ldiskfs_enable_quota,
 	.rename_fsname		= ldiskfs_rename_fsname,
 };

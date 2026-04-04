@@ -36,7 +36,7 @@ static int mgc_ir_state_seq_show(struct seq_file *m, void *v)
 
 LDEBUGFS_SEQ_FOPS_RO(mgc_ir_state);
 
-struct ldebugfs_vars ldebugfs_mgc_obd_vars[] = {
+static struct ldebugfs_vars ldebugfs_mgc_obd_vars[] = {
 	{ .name	=	"connect_flags",
 	  .fops	=	&mgc_connect_flags_fops	},
 	{ .name	=	"mgs_server_uuid",
@@ -94,6 +94,7 @@ LUSTRE_RW_ATTR(dynamic_nids);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_min);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_max);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_history);
+LUSTRE_OBD_UINT_PARAM_ATTR(ldlm_enqueue_min);
 
 static struct attribute *mgc_attrs[] = {
 	&lustre_attr_mgs_conn_uuid.attr,
@@ -103,6 +104,7 @@ static struct attribute *mgc_attrs[] = {
 	&lustre_attr_at_min.attr,
 	&lustre_attr_at_max.attr,
 	&lustre_attr_at_history.attr,
+	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,
 };
 

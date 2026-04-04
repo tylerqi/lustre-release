@@ -142,6 +142,7 @@ static inline __u32 obd_ioctl_packlen(struct obd_ioctl_data *data)
 #define OBD_IOC_BRW_WRITE	_IOWR('f', 126, OBD_IOC_DATA_TYPE)
 #define OBD_IOC_NAME2DEV	_IOWR('f', 127, OBD_IOC_DATA_TYPE)
 #define OBD_IOC_GETDTNAME	_IOR('f', 127, char[MAX_OBD_NAME])
+#define OBD_IOC_GETUUID		_IOR('f', 127, char[UUID_MAX])
 /* ioctl codes 128-143 are reserved for fsverity */
 #define OBD_IOC_UUID2DEV	_IOWR('f', 130, OBD_IOC_DATA_TYPE)
 #define OBD_IOC_GETMDNAME	_IOR('f', 131, char[MAX_OBD_NAME])
@@ -158,10 +159,12 @@ enum obd_abort_recovery_flags {
 #define OBD_IOC_FID2PATH	_IOWR('f', 150, OBD_IOC_DATA_TYPE)
 /*	lustre/lustre_user.h	151-159 */
 #define OBD_IOC_QUOTACTL	_IOWR('f', 162, struct if_quotactl)
+#define OBD_IOC_LQACTL		_IOWR('f', 162, struct obd_ioctl_data)
 /*	lustre/lustre_user.h	163-176 */
 #define OBD_IOC_CHANGELOG_REG	_IOW('f', 177, struct obd_ioctl_data)
 #define OBD_IOC_CHANGELOG_DEREG	_IOW('f', 178, struct obd_ioctl_data)
 #define OBD_IOC_CHANGELOG_CLEAR	_IOW('f', 179, struct obd_ioctl_data)
+#define OBD_IOC_CHANGELOG_FILTER _IOW('f', 179, struct changelog_filter)
 #define OBD_IOC_PROCESS_CFG	_IOWR('f', 184, OBD_IOC_DATA_TYPE)
 #define OBD_IOC_PARAM		_IOW('f', 187, OBD_IOC_DATA_TYPE)
 #define OBD_IOC_POOL		_IOWR('f', 188, OBD_IOC_DATA_TYPE)

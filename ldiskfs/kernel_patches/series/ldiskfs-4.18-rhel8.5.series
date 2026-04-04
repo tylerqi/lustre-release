@@ -17,9 +17,10 @@ rhel8/ext4-max-dir-size.patch
 rhel8.3/ext4-corrupted-inode-block-bitmaps-handling-patches.patch
 ubuntu18/ext4-give-warning-with-dir-htree-growing.patch
 ubuntu18/ext4-jcb-optimization.patch
+base/ext4-symlink-xattr-inode-fix.patch
 rhel8.2/ext4-attach-jinode-in-writepages.patch
 rhel8/ext4-dont-check-before-replay.patch
-rhel7.6/ext4-use-GFP_NOFS-in-ext4_inode_attach_jinode.patch
+base/ext4-fix-ext4_inode_attach_jinode.patch
 rhel7.6/ext4-export-orphan-add.patch
 rhel8/ext4-export-mb-stream-allocator-variables.patch
 rhel8/ext4-simple-blockalloc.patch
@@ -34,6 +35,7 @@ rhel8.5/ext4-enc-flag.patch
 rhel8/ext4-ext-merge.patch
 base/ext4-delayed-iput.patch
 rhel8/ext4-add-periodic-superblock-update.patch
+rhel8.4/ext4-add-DISCARD-stats.patch
 rhel8.5/ext4-filename-encode.patch
 rhel8/ext4-old_ea_inodes_handling_fix.patch
 rhel8.4/ext4-optimize-find_delayed_extent.patch

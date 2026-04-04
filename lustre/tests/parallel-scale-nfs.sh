@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 NFSVERSION=${1:-"3"}
 
@@ -142,6 +142,54 @@ test_1() {
 	rm -f $src_file $dst_file
 }
 run_test 1 "test copy with attributes"
+
+test_2() {
+	local mp1file=$TESTDIR/file1
+	local tmpdir=$(mktemp -d /tmp/nfs-XXXXXX)
+	local mp2file=$tmpdir/${mp1file#$NFS_CLIMNTPT}
+	local ver
+
+	ver=$(version_code $(lustre_build_version_node $LUSTRE_CLIENT_NFSSRV))
+	(( $ver >= $(version_code v2_16_50-154-gfb3c3d2052) )) ||
+		skip "Need lustre client version of nfs server >= 2.16.51"
+
+	mount -v -t nfs -o nfsvers=$NFSVERSION,async \
+		$LUSTRE_CLIENT_NFSSRV:$NFS_SRVMNTPT $tmpdir ||\
+		error "Nfs 2nd mount($tmpdir) error"
+
+	local owc=$(do_node $LUSTRE_CLIENT_NFSSRV \
+		"dmesg | grep -v 'DEBUG MARKER:' | grep -c 'refcount_t: underflow; use-after-free'")
+	(( $owc > 0 )) && do_node $LUSTRE_CLIENT_NFSSRV \
+		'echo 1 > /sys/kernel/debug/clear_warn_once'
+
+	touch $mp1file
+	local i=0
+	for ((i=1; i<=10; i++)) do
+		[ $i -eq 10 ] && echo "P100"
+		echo "R$((i * 2)),10"
+		echo "W$((i * 100)),100"
+		sleep 1
+	done | flocks_test 6 $mp1file &
+	local pid=$!
+	for ((i = 0; i < 5; )); do
+		echo "T0" | flocks_test 6 $mp2file |\
+			grep 'R2,26;W100,900.' && i=$((i + 1))
+		local nwc=$(do_node $LUSTRE_CLIENT_NFSSRV \
+			"dmesg | grep -v 'DEBUG MARKER:' | grep -c 'refcount_t: underflow; use-after-free'")
+		(( $owc >= $nwc )) || {
+			do_node $LUSTRE_CLIENT_NFSSRV \
+				"dmesg | grep -1 'refcount_t: underflow; use-after-free'"
+			error "Failed (owc:$owc < nwc:$nwc)"
+		}
+		sleep 1
+	done
+	kill -9 $pid
+	wait
+
+	umount $tmpdir
+	rm -rf $tmpdir || true
+}
+run_test 2 "fcntl getlk on nfs shouldn't cause refcount underflow"
 
 test_compilebench() {
 	if [[ "$TESTSUITE" =~ "parallel-scale-nfs" ]]; then

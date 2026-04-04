@@ -1,24 +1,5 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License version 2 for more details.  A copy is
- * included in the COPYING file that accompanied this code.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2011, 2012 Commissariat a l'energie atomique et aux energies
  *                          alternatives
@@ -26,9 +7,8 @@
  *
  * Copyright (c) 2012, 2015, Intel Corporation.
  */
+
 /*
- * lustre/mdt/mdt_hsm.c
- *
  * Lustre Metadata Target (mdt) request handler
  *
  * Author: Aurelien Degremont <aurelien.degremont@cea.fr>
@@ -54,7 +34,14 @@
 #define MDT_HSM_FREE(ptr, size) OBD_FREE_LARGE((ptr), (size))
 
 /**
- * Update on-disk HSM attributes.
+ * mdt_hsm_attr_set() - Update on-disk HSM attributes.
+ * @info: MDT  thread info
+ * @obj: MDT object
+ * @mh: memory structure for hsm attributes
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_attr_set(struct mdt_thread_info *info, struct mdt_object *obj,
 		     const struct md_hsm *mh)
@@ -92,6 +79,8 @@ static inline bool mdt_hsm_is_admin(struct mdt_thread_info *info)
 		return false;
 
 	is_admin = cap_raised(mdt_ucred(info)->uc_cap, CAP_SYS_ADMIN);
+	if (!mdt_ucred(info)->uc_rbac_hsm_ops)
+		is_admin = false;
 
 	mdt_exit_ucred(info);
 
@@ -99,12 +88,19 @@ static inline bool mdt_hsm_is_admin(struct mdt_thread_info *info)
 }
 
 /**
+ * mdt_hsm_progress() - Extract info coming from copytool
+ * @tsi: session related info
+ *
  * Extract information coming from a copytool and asks coordinator to update
  * a request status depending on the update content.
  *
  * Copytools could use this to report failure in their process.
  *
  * This is HSM_PROGRESS RPC handler.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_progress(struct tgt_session_info *tsi)
 {
@@ -215,12 +211,19 @@ out:
 }
 
 /**
+ * mdt_hsm_state_get() - Retrieve the current HSM flags
+ * @tsi: session related info
+ *
  * Retrieve the current HSM flags, archive id and undergoing HSM requests for
  * the fid provided in RPC body.
  *
  * Current requests are read from coordinator states.
  *
  * This is MDS_HSM_STATE_GET RPC handler.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_state_get(struct tgt_session_info *tsi)
 {
@@ -270,13 +273,18 @@ out:
 }
 
 /**
- * Change HSM state and archive number of a file.
+ * mdt_hsm_state_set() - Change HSM state and archive number of a file.
+ * @tsi: session related info
  *
  * Archive number is changed iif the value is not 0.
  * The new flagset that will be computed should result in a coherent state.
  * This function checks that flags are compatible.
  *
  * This is MDS_HSM_STATE_SET RPC handler.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_state_set(struct tgt_session_info *tsi)
 {
@@ -298,6 +306,8 @@ int mdt_hsm_state_set(struct tgt_session_info *tsi)
 	rc = mdt_init_ucred(info, (struct mdt_body *)info->mti_body);
 	if (rc < 0)
 		GOTO(out, rc = err_serious(rc));
+	if (!mdt_ucred(info)->uc_rbac_hsm_ops)
+		GOTO(out_ucred, rc = -EACCES);
 
 	lh = &info->mti_lh[MDT_LH_CHILD];
 	rc = mdt_object_lock(info, obj, lh, MDS_INODELOCK_LOOKUP |
@@ -393,9 +403,12 @@ out:
 }
 
 /**
- * Set the data version in the HSM xattr of a file.
+ * mdt_hsm_data_version() - Set the data version in the HSM xattr of a file.
+ * @tsi: session related info
  *
- * This is MDS_HSM_DATA_VERSION RPC handler.
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_data_version(struct tgt_session_info *tsi)
 {
@@ -456,10 +469,17 @@ out:
 }
 
 /**
- * Retrieve undergoing HSM requests for the fid provided in RPC body.
+ * mdt_hsm_action() - Retrieve undergoing HSM requests for the fid provided
+ *                    in RPC body.
+ * @tsi: session related info
+ *
  * Current requests are read from coordinator states.
  *
  * This is MDS_HSM_ACTION RPC handler.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_action(struct tgt_session_info *tsi)
 {
@@ -553,12 +573,18 @@ static bool is_fid_in_hal(struct hsm_action_list *hal, const struct lu_fid *fid)
 }
 
 /**
- * Process the HSM actions described in a struct hsm_user_request.
+ * mdt_hsm_request() - Process the HSM actions described in a
+ *                     struct hsm_user_request.
+ * @tsi: session related info
  *
  * The action described in hur will be send to coordinator to be saved and
  * processed later or either handled directly if hur.hur_action is HUA_RELEASE.
  *
  * This is MDS_HSM_REQUEST RPC handler.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_hsm_request(struct tgt_session_info *tsi)
 {
@@ -600,6 +626,9 @@ int mdt_hsm_request(struct tgt_session_info *tsi)
 	rc = mdt_init_ucred(info, (struct mdt_body *)info->mti_body);
 	if (rc)
 		GOTO(out, rc);
+
+	if (!mdt_ucred(info)->uc_rbac_hsm_ops)
+		GOTO(out_ucred, rc = -EACCES);
 
 	switch (hr->hr_action) {
 	/* code to be removed in hsm1_merge and final patch */

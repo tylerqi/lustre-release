@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1
+// SPDX-License-Identifier: LGPL-2.1+
 
 /*
  * Copyright (c) 2021  UT-Battelle, LLC
@@ -1168,6 +1168,7 @@ static int yaml_netlink_read_handler(void *arg, unsigned char *buffer,
 		data->read += size;
 	} else if (data->complete) {
 		free(data->start);
+		data->start = NULL;
 	}
 	*size_read = size;
 	return 1;
@@ -1387,7 +1388,7 @@ static int yaml_fill_scalar_data(struct nl_msg *msg,
 	}
 
 	if (fmt & LNKF_MAPPING && sep) {
-		char *end = strchr(sep, '\n');
+		char *end;
 		int len;
 
 		/* restore ':' */
@@ -1396,6 +1397,7 @@ static int yaml_fill_scalar_data(struct nl_msg *msg,
 		while (isspace(*sep))
 			++sep;
 
+		end = strchr(sep, '\n');
 		len = end ? end - sep : strlen(sep);
 		if (len <= 0)
 			goto nla_put_failure;
@@ -1877,6 +1879,22 @@ yaml_emitter_set_streaming_output_netlink(yaml_emitter_t *sender,
 	return true;
 }
 
+/**
+ * yaml_emitter_set_output_netlink() - Set output to Netlink socket and not any
+ * YAML document. This is wrapper to yaml_emitter_set_streaming_output_netlink()
+ * @sender: emitter object
+ * @nl: netlink socket
+ * @family: name of socket (lnet)
+ * @version: version number
+ * @cmd: command identifier
+ * @flags: netlink flags (NLM_F_* under liblnetconfig.h)
+ *
+ * Note: Emitter object setup with this function should always call
+ * yaml_emitter_cleanup() and not yaml_emitter_delete(). Otherwise it will
+ * result in memory leak
+ *
+ * Return TRUE on success and FALSE on failure
+ */
 YAML_DECLARE(int)
 yaml_emitter_set_output_netlink(yaml_emitter_t *sender, struct nl_sock *nl,
 				char *family, int version, int cmd, int flags)
@@ -1901,6 +1919,50 @@ void yaml_emitter_log_error(yaml_emitter_t *emitter, FILE *log)
 		fprintf(log, "Emitter error: %s\n", emitter->problem);
 	default:
 		break;
+	}
+}
+
+/*
+ * yaml_emitter_cleanup - Cleanup request & all memory held by request
+ */
+void yaml_emitter_cleanup(yaml_emitter_t *request)
+{
+	struct yaml_netlink_output *out = NULL;
+
+	if (!request || !request->write_handler_data)
+		return;
+
+	out = request->write_handler_data;
+
+	/* first destroy emitter */
+	yaml_emitter_delete(request);
+
+	if (out)
+		free(out);
+}
+
+/*
+ * yaml_parser_cleanup - Cleanup parser & all memory held by parser
+ */
+void yaml_parser_cleanup(yaml_parser_t *reply)
+{
+	struct yaml_netlink_input *input = NULL;
+
+	if (!reply || !reply->read_handler_data)
+		return;
+
+	input = reply->read_handler_data;
+
+	/* delete parser first */
+	yaml_parser_delete(reply);
+
+	if (input) {
+		if (input->start) {
+			free(input->start);
+			input->start = NULL;
+		}
+
+		free(input);
 	}
 }
 

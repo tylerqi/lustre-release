@@ -1,26 +1,9 @@
+/* SPDX-License-Identifier: LGPL-2.1-or-later */
 /*
- * LGPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
  * (C) Copyright 2012 Commissariat a l'energie atomique et aux energies
  *     alternatives
  *
  * Copyright (c) 2016, 2017, Intel Corporation.
- *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 or (at your discretion) any later version.
- * (LGPL) version 2.1 accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
- *
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * LGPL HEADER END
  */
 /*
  *
@@ -34,6 +17,26 @@
 #ifndef STRINGIFY
 #define STRINGIFY(a) #a
 #endif
+#include <sys/stat.h>
+#include <regex.h>
+
+struct lctl_param_file {
+	char			 *lpf_val;
+	char			**lpf_val_list;
+	char			 *lpf_name;
+	unsigned int		  lpf_val_c;
+	mode_t			  lpf_mode;
+	unsigned int		  lpf_is_symlink:1;
+};
+
+struct lctl_param_dir {
+	char			 *lpd_path;
+	struct lctl_param_dir	**lpd_child_list;
+	struct lctl_param_file	**lpd_param_list;
+	unsigned int		  lpd_child_c;
+	unsigned int		  lpd_param_c;
+	unsigned int		  lpd_max_param_c;
+};
 
 struct param_opts {
 	unsigned int po_only_name:1;
@@ -49,7 +52,17 @@ struct param_opts {
 	unsigned int po_detail:1;
 	unsigned int po_header:1;
 	unsigned int po_follow_symlinks:1;
+	unsigned int po_tunable:1;
+	unsigned int po_merge:1;
+	unsigned int po_dshbak:1;
+	unsigned int po_color:1;
+	unsigned int po_client:1;
+	unsigned int po_module:1;
 	unsigned int po_parallel_threads;
+	unsigned int po_permissions;
+	char *po_fsname;
+	struct lctl_param_dir *po_root_dir;
+	regex_t	    *po_find_pattern;
 };
 
 #ifdef HAVE_LIBPTHREAD

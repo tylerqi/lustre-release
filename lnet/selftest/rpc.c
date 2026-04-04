@@ -46,7 +46,7 @@ enum rpc_counter_64 {
 
 static struct smoketest_rpc {
 	spinlock_t	 rpc_glock;	/* global lock */
-	struct srpc_service	*rpc_services[SRPC_SERVICE_MAX_ID + 1];
+	struct srpc_service	*rpc_services[SRPC_SERVICE_MAX_ID];
 	lnet_handler_t		 rpc_lnet_handler;/* _the_ LNet event handler */
 	enum srpc_state		 rpc_state;
 	atomic_t		 rpc_counters32[SRPC_COUNTER32_MAX];
@@ -332,9 +332,9 @@ srpc_service_init(struct srpc_service *svc)
 int
 srpc_add_service(struct srpc_service *sv)
 {
-	int id = sv->sv_id;
+	enum srpc_service_type id = sv->sv_id;
 
-	LASSERT(0 <= id && id <= SRPC_SERVICE_MAX_ID);
+	LASSERTF(0 <= id && id < SRPC_SERVICE_MAX_ID, "id = %i\n", id);
 
 	if (srpc_service_init(sv) != 0)
 		return -ENOMEM;
@@ -381,8 +381,15 @@ srpc_post_passive_rdma(int portal, int local, __u64 matchbits, void *buf,
 		       int len, int options, struct lnet_process_id peer4,
 		       struct lnet_handle_md *mdh, struct srpc_event *ev)
 {
+	struct lnet_md md = {
+		.umd_user_ptr  = ev,
+		.umd_start     = buf,
+		.umd_length    = len,
+		.umd_handler   = srpc_data.rpc_lnet_handler,
+		.umd_threshold = 1,
+		.umd_options   = options,
+	};
 	int rc;
-	struct lnet_md md;
 	struct lnet_me *me;
 	struct lnet_processid peer;
 
@@ -397,13 +404,6 @@ srpc_post_passive_rdma(int portal, int local, __u64 matchbits, void *buf,
 		LASSERT(rc == -ENOMEM);
 		return -ENOMEM;
 	}
-
-	md.threshold = 1;
-	md.user_ptr  = ev;
-	md.start     = buf;
-	md.length    = len;
-	md.options   = options;
-	md.handler   = srpc_data.rpc_lnet_handler;
 
 	rc = LNetMDAttach(me, &md, LNET_UNLINK, mdh);
 	if (rc != 0) {
@@ -425,20 +425,20 @@ srpc_post_active_rdma(int portal, __u64 matchbits, void *buf, int len,
 		      lnet_nid_t self4, struct lnet_handle_md *mdh,
 		      struct srpc_event *ev)
 {
+	struct lnet_md md = {
+		.umd_user_ptr  = ev,
+		.umd_start     = buf,
+		.umd_length    = len,
+		.umd_handler   = srpc_data.rpc_lnet_handler,
+		.umd_threshold = ((options & LNET_MD_OP_GET) != 0) ? 2 : 1,
+		.umd_options   = options & ~(LNET_MD_OP_PUT | LNET_MD_OP_GET),
+	};
 	int rc;
-	struct lnet_md md;
 	struct lnet_nid self;
 	struct lnet_processid peer;
 
 	lnet_nid4_to_nid(self4, &self);
 	lnet_pid4_to_pid(peer4, &peer);
-
-	md.user_ptr  = ev;
-	md.start     = buf;
-	md.length    = len;
-	md.handler   = srpc_data.rpc_lnet_handler;
-	md.threshold = ((options & LNET_MD_OP_GET) != 0) ? 2 : 1;
-	md.options   = options & ~(LNET_MD_OP_PUT | LNET_MD_OP_GET);
 
 	rc = LNetMDBind(&md, LNET_UNLINK, mdh);
 	if (rc != 0) {
@@ -1219,8 +1219,6 @@ srpc_send_rpc(struct swi_workitem *wi)
 	spin_unlock(&rpc->crpc_lock);
 
 	switch (wi->swi_state) {
-	default:
-		LBUG();
 	case SWI_STATE_NEWBORN:
 		LASSERT(!srpc_event_pending(rpc));
 
@@ -1304,6 +1302,8 @@ srpc_send_rpc(struct swi_workitem *wi)
 		wi->swi_state = SWI_STATE_DONE;
 		srpc_client_rpc_done(rpc, rc);
 		return;
+	default:
+		LASSERTF(0, "swi_state bad %u\n", wi->swi_state);
 	}
 
 	if (rc != 0) {
@@ -1675,7 +1675,7 @@ srpc_shutdown (void)
 	case SRPC_STATE_RUNNING:
 		spin_lock(&srpc_data.rpc_glock);
 
-		for (i = 0; i <= SRPC_SERVICE_MAX_ID; i++) {
+		for (i = 0; i < SRPC_SERVICE_MAX_ID; i++) {
 			struct srpc_service *sv = srpc_data.rpc_services[i];
 
 			LASSERTF(sv == NULL,

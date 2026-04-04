@@ -185,17 +185,6 @@ static uint64_t gen_init_tag_bits(struct kfilnd_transaction *tn)
 		tn->tn_response_mr_key;
 }
 
-static bool tn_session_key_is_valid(struct kfilnd_transaction *tn)
-{
-	if (tn->tn_response_session_key == tn->tn_kp->kp_remote_session_key)
-		return true;
-
-	KFILND_TN_DEBUG(tn, "Detected session key mismatch %u != %u\n",
-			tn->tn_response_session_key,
-			tn->tn_kp->kp_remote_session_key);
-	return false;
-}
-
 /**
  * kfilnd_ep_post_tagged_send() - Post a tagged send operation.
  * @ep: KFI LND endpoint used to post the tagged receivce operation.
@@ -223,9 +212,6 @@ int kfilnd_ep_post_tagged_send(struct kfilnd_ep *ep,
 	if (ep->end_dev->kfd_state != KFILND_STATE_INITIALIZED)
 		return -EINVAL;
 
-	if (!tn_session_key_is_valid(tn))
-		return -EINVAL;
-
 	/* Progress transaction to failure if send should fail. */
 	if (CFS_FAIL_CHECK(CFS_KFI_FAIL_TAGGED_SEND_EVENT)) {
 		rc = kfilnd_ep_gen_fake_err(ep, &fake_error);
@@ -246,15 +232,18 @@ int kfilnd_ep_post_tagged_send(struct kfilnd_ep *ep,
 	case 0:
 	case -EAGAIN:
 		KFILND_EP_DEBUG(ep,
-				"TN %p: %s tagged send of with tag 0x%x to peer 0x%llx: rc=%d",
+				"TN %p: %s tagged send of with tag 0x%x to peer %s(0x%llx): rc=%d",
 				tn, rc ? "Failed to post" : "Posted",
-				tn->tn_response_mr_key, tn->tn_target_addr, rc);
+				tn->tn_response_mr_key,
+				libcfs_nid2str(tn->tn_kp->kp_nid),
+				tn->tn_target_addr, rc);
 		break;
 
 	default:
 		KFILND_EP_ERROR(ep,
-				"TN %p: Failed to post tagged send with tag 0x%x to peer 0x%llx: rc=%d",
+				"TN %p: Failed to post tagged send with tag 0x%x to peer %s(0x%llx): rc=%d",
 				tn, tn->tn_response_mr_key,
+				libcfs_nid2str(tn->tn_kp->kp_nid),
 				tn->tn_target_addr, rc);
 	}
 
@@ -342,24 +331,30 @@ int kfilnd_ep_post_tagged_recv(struct kfilnd_ep *ep,
 		return -EAGAIN;
 	}
 
+#ifdef HAVE_KFI_SGL
+	msg.type = KFI_SGL,
+	msg.msg_sgl = tn->tn_sgt.sgl,
+	msg.iov_count = tn->tn_sgt.nents,
+#else
 	msg.iov_count = tn->tn_num_iovec;
 	msg.type = KFI_BVEC;
 	msg.msg_biov = tn->tn_kiov;
+#endif
 
 	rc = kfi_trecvmsg(ep->end_rx, &msg, KFI_COMPLETION);
 	switch (rc) {
 	case 0:
 	case -EAGAIN:
 		KFILND_EP_DEBUG(ep,
-				"TN %p: %s tagged recv of %u bytes (%u frags) with tag 0x%llx: rc=%d",
+				"TN %p: %s tagged recv of %u bytes (%lu frags) with tag 0x%llx: rc=%d",
 				tn, rc ? "Failed to post" : "Posted",
-				tn->tn_nob, tn->tn_num_iovec, msg.tag, rc);
+				tn->tn_nob, msg.iov_count, msg.tag, rc);
 		break;
 
 	default:
 		KFILND_EP_ERROR(ep,
-				"TN %p: Failed to post tagged recv of %u bytes (%u frags) with tag 0x%llx: rc=%d",
-				tn, tn->tn_nob, tn->tn_num_iovec, msg.tag, rc);
+				"TN %p: Failed to post tagged recv of %u bytes (%lu frags) with tag 0x%llx: rc=%d",
+				tn, tn->tn_nob, msg.iov_count, msg.tag, rc);
 	}
 
 	return rc;
@@ -416,15 +411,17 @@ int kfilnd_ep_post_send(struct kfilnd_ep *ep, struct kfilnd_transaction *tn)
 	case 0:
 	case -EAGAIN:
 		KFILND_EP_DEBUG(ep,
-				"TN %p: %s send of %lu bytes to peer 0x%llx: rc=%d",
+				"TN %p: %s send of %lu bytes to peer %s(0x%llx): rc=%d",
 				tn, rc ? "Failed to post" : "Posted",
-				len, tn->tn_target_addr, rc);
+				len, libcfs_nid2str(tn->tn_kp->kp_nid),
+				tn->tn_target_addr, rc);
 		break;
 
 	default:
 		KFILND_EP_ERROR(ep,
-				"TN %p: Failed to post send of %lu bytes to peer 0x%llx: rc=%d",
-				tn, len, tn->tn_target_addr, rc);
+				"TN %p: Failed to post send of %lu bytes to peer %s(0x%llx): rc=%d",
+				tn, len, libcfs_nid2str(tn->tn_kp->kp_nid),
+				tn->tn_target_addr, rc);
 	}
 
 	return rc;
@@ -470,9 +467,6 @@ int kfilnd_ep_post_write(struct kfilnd_ep *ep, struct kfilnd_transaction *tn)
 	if (ep->end_dev->kfd_state != KFILND_STATE_INITIALIZED)
 		return -EINVAL;
 
-	if (!tn_session_key_is_valid(tn))
-		return -EINVAL;
-
 	/* Progress transaction to failure if read should fail. */
 	if (CFS_FAIL_CHECK(CFS_KFI_FAIL_WRITE_EVENT)) {
 		rc = kfilnd_ep_gen_fake_err(ep, &fake_error);
@@ -484,26 +478,32 @@ int kfilnd_ep_post_write(struct kfilnd_ep *ep, struct kfilnd_transaction *tn)
 		return -EAGAIN;
 	}
 
+#ifdef HAVE_KFI_SGL
+	rma.type = KFI_SGL;
+	rma.msg_sgl = tn->tn_sgt.sgl;
+	rma.iov_count = tn->tn_sgt.nents;
+#else
 	rma.iov_count = tn->tn_num_iovec;
 	rma.type = KFI_BVEC;
 	rma.msg_biov = tn->tn_kiov;
+#endif
 
 	rc = kfi_writemsg(ep->end_tx, &rma, KFI_TAGGED | KFI_COMPLETION);
 	switch (rc) {
 	case 0:
 	case -EAGAIN:
 		KFILND_EP_DEBUG(ep,
-				"TN ID %p: %s write of %u bytes in %u frags kp %s(%p) rma_iov.key %llu: rc=%d",
+				"TN ID %p: %s write of %u bytes in %lu frags kp %s(%p) rma_iov.key %llu: rc=%d",
 				tn, rc ? "Failed to post" : "Posted",
-				tn->tn_nob, tn->tn_num_iovec,
+				tn->tn_nob, rma.iov_count,
 				libcfs_nid2str(tn->tn_kp->kp_nid), tn->tn_kp,
 				rma_iov.key, rc);
 		break;
 
 	default:
 		KFILND_EP_ERROR(ep,
-				"TN %p: Failed to post write of %u bytes in %u frags kp %s(%p) rma_iov.key %llu: rc=%d",
-				tn, tn->tn_nob, tn->tn_num_iovec,
+				"TN %p: Failed to post write of %u bytes in %lu frags kp %s(%p) rma_iov.key %llu: rc=%d",
+				tn, tn->tn_nob, rma.iov_count,
 				libcfs_nid2str(tn->tn_kp->kp_nid), tn->tn_kp,
 				rma_iov.key, rc);
 	}
@@ -550,9 +550,6 @@ int kfilnd_ep_post_read(struct kfilnd_ep *ep, struct kfilnd_transaction *tn)
 	if (ep->end_dev->kfd_state != KFILND_STATE_INITIALIZED)
 		return -EINVAL;
 
-	if (!tn_session_key_is_valid(tn))
-		return -EINVAL;
-
 	/* Progress transaction to failure if read should fail. */
 	if (CFS_FAIL_CHECK(CFS_KFI_FAIL_READ_EVENT)) {
 		rc = kfilnd_ep_gen_fake_err(ep, &fake_error);
@@ -564,26 +561,32 @@ int kfilnd_ep_post_read(struct kfilnd_ep *ep, struct kfilnd_transaction *tn)
 		return -EAGAIN;
 	}
 
+#ifdef HAVE_KFI_SGL
+	rma.type = KFI_SGL;
+	rma.msg_sgl = tn->tn_sgt.sgl;
+	rma.iov_count = tn->tn_sgt.nents;
+#else
 	rma.iov_count = tn->tn_num_iovec;
 	rma.type = KFI_BVEC;
 	rma.msg_biov = tn->tn_kiov;
+#endif
 
 	rc = kfi_readmsg(ep->end_tx, &rma, KFI_TAGGED | KFI_COMPLETION);
 	switch (rc) {
 	case 0:
 	case -EAGAIN:
 		KFILND_EP_DEBUG(ep,
-				"TN %p: %s read of %u bytes in %u frags kp %s(%p) rma_iov.key %llu: rc=%d",
+				"TN %p: %s read of %u bytes in %lu frags kp %s(%p) rma_iov.key %llu: rc=%d",
 				tn, rc ? "Failed to post" : "Posted",
-				tn->tn_nob, tn->tn_num_iovec,
+				tn->tn_nob, rma.iov_count,
 				libcfs_nid2str(tn->tn_kp->kp_nid), tn->tn_kp,
 				rma_iov.key, rc);
 		break;
 
 	default:
 		KFILND_EP_ERROR(ep,
-				"TN %p: Failed to post read of %u bytes in %u frags kp %s(%p) rma_iov.key %llu: rc=%d",
-				tn, tn->tn_nob, tn->tn_num_iovec,
+				"TN %p: Failed to post read of %u bytes in %lu frags kp %s(%p) rma_iov.key %llu: rc=%d",
+				tn, tn->tn_nob, rma.iov_count,
 				libcfs_nid2str(tn->tn_kp->kp_nid), tn->tn_kp,
 				rma_iov.key, rc);
 	}
@@ -959,7 +962,7 @@ err:
 
 int kfilnd_ep_get_key(struct kfilnd_ep *ep)
 {
-	return ida_simple_get(&ep->keys, 1, KFILND_EP_KEY_MAX, GFP_KERNEL);
+	return ida_simple_get(&ep->keys, 1, KFILND_EP_KEY_MAX, GFP_NOFS);
 }
 
 void kfilnd_ep_put_key(struct kfilnd_ep *ep, unsigned int key)

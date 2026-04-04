@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -161,11 +141,17 @@ static int receive_from(int fd, void *buf, size_t size)
 	return 0;
 }
 
-static int gss_do_ioctl(struct lgssd_ioctl_param *param)
+static int gss_do_ioctl(struct lgssd_ioctl_param *param, __s64 *status)
 {
 	int fd, ret;
 	glob_t path;
 	int rc;
+
+	/* switch to root in order to proceed to ioctls */
+	if (param->uid && switch_identity(0)) {
+		rc = -EACCES;
+		goto out_params;
+	}
 
 	rc = cfs_get_param_paths(&path, "sptlrpc/gss/init_channel");
 	if (rc != 0)
@@ -182,6 +168,8 @@ static int gss_do_ioctl(struct lgssd_ioctl_param *param)
 
 	logmsg(LL_TRACE, "to down-write\n");
 
+	*status = 0;
+	param->status = status;
 	ret = write(fd, param, sizeof(*param));
 	close(fd);
 	if (ret != sizeof(*param)) {
@@ -191,6 +179,11 @@ static int gss_do_ioctl(struct lgssd_ioctl_param *param)
 
 out_params:
 	cfs_free_param_data(&path);
+
+	/* switch back to user */
+	if (param->uid && switch_identity(param->uid))
+		rc = -EACCES;
+
 	return rc;
 }
 
@@ -204,6 +197,7 @@ static int do_nego_rpc(struct lgss_nego_data *lnd,
 	int res;
 	char outbuf[8192] = { 0 };
 	unsigned int *p;
+	__s64 status;
 	int rc = 0;
 
 	logmsg(LL_TRACE, "start negotiation rpc\n");
@@ -229,7 +223,7 @@ static int do_nego_rpc(struct lgss_nego_data *lnd,
 		param.reply_buf_size = sizeof(outbuf);
 		param.reply_buf = outbuf;
 
-		rc = gss_do_ioctl(&param);
+		rc = gss_do_ioctl(&param, &status);
 		if (rc != 0)
 			return rc;
 	} else {
@@ -247,12 +241,11 @@ static int do_nego_rpc(struct lgss_nego_data *lnd,
 			return rc;
 
 		/* read ioctl status from parent */
-		rc = receive_from(reply_fd[0], &param.status,
-				  sizeof(param.status));
+		rc = receive_from(reply_fd[0], &status, sizeof(status));
 		if (rc != 0)
 			return rc;
 
-		if (param.status == 0) {
+		if (status == 0) {
 			/* read reply buffer from parent */
 			rc = receive_from(reply_fd[0], outbuf, sizeof(outbuf));
 			if (rc != 0)
@@ -261,10 +254,10 @@ static int do_nego_rpc(struct lgss_nego_data *lnd,
 	}
 
 	logmsg(LL_TRACE, "do_nego_rpc: to parse reply\n");
-	if (param.status) {
+	if (status) {
 		logmsg(LL_ERR, "status: %ld (%s)\n",
-		       (long int)param.status, strerror((int)(-param.status)));
-		return param.status;
+		       (long int)status, strerror((int)(-status)));
+		return status;
 	}
 
 	p = (unsigned int *)outbuf;
@@ -554,35 +547,6 @@ static void lgssc_fini_nego_data(struct lgss_nego_data *lnd)
         }
 }
 
-static int fork_and_switch_id(int uid, pid_t *child)
-{
-	int status, rc = 0;
-
-	*child = fork();
-	if (*child == -1) {
-		logmsg(LL_ERR, "cannot fork child for user %u: %s\n",
-		       uid, strerror(errno));
-		rc = errno;
-	} else if (*child == 0) {
-		/* switch identity */
-		rc = switch_identity(uid);
-		if (rc)
-			rc = errno;
-	} else {
-		if (wait(&status) < 0) {
-			rc = errno;
-			logmsg(LL_ERR, "child %d failed: %s\n",
-			       *child, strerror(rc));
-		} else {
-			rc = WEXITSTATUS(status);
-			if (rc)
-				logmsg(LL_ERR, "child %d terminated with %d\n",
-				       *child, rc);
-		}
-	}
-	return rc;
-}
-
 static int do_keyctl_update(char *reason, key_serial_t keyid,
 			    const void *payload, size_t plen)
 {
@@ -605,8 +569,7 @@ static int do_keyctl_update(char *reason, key_serial_t keyid,
 static int error_kernel_key(key_serial_t keyid, int rpc_error, int gss_error,
 			    uid_t uid)
 {
-	key_serial_t inst_keyring = KEY_SPEC_SESSION_KEYRING;
-	pid_t child = 1;
+	key_serial_t inst_keyring;
 	int seqwin = 0;
 	char *p, *end;
 	char buf[32];
@@ -614,16 +577,10 @@ static int error_kernel_key(key_serial_t keyid, int rpc_error, int gss_error,
 
 	logmsg(LL_TRACE, "revoking kernel key %08x\n", keyid);
 
-	/* Only possessor and uid can update the key. So for a user key that is
-	 * linked to the user keyring, switch uid/gid in a subprocess to not
-	 * change identity in main process.
-	 */
-	if (uid) {
-		rc = fork_and_switch_id(uid, &child);
-		if (rc || child)
-			goto out;
+	if (uid)
 		inst_keyring = KEY_SPEC_USER_KEYRING;
-	}
+	else
+		inst_keyring = KEY_SPEC_SESSION_KEYRING;
 
 	p = buf;
 	end = buf + sizeof(buf);
@@ -645,10 +602,6 @@ static int error_kernel_key(key_serial_t keyid, int rpc_error, int gss_error,
 		       keyid, inst_keyring);
 	}
 
-out:
-	if (child == 0)
-		/* job done for child */
-		exit(rc);
 	return rc;
 }
 
@@ -658,21 +611,9 @@ static int update_kernel_key(key_serial_t keyid,
 {
 	char *buf = NULL, *p = NULL, *end = NULL;
 	unsigned int buf_size = 0;
-	pid_t child = 1;
-	int uid, rc = 0;
+	int rc = 0;
 
 	logmsg(LL_TRACE, "updating kernel key %08x\n", keyid);
-
-	/* Only possessor and uid can update the key. So for a user key that is
-	 * linked to the user keyring, switch uid/gid in a subprocess to not
-	 * change identity in main process.
-	 */
-	uid = lnd->lnd_uid;
-	if (uid) {
-		rc = fork_and_switch_id(uid, &child);
-		if (rc || child)
-			goto out;
-	}
 
 	buf_size = sizeof(lnd->lnd_seq_win) +
 		sizeof(lnd->lnd_rmt_ctx.length) + lnd->lnd_rmt_ctx.length +
@@ -700,9 +641,6 @@ static int update_kernel_key(key_serial_t keyid,
 
 out:
 	free(buf);
-	if (child == 0)
-		/* job done for child */
-		exit(rc);
 	return rc;
 }
 
@@ -716,8 +654,8 @@ static int lgssc_kr_negotiate_krb(key_serial_t keyid, struct lgss_cred *cred,
 	bool redo = true;
 
 	if (lgss_get_service_str(&g_service, kup->kup_svc, kup->kup_nid)) {
-		logmsg(LL_ERR, "key %08x: failed to construct service "
-		       "string\n", keyid);
+		logmsg(LL_ERR, "key %08x: failed to construct service string\n",
+		       keyid);
 		error_kernel_key(keyid, -EACCES, 0, cred->lc_uid);
 		goto out_cred;
 	}
@@ -731,8 +669,9 @@ static int lgssc_kr_negotiate_krb(key_serial_t keyid, struct lgss_cred *cred,
 retry_nego:
 	memset(&lnd, 0, sizeof(lnd));
 	if (lgssc_init_nego_data(&lnd, kup, cred->lc_mech->lmt_mech_n)) {
-		logmsg(LL_ERR, "key %08x: failed to initialize "
-		       "negotiation data\n", keyid);
+		logmsg(LL_ERR,
+		       "key %08x: failed to initialize negotiation data\n",
+		       keyid);
 		error_kernel_key(keyid, lnd.lnd_rpc_err, lnd.lnd_gss_err,
 				 cred->lc_uid);
 		goto out_cred;
@@ -787,8 +726,8 @@ static int lgssc_kr_negotiate_manual(key_serial_t keyid, struct lgss_cred *cred,
 
 	rc = lgss_get_service_str(&g_service, kup->kup_svc, kup->kup_nid);
 	if (rc) {
-		logmsg(LL_ERR, "key %08x: failed to construct service "
-		       "string\n", keyid);
+		logmsg(LL_ERR, "key %08x: failed to construct service string\n",
+		       keyid);
 		error_kernel_key(keyid, -EACCES, 0, 0);
 		goto out_cred;
 	}
@@ -804,8 +743,9 @@ retry:
 	memset(&lnd, 0, sizeof(lnd));
 	rc = lgssc_init_nego_data(&lnd, kup, cred->lc_mech->lmt_mech_n);
 	if (rc) {
-		logmsg(LL_ERR, "key %08x: failed to initialize "
-		       "negotiation data\n", keyid);
+		logmsg(LL_ERR,
+		       "key %08x: failed to initialize negotiation data\n",
+		       keyid);
 		error_kernel_key(keyid, lnd.lnd_rpc_err, lnd.lnd_gss_err, 0);
 		goto out_cred;
 	}
@@ -993,8 +933,7 @@ static int prepare_and_instantiate(struct lgss_cred *cred, key_serial_t keyid,
 {
 	key_serial_t inst_keyring;
 	bool prepared = true;
-	pid_t child = 1;
-	int rc = 0;
+	int rc;
 
 	if (lgss_prepare_cred(cred)) {
 		logmsg(LL_ERR, "key %08x: failed to prepare credentials "
@@ -1018,19 +957,13 @@ static int prepare_and_instantiate(struct lgss_cred *cred, key_serial_t keyid,
 	if (cred->lc_root_flags) {
 		inst_keyring = 0;
 	} else {
-		inst_keyring = KEY_SPEC_USER_KEYRING;
-		/* fork to not change identity in main process */
-		rc = fork_and_switch_id(uid, &child);
-		if (rc || child)
-			goto out;
-	}
-
-	/* if dealing with a user key, grant user write permission,
-	 * it will be required for key update
-	 */
-	if (child == 0) {
 		key_perm_t perm;
 
+		inst_keyring = KEY_SPEC_USER_KEYRING;
+
+		/* when dealing with a user key, grant user write permission,
+		 * it will be required for key update
+		 */
 		perm = KEY_POS_VIEW | KEY_POS_WRITE | KEY_POS_SEARCH |
 			KEY_POS_LINK | KEY_POS_SETATTR |
 			KEY_USR_VIEW | KEY_USR_WRITE;
@@ -1050,10 +983,6 @@ static int prepare_and_instantiate(struct lgss_cred *cred, key_serial_t keyid,
 		       keyid, inst_keyring);
 	}
 
-out:
-	if (child == 0)
-		/* job done for child */
-		exit(rc);
 	return prepared ? rc : 1;
 }
 
@@ -1219,6 +1148,13 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	if (!cred->lc_root_flags) {
+		/* switch to user id for creds handling */
+		rc = switch_identity(uparam.kup_uid);
+		if (rc)
+			return rc;
+	}
+
 	/*
 	 * if caller's namespace is different, fork a child and associate it
 	 * with caller's namespace to do credentials preparation
@@ -1316,6 +1252,7 @@ int main(int argc, char *argv[])
 				struct lgssd_ioctl_param param;
 				char outbuf[8192] = { 0 };
 				void *gss_token = NULL;
+				__s64 status;
 
 				/* get ioctl buffer from child */
 				rc = receive_from(req_fd[0], &param,
@@ -1341,13 +1278,13 @@ int main(int argc, char *argv[])
 				 * out credentials negotiation: as it runs in
 				 * a container, it might not be able to
 				 * perform ioctl */
-				rc = gss_do_ioctl(&param);
+				rc = gss_do_ioctl(&param, &status);
 				if (rc != 0)
 					goto out_token;
 
 				/* send ioctl status to child */
-				rc = send_to(reply_fd[1], &param.status,
-					     sizeof(param.status));
+				rc = send_to(reply_fd[1], &status,
+					     sizeof(status));
 				if (rc != 0)
 					goto out_token;
 				/* send reply buffer to child */

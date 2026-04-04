@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Run select tests by setting ONLY, or as arguments to the script.
 # Skip specific tests by setting EXCEPT.
@@ -408,7 +408,7 @@ test_0b() {
 
 	if [ $MDS1_VERSION -ge $(version_code 2.12.55) ]; then
 		# LU-11022 - remove mirror by pool name
-		local=cnt cnt=$($LFS getstripe $tf | grep archive | wc -l)
+		local cnt=$($LFS getstripe $tf | grep archive | wc -l)
 		[ "$cnt" != "1" ] && error "unexpected mirror count $cnt"
 		$LFS mirror delete --pool archive $tf || error "delete mirror"
 		cnt=$($LFS getstripe $tf | grep archive | wc -l)
@@ -1073,8 +1073,7 @@ test_21() {
 
 	# for zfs - sync OST dataset so that du below will return
 	# accurate results
-	[ "$FSTYPE" = "zfs" ] &&
-		do_nodes $(comma_list $(osts_nodes)) "$ZPOOL sync"
+	[[ "$FSTYPE" != "zfs" ]] || do_nodes $(osts_nodes) "$ZPOOL sync"
 
 	local blocks=$(du -kc $tf $tf2 | awk '/total/{print $1}')
 
@@ -1488,7 +1487,7 @@ get_file_layout_version() {
 }
 
 get_ost_layout_version() {
-	$MULTIOP $1 oXc | awk '/ostlayoutversion/{print $2}'
+	$MULTIOP $1 oXxc | awk '/ostlayoutversion/{print $2}'
 }
 
 verify_ost_layout_version() {
@@ -1742,8 +1741,7 @@ test_37()
 	# verify mirror copy, write to this mirrored file will invalidate
 	# the other two mirrors
 	echo "Verifying mirror copy .."
-
-	local osts=$(comma_list $(osts_nodes))
+	local osts=$(osts_nodes)
 
 	$LFS mirror copy -i ${mirror_array[0]} -o-1 $tf ||
 		error "mirror copy error"
@@ -1964,29 +1962,43 @@ test_41() {
 	dd if=/dev/zero of=$tf-1 bs=1M count=2 conv=notrunc ||
 		error "writing $tf-1 failed"
 
-	echo " **only resync mirror 2"
+	echo " **only resync mirror 2 (without force, should fail)"
 	verify_flr_state $tf-1 "wp"
-	$LFS mirror resync --only 2 $tf-1 ||
-		error "resync mirror 2 of $tf-1 failed"
+	$LFS mirror resync --only 2 $tf-1 >/dev/null 2>&1 && \
+		error "resync mirror 2 without --force-resync should fail"
+
+	echo " **only resync mirror 2 (with --force-resync)"
+	$LFS mirror resync --only 2 --force-resync $tf-1 ||
+		error "resync mirror 2 of $tf-1 with --force-resync failed"
+
 	verify_flr_state $tf "ro"
 
+	echo " **verify mirrors are now consistent after force resync"
+	$LFS mirror verify $tf-1 ||
+		error "mirrors should be consistent after force resync"
+
 	# resync synced mirror
-	echo " **resync mirror 2 again"
-	$LFS mirror resync --only 2 $tf-1 ||
+	echo " **resync mirror 2 again (with --force-resync)"
+	$LFS mirror resync --only 2 --force-resync $tf-1 ||
 		error "resync mirror 2 of $tf-1 failed"
-	verify_flr_state $tf "ro"
+	verify_flr_state $tf-1 "ro"
+
+	# verify should succeed now
+	echo " **verify should now succeed after resync"
+	$LFS mirror verify $tf-1 || error "verify failed after resync"
+
 	echo " **verify $tf-1 contains stale component"
-	$LFS getstripe $tf-1 | grep lcme_flags | grep stale > /dev/null ||
-		error "after writing $tf-1, it does not contain stale component"
+	$LFS getstripe $tf-1 | grep lcme_flags | grep stale > /dev/null &&
+		error "after resyncing $tf-1, it still contains stale component"
 
 	echo " **full resync $tf-1"
 	$LFS mirror resync $tf-1 || error "resync of $tf-1 failed"
-	verify_flr_state $tf "ro"
+	verify_flr_state $tf-1 "ro"
 	echo " **full resync $tf-1 again"
 	$LFS mirror resync $tf-1 || error "resync of $tf-1 failed"
 	echo " **verify $tf-1 does not contain stale component"
-	$LFS getstripe $tf | grep lcme_flags | grep stale &&
-		error "after resyncing $tf, it contains stale component"
+	$LFS getstripe $tf-1 | grep lcme_flags | grep stale &&
+		error "after resyncing $tf-1, it contains stale component"
 
 	return 0
 }
@@ -2025,9 +2037,12 @@ test_42() {
 			error "write $i failed"
 	done
 
-	# resync the mirrored files
-	$LFS mirror resync $tf-1 $tf-2 ||
-		error "resync $tf-1 $tf-2 failed"
+	# resync the mirrored files - use force resync for new behavior
+	for i in $tf-1 $tf-2; do
+		get_mirror_ids $i
+		$LFS mirror resync --force-resync --only=${mirror_array[0]} $i ||
+			error "force resync $i failed"
+	done
 
 	# verify the mirrored files
 	$mirror_cmd $tf-1 $tf-2 ||
@@ -2050,7 +2065,12 @@ test_42() {
 			error "change $tf-1 with seek=$i failed"
 	done
 
-	$LFS mirror resync $tf-1 || error "resync $tf-1 failed"
+	# Use force resync to make mirrors consistent before merge
+	get_mirror_ids $tf-1
+	$LFS mirror resync --force-resync --only=${mirror_array[0]} $tf-1 ||
+		error "force resync $tf-1 failed"
+
+	# Now extend with the modified $tf to create controlled inconsistencies
 	$LFS mirror extend --no-verify -N -f $tf $tf-1 ||
 		error "merge $tf into $tf-1 failed"
 
@@ -2081,13 +2101,14 @@ test_42() {
 
 	# verify the mirrored file
 	echo "Verify $tf-1 with stale components:"
-	$mirror_cmd -vvv $tf-1 ||
-		error "verify $tf-1 with stale components should succeed"
+	$mirror_cmd -vvv $tf-1 &&
+		error "verify $tf-1 with stale components should fail" || true
 
 	echo "Verify $tf-1 with stale components and --only option:"
-	$mirror_cmd -vvv --only ${mirror_array[1]},${mirror_array[-1]} $tf-1 ||
+	$mirror_cmd -vvv --only ${mirror_array[1]},${mirror_array[-1]} $tf-1 &&
 		error "verify $tf-1 with mirror ${mirror_array[1]} and" \
-		      "${mirror_array[-1]} should succeed"
+		      "${mirror_array[-1]} should fail when stale components exist" ||
+				true
 }
 run_test 42 "lfs mirror verify"
 
@@ -2213,17 +2234,7 @@ test_44a() {
 	# write data in [0, 3M)
 	dd if=/dev/urandom of=$tf bs=1M count=3 conv=notrunc ||
 		error "writing $tf failed"
-
 	verify_flr_state $tf "wp"
-
-	# disallow destroying the last non-stale mirror
-	! $LFS mirror delete --mirror-id 1 $tf > /dev/null 2>&1 ||
-		error "destroying mirror 1 should fail"
-
-	# synchronize all mirrors of the file
-	$LFS mirror resync $tf || error "mirror resync $tf failed"
-
-	verify_flr_state $tf "ro"
 
 	# split mirror 1
 	$LFS mirror split --mirror-id 1 -f $tf1 $tf ||
@@ -2248,14 +2259,9 @@ test_44a() {
 	$LFS setstripe --comp-set -I 0x30008 --comp-flags=stale $tf ||
 		error "setting stale flag on component 0x30008 failed"
 
-	# disallow destroying the last non-stale mirror
-	! $LFS mirror split --mirror-id 4 -d $tf > /dev/null 2>&1 ||
-		error "destroying mirror 4 should fail"
-
-	$LFS mirror resync $tf || error "resynchronizing $tf failed"
-
-	$LFS mirror split --mirror-id 3 -d $tf ||
-		error "destroying mirror 3 failed"
+	# allow destroying the last non-stale mirror
+	$LFS mirror split --mirror-id 4 -d $tf > /dev/null 2>&1 ||
+		error "destroying mirror 4 failed"
 	verify_mirror_count $tf 1
 
 	# verify splitted file contains the same content as the orig file does
@@ -2301,16 +2307,17 @@ test_44b() {
 
 	$LFS getstripe $tf
 
-	# split the updated mirror, should fail
-	echo "split mirror_id ${mirror_ids[$i]} id ${ids[$i]}, should fail"
-	$LFS mirror split --mirror-id=${mirror_ids[$i]} $tf &> /dev/null &&
-		error "split --mirror-id=${mirror_ids[$i]} $tf should fail"
+	# split the updated mirror
+	echo "split mirror_id ${mirror_ids[$i]} id ${ids[$i]}"
+	$LFS mirror split --mirror-id=${mirror_ids[$i]} $tf &> /dev/null ||
+		error "split --mirror-id=${mirror_ids[$i]} $tf should succeed"
 
 	i=$(( 1 - i ))
 	# split the stale mirror
+	$LFS getstripe $tf
 	echo "split mirror_id ${mirror_ids[$i]} id ${ids[$i]}"
-	$LFS mirror split --mirror-id=${mirror_ids[$i]} -d $tf ||
-		error "mirror split --mirror-id=${mirror_ids[$i]} $tf failed"
+	$LFS mirror split --mirror-id=${mirror_ids[$i]} -d $tf &&
+		error "Should fail due to only one mirror now"
 
 	echo "make sure there's no stale comp in the file"
 	# make sure there's no stale comp in the file
@@ -3354,7 +3361,6 @@ test_70a() {
 	(( $OST1_VERSION >= $(version_code 2.14.51) )) ||
 		skip "Need OST version at least 2.14.51"
 
-
 	test_mkdir $DIR/$tdir
 	stack_trap "rm -f $tf"
 
@@ -3362,9 +3368,109 @@ test_70a() {
 		error "setstripe $tf failed"
 
 	FSXNUM=${FSXNUM:-1000}
-	$FSX -p 1 -N $FSXNUM -S 0 -M $tf || error "fsx FLR file $tf failed"
+	FSXSEED=${FSXSEED:-0}
+	$FSX -p 1 -N $FSXNUM -S $FSXSEED -M $tf ||
+		error "fsx FLR file $tf failed"
 }
 run_test 70a "flr mode fsx test"
+
+test_71() {
+	remote_ost_nodsh && skip "remote OST with nodsh"
+	[[ "$ost1_FSTYPE" == "ldiskfs" ]] || skip "ldiskfs only test"
+
+	local tf=$DIR/$tdir/$tfile
+
+	test_mkdir $DIR/$tdir
+	$LFS setstripe -c1 -i1 $tf|| error "setstripe $tf failed"
+	$LFS mirror extend -N -c1 -i0 $tf || error "mirror extend $tf failed"
+
+	local id=$($LFS getstripe -I $tf)
+	local ost=$($LFS getstripe --yaml -v -I$id $tf | awk '/l_ost_idx/ {print $3}')
+	local fid=$($LFS getstripe --yaml -v -I$id $tf | awk '/l_fid/ {print $2}')
+	local pfid=$($LFS getstripe --yaml -v -I$id $tf | awk '/lmm_fid/ {print $2}')
+
+	ost=$(echo $ost | sed -e "s/,$//g")
+	ost=$((ost + 1))
+
+	local dev=$(ostdevname $ost)
+	local obj_file=$(ost_fid2_objpath ost$ost $fid)
+
+	ff=$(do_facet ost$ost "$DEBUGFS -c -R 'stat $obj_file' $dev \
+			2>/dev/null" | grep "parent=")
+	if [ -z "$ff" ]; then
+		stop ost$ost
+		mount_fstype ost$ost
+		ff=$(do_facet ost$ost $LL_DECODE_FILTER_FID \
+				$(facet_mntpt ost$ost)/$obj_file)
+		unmount_fstype ost$ost
+		start ost$ost $dev $OST_MOUNT_OPTS
+		clients_up
+	fi
+
+	# Get parent fid formatted without brace
+	parent=$(echo $ff |  grep -oP 'parent=\K\S+' | tr -d '[]')
+
+	log " ** lfs fid2path $MOUNT $parent"
+	$LFS fid2path $MOUNT "$parent" || {
+		$LFS getstripe $tf
+		error "cannot find parent $parent of OST object $fid"
+	}
+	[ "$parent" == "$pfid" ] || {
+		$LFS getstripe $tf
+		error "parent $parent of OST object $fid is not $pfid"
+	}
+}
+run_test 71 "check mirror extend parent fid"
+
+test_72() {
+	local comp_file=$DIR/$tfile
+	local id
+
+	$LFS mirror create -N -E1M -S1M -c1 -E 2M -E 3M -E eof \
+		-N -E2M -S1M -c1 -E4M -E eof $comp_file ||
+		error "Create $comp_file failed"
+
+	$LFS getstripe $comp_file
+	id=$($LFS getstripe --mirror-id=1 -I0x10001 $comp_file | grep "l_fid")
+	[[ -z $id ]] && error "1: 1st component uninstantiated"
+	id=$($LFS getstripe --mirror-id=1 -I0x10002 $comp_file | grep "l_fid")
+	[[ -n $id ]] && error "1: 2nd component instantiated"
+	id=$($LFS getstripe --mirror-id=2 -I0x20005 $comp_file | grep "l_fid")
+	[[ -z $id ]] && error "2: 1st component uninstantiated"
+	id=$($LFS getstripe --mirror-id=2 -I0x20006 $comp_file | grep "l_fid")
+	[[ -n $id ]] && error "2: 2nd component instantiated"
+
+	dd if=/dev/urandom bs=1M count=2 >> $comp_file
+	$LFS mirror resync $comp_file || error "cannot resync mirror $comp_file"
+
+	id=$($LFS getstripe --mirror-id=1 -I0x10002 $comp_file | grep "l_fid")
+	[[ -z $id ]] && error "3: 2nd component uninstantiated"
+	id=$($LFS getstripe --mirror-id=1 -I0x10003 $comp_file | grep "l_fid")
+	[[ -n $id ]] && error "3: 3rd component instantiated"
+	id=$($LFS getstripe --mirror-id=2 -I0x20005 $comp_file | grep "l_fid")
+	[[ -z $id ]] && error "4: 1st component uninstantiated"
+	id=$($LFS getstripe --mirror-id=2 -I0x20006 $comp_file | grep "l_fid")
+	[[ -n $id ]] && error "4: 2nd component instantiated"
+
+	$LFS getstripe $comp_file
+
+	dd if=/dev/urandom bs=1M count=1 >> $comp_file
+	$LFS getstripe $comp_file
+	$LFS mirror resync $comp_file || error "cannot resync mirror $comp_file"
+
+	$LFS getstripe $comp_file
+	id=$($LFS getstripe --mirror-id=1 -I0x10003 $comp_file | grep "l_fid")
+	[[ -z $id ]] && error "5: 3rd component uninstantiated"
+	id=$($LFS getstripe --mirror-id=1 -I0x10004 $comp_file | grep "l_fid")
+	[[ -n $id ]] && error "5: 4th component instantiated"
+	id=$($LFS getstripe --mirror-id=2 -I0x20006 $comp_file | grep "l_fid")
+	[[ -z $id ]] && error "6: 2nd component uninstantiated"
+	id=$($LFS getstripe --mirror-id=2 -I0x20007 $comp_file | grep "l_fid")
+	[[ -n $id ]] && error "6: 3rd component instantiated"
+
+	return 0
+}
+run_test 72 "check append on FLR file"
 
 write_file_200() {
 	local tf=$1
@@ -3631,10 +3737,10 @@ test_200c() {
 		error "both replicas are still in sync"
 	}
 
-	$LFS mirror verify -vvv $tf || {
+	$LFS mirror verify -vvv $tf && {
 		$LFS getstripe $tf
 		error "corrupted in-sync file"
-	}
+	} || true
 }
 run_test 200c "layout change racing with open: LOVEA changes"
 
@@ -4251,7 +4357,7 @@ test_207() {
 	echo "mirror IDs: ${mirror_array[*]}"
 
 	drop_client_cache
-	$LFS mirror verify -v $file || error "verification failed"
+	$LFS mirror verify -v $file && error "verification failed" || true
 	cmp $tmpfile $file || error "files don't match"
 }
 run_test 207 "create another replica with existing out-of-sync one"
@@ -4307,7 +4413,7 @@ function check_ost_used() {
 
 test_208a() {
 	local tf=$DIR/$tfile
-	local osts=$(comma_list $(osts_nodes))
+	local osts=$(osts_nodes)
 
 	(( $OSTCOUNT >= 4 )) || skip "needs >= 4 OSTs"
 	(( $MDS1_VERSION >= $(version_code 2.14.55) )) ||
@@ -4323,7 +4429,10 @@ test_208a() {
 	dd if=/dev/zero of=$tf bs=8M count=1 || error "can't dd (1)"
 	$LFS mirror extend -N -c1 -o1 $tf || error "can't create mirror"
 	$LFS mirror extend -N -c2 -o 2,3 $tf || error "can't create mirror"
-	$LFS mirror resync $tf || error "can't resync"
+	$LFS mirror resync --only 2 --force-resync $tf ||
+		error "can't resync mirror 2"
+	$LFS mirror resync --only 3 --force-resync $tf ||
+		error "can't resync mirror 3"
 	$LFS getstripe $tf
 
 	log "set OST0000 non-rotational"
@@ -4350,7 +4459,7 @@ run_test 208a "mirror selection to prefer non-rotational devices for reads"
 
 test_208b() {
 	local tf=$DIR/$tfile
-	local osts=$(comma_list $(osts_nodes))
+	local osts=$(osts_nodes)
 
 	(( $OSTCOUNT >= 4 )) || skip "needs >= 4 OSTs"
 	(( $MDS1_VERSION >= $(version_code 2.14.55) )) ||
@@ -4366,7 +4475,10 @@ test_208b() {
 	dd if=/dev/zero of=$tf bs=8M count=1 || error "can't dd (1)"
 	$LFS mirror extend -N -c1 -o1 $tf || error "can't create mirror"
 	$LFS mirror extend -N -c2 -o 2,3 $tf || error "can't create mirror"
-	$LFS mirror resync $tf || error "can't resync"
+	$LFS mirror resync --only 2 --force-resync $tf ||
+		error "can't resync mirror 2"
+	$LFS mirror resync --only 3 --force-resync $tf ||
+		error "can't resync mirror 3"
 	$LFS getstripe $tf | grep -q flags.*stale && error "still stale"
 
 	log "set OST0000 non-rotational"
@@ -4375,7 +4487,10 @@ test_208b() {
 	do_nodes $osts \
 		$LCTL set_param osd*.*OST0000*.nonrotational=1
 	check_ost_used $tf write 0
-	$LFS mirror resync $tf || error "can't resync"
+	$LFS mirror resync --only 2 --force-resync $tf ||
+		error "can't resync mirror 2"
+	$LFS mirror resync --only 3 --force-resync $tf ||
+		error "can't resync mirror 3"
 
 	log "set OST0002 and OST0003 non-rotational, two fast OSTs is better"
 	do_nodes $osts \
@@ -4384,7 +4499,10 @@ test_208b() {
 		$LCTL set_param osd*.*OST0002*.nonrotational=1 \
 			osd*.*OST0003*.nonrotational=1
 	check_ost_used $tf write 2 3
-	$LFS mirror resync $tf || error "can't resync"
+	$LFS mirror resync --only 2 --force-resync $tf ||
+		error "can't resync mirror 2"
+	$LFS mirror resync --only 3 --force-resync $tf ||
+		error "can't resync mirror 3"
 
 	log "set mirror 1 on OST0001 preferred"
 	$LFS setstripe --comp-set -I 0x20001 --comp-flags=prefer $tf ||
@@ -4397,7 +4515,7 @@ test_209a() {
 	local tf=$DIR/$tfile
 	local tmpfile="$TMP/$TESTSUITE-$TESTNAME-multiop.output"
 	local p="$TMP/$TESTSUITE-$TESTNAME.parameters"
-	local osts=$(comma_list $(osts_nodes))
+	local osts=$(osts_nodes)
 
 	stack_trap "rm -f $tmpfile"
 
@@ -4506,16 +4624,9 @@ test_210b() {
 	dd if=/dev/zero of=$tf bs=1M count=1 || error "can't dd"
 
 	local ostdev=$(ostdevname 1)
-	local fid=($($LFS getstripe $DIR/$tfile | grep 0x))
-	local seq=${fid[3]#0x}
-	local oid=${fid[1]}
-	local oid_hex
-	if [ $seq == 0 ]; then
-		oid_hex=${fid[1]}
-	else
-		oid_hex=${fid[2]#0x}
-	fi
-	local objpath="O/$seq/d$(($oid % 32))/$oid_hex"
+	local fids=($($LFS getstripe $DIR/$tfile | grep 0x))
+	local fid="${fids[3]}:${fids[2]}:0"
+	local objpath=$(ost_fid2_objpath ost1 $fid)
 	local cmd="$DEBUGFS -c -R \\\"stat $objpath\\\" $ostdev"
 
 	local ino=$(do_facet ost1 $cmd | grep Inode:)
@@ -4539,18 +4650,16 @@ run_test 210b "handle broken mirrored lovea (unlink)"
 test_211() {
 	local tf=$DIR/$tfile
 
-	dd if=/dev/zero of=$tf bs=4k count=10 oflag=direct ||
+	dd if=/dev/zero of=$tf bs=$PAGE_SIZE count=10 oflag=direct ||
 		error "error writing initial data to '$tf'"
 
 	$LFS mirror extend -N $tf || error "error extending mirror for '$tf'"
 
-	dd if=/dev/zero of=$tf bs=4k count=1 oflag=direct ||
-		error "error writing 4k to '$tf'"
+	dd if=/dev/zero of=$tf bs=$PAGE_SIZE count=1 oflag=direct ||
+		error "error writing $((PAGE_SIZE/1024))k to '$tf'"
 	echo "size after second write"
 	ls -la $tf
 	md5_1=$(md5sum $tf) || error "error getting first md5sum of '$tf'"
-
-	$LFS mirror resync $tf || error "error resync-ing '$tf'"
 
 	$LFS mirror delete --mirror-id=1 $tf ||
 		error "error deleting mirror 1 of '$tf'"
@@ -4561,6 +4670,95 @@ test_211() {
 		error "md5sums don't match after mirror ops on '$tf'"
 }
 run_test 211 "mirror delete should not cause bad size"
+
+test_212a() {
+	local tf=$DIR/$tfile
+
+	$LFS mirror create -N2 $tf || error "create mirrored file $tf failed"
+
+	# write some data to the file
+	echo "data for test" > $tf || error "write $tf failed"
+
+	# verify file is in write-pending state after initial write
+	verify_flr_state $tf "wp"
+
+	# resync to get to read-only state
+	$LFS mirror resync $tf
+
+	# verify file is now in read-only state (no stale components)
+	verify_flr_state $tf "ro"
+
+	# Verify should return success when mirrors are consistent
+	$LFS mirror verify $tf ||
+		error "mirror verify should succeed when mirrors are consistent"
+
+	$LFS setstripe --comp-set --comp-flags=stale --mirror-id=2 $tf ||
+		error "Failed to set stale flag to $tf for mirror 2"
+
+	$LFS getstripe --mirror-id=2 $tf | grep -q stale ||
+		error "no stale components found for mirror 2"
+
+	# Verify should return error when mirrors have stale components
+	$LFS mirror verify $tf &&
+		error "verify should return error when components are stale" ||
+			true
+}
+run_test 212a "Testing lfs setstripe --comp-set --comp-flags=stale --mirror-id"
+
+test_212b() {
+	local tf=$DIR/$tfile
+
+	# Create 3-mirror file for comprehensive testing
+	$LFS mirror create -N3 $tf || error "create 3-mirror file $tf failed"
+
+	# Write initial data to all mirrors
+	echo "initial data for all mirrors" > $tf || error "write $tf failed"
+	$LFS mirror resync $tf || error "initial resync failed"
+	verify_flr_state $tf "ro"
+
+	# Verify behavior with consistent mirrors
+	$LFS mirror verify -v $tf ||
+		error "verify should succeed with consistent mirrors"
+
+	# Create inconsistency by writing to specific mirror
+	echo "Writing different data to mirror 2 only"
+	$LFS mirror write -N 2 $tf <<< "mirror 2 specific data" ||
+		error "failed to write to mirror 2"
+
+	# Verify should fail with inconsistent mirrors
+	echo "=== Verify inconsistent mirrors ==="
+	$LFS mirror verify $tf &&
+		error "verify should fail when mirrors are inconsistent" ||
+		echo "verify correctly failed with inconsistent mirrors"
+
+	# Test --stale option behavior
+	$LFS mirror verify --stale $tf
+	local stale_rc=$?
+
+	if [ $stale_rc -eq 0 ]; then
+
+		# Check if any mirrors were marked as stale
+		local stale_count=$($LFS getstripe $tf | grep -c "stale")
+		if [ $stale_count -gt 0 ]; then
+			echo "Found $stale_count stale components"
+		else
+			error "No stale components found"
+		fi
+	else
+		error "mirror verify --stale failed with rc=$stale_rc"
+	fi
+
+	# Resync and verify final state
+	echo "=== Resync and final verification ==="
+	$LFS mirror resync $tf || error "final resync failed"
+	verify_flr_state $tf "ro"
+
+	$LFS mirror verify $tf ||
+		error "mirrors should be consistent after final resync"
+
+	echo "verify --stale test completed successfully"
+}
+run_test 212b "Testing lfs mirror verify --stale option"
 
 complete_test $SECONDS
 check_and_cleanup_lustre

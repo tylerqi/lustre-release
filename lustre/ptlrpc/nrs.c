@@ -1,32 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
+// SPDX-License-Identifier: GPL-2.0
 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License version 2 for more details.  A copy is
- * included in the COPYING file that accompanied this code.
-
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * GPL HEADER END
- */
 /*
  * Copyright (c) 2014, 2016, Intel Corporation.
  *
  * Copyright 2012 Xyratex Technology Limited
  */
+
 /*
- * lustre/ptlrpc/nrs.c
- *
  * Network Request Scheduler (NRS)
  *
  * Allows to reorder the handling of RPCs at servers.
@@ -34,20 +14,17 @@
  * Author: Liang Zhen <liang@whamcloud.com>
  * Author: Nikitas Angelinas <nikitas_angelinas@xyratex.com>
  */
-/**
- * \addtogoup nrs
- * @{
- */
 
 #define DEBUG_SUBSYSTEM S_RPC
+
 #include <obd_support.h>
 #include <obd_class.h>
 #include <lustre_net.h>
 #include <lprocfs_status.h>
-#include <libcfs/libcfs.h>
+
 #include "ptlrpc_internal.h"
 
-/**
+/*
  * NRS core object.
  */
 struct nrs_core nrs_core;
@@ -85,7 +62,7 @@ static int nrs_policy_ctl_locked(struct ptlrpc_nrs_policy *policy,
 	       -ENOSYS);
 }
 
-static void nrs_policy_stop0(struct ptlrpc_nrs_policy *policy)
+static void __nrs_policy_stop(struct ptlrpc_nrs_policy *policy)
 {
 	ENTRY;
 
@@ -108,7 +85,7 @@ static void nrs_policy_stop0(struct ptlrpc_nrs_policy *policy)
 	EXIT;
 }
 
-/**
+/*
  * Increases the policy's usage started reference count.
  */
 static inline void nrs_policy_started_get(struct ptlrpc_nrs_policy *policy)
@@ -116,7 +93,7 @@ static inline void nrs_policy_started_get(struct ptlrpc_nrs_policy *policy)
 	refcount_inc(&policy->pol_start_ref);
 }
 
-/**
+/*
  * Decreases the policy's usage started reference count, and stops the policy
  * in case it was already stopping and have no more outstanding usage
  * references (which indicates it has no more queued or started requests, and
@@ -125,7 +102,7 @@ static inline void nrs_policy_started_get(struct ptlrpc_nrs_policy *policy)
 static void nrs_policy_started_put(struct ptlrpc_nrs_policy *policy)
 {
 	if (refcount_dec_and_test(&policy->pol_start_ref))
-		nrs_policy_stop0(policy);
+		__nrs_policy_stop(policy);
 }
 
 static int nrs_policy_stop_locked(struct ptlrpc_nrs_policy *policy)
@@ -171,11 +148,13 @@ static int nrs_policy_stop_locked(struct ptlrpc_nrs_policy *policy)
 }
 
 /**
- * Transitions the \a nrs NRS head's primary policy to
+ * nrs_policy_stop_primary() - Stop policy
+ * @nrs: the NRS head to carry out this operation on
+ *
+ * Transitions the @nrs NRS head's primary policy to
  * ptlrpc_nrs_pol_state::NRS_POL_STATE_STOPPING and if the policy has no
  * pending usage references, to ptlrpc_nrs_pol_state::NRS_POL_STATE_STOPPED.
  *
- * \param[in] nrs the NRS head to carry out this operation on
  */
 static void nrs_policy_stop_primary(struct ptlrpc_nrs *nrs)
 {
@@ -204,7 +183,7 @@ static void nrs_policy_stop_primary(struct ptlrpc_nrs *nrs)
 	EXIT;
 }
 
-/**
+/*
  * Transitions a policy across the ptlrpc_nrs_pol_state range of values, in
  * response to an lprocfs command to start a policy.
  *
@@ -357,7 +336,7 @@ out:
 	RETURN(rc);
 }
 
-/**
+/*
  * Increases the policy's usage reference count (caller count).
  */
 static inline void nrs_policy_get_locked(struct ptlrpc_nrs_policy *policy)
@@ -366,7 +345,7 @@ __must_hold(&policy->pol_nrs->nrs_lock)
 	policy->pol_ref++;
 }
 
-/**
+/*
  * Decreases the policy's usage reference count.
  */
 static void nrs_policy_put_locked(struct ptlrpc_nrs_policy *policy)
@@ -377,7 +356,7 @@ __must_hold(&policy->pol_nrs->nrs_lock)
 	policy->pol_ref--;
 }
 
-/**
+/*
  * Find and return a policy by name.
  */
 static struct ptlrpc_nrs_policy * nrs_policy_find_locked(struct ptlrpc_nrs *nrs,
@@ -395,7 +374,7 @@ static struct ptlrpc_nrs_policy * nrs_policy_find_locked(struct ptlrpc_nrs *nrs,
 	return NULL;
 }
 
-/**
+/*
  * Release references for the resource hierarchy moving upwards towards the
  * policy instance resource.
  */
@@ -414,20 +393,20 @@ static void nrs_resource_put(struct ptlrpc_nrs_resource *res)
 }
 
 /**
- * Obtains references for each resource in the resource hierarchy for request
- * \a nrq if it is to be handled by \a policy.
+ * nrs_resource_get() - Obtains references for each resource in the resource
+ * hierarchy for request
+ * @nrq if it is to be handled by @policy.
+ * @policy: the policy
+ * @nrq: the request
+ * @moving_req: denotes whether this is a call to the function by 
+ * ldlm_lock_reorder_req(), in order to move @nrq to the high-priority NRS head;
+ * we should not sleep when set.
  *
- * \param[in] policy	  the policy
- * \param[in] nrq	  the request
- * \param[in] moving_req  denotes whether this is a call to the function by
- *			  ldlm_lock_reorder_req(), in order to move \a nrq to
- *			  the high-priority NRS head; we should not sleep when
- *			  set.
+ * Note: ptlrpc_nrs_pol_ops::op_res_get()
  *
- * \retval NULL		  resource hierarchy references not obtained
- * \retval valid-pointer  the bottom level of the resource hierarchy
- *
- * \see ptlrpc_nrs_pol_ops::op_res_get()
+ * Return:
+ * * %NULL resource hierarchy references not obtained
+ * * %valid-pointer  the bottom level of the resource hierarchy
  */
 static
 struct ptlrpc_nrs_resource * nrs_resource_get(struct ptlrpc_nrs_policy *policy,
@@ -465,21 +444,19 @@ struct ptlrpc_nrs_resource * nrs_resource_get(struct ptlrpc_nrs_policy *policy,
 }
 
 /**
+ * nrs_resource_get_safe() - Obtains resources
+ * @nrs: the NRS head instance that will be handling request @nrq.
+ * @nrq: the request that is being handled.
+ * @resp: the array where references to the resource hierarchy are stored [out]
+ * @moving_req: is set when obtaining resources while moving a request from a
+ * policy on the regular NRS head to a policy on the HP NRS head
+ * (via ldlm_lock_reorder_req()). It signifies that allocations to get resources
+ * should be atomic; for a full explanation, see comment in
+ * ptlrpc_nrs_pol_ops::op_res_get().
+ *
  * Obtains resources for the resource hierarchies and policy references for
  * the fallback and current primary policy (if any), that will later be used
- * to handle request \a nrq.
- *
- * \param[in]  nrs  the NRS head instance that will be handling request \a nrq.
- * \param[in]  nrq  the request that is being handled.
- * \param[out] resp the array where references to the resource hierarchy are
- *		    stored.
- * \param[in]  moving_req  is set when obtaining resources while moving a
- *			   request from a policy on the regular NRS head to a
- *			   policy on the HP NRS head (via
- *			   ldlm_lock_reorder_req()). It signifies that
- *			   allocations to get resources should be atomic; for
- *			   a full explanation, see comment in
- *			   ptlrpc_nrs_pol_ops::op_res_get().
+ * to handle request @nrq.
  */
 static void nrs_resource_get_safe(struct ptlrpc_nrs *nrs,
 				  struct ptlrpc_nrs_request *nrq,
@@ -526,14 +503,13 @@ static void nrs_resource_get_safe(struct ptlrpc_nrs *nrs,
 }
 
 /**
+ * nrs_resource_put_safe() - Releases references
+ * @resp: the resource hierarchy that is being released
+ *
  * Releases references to resource hierarchies and policies, because they are no
  * longer required; used when request handling has been completed, or the
  * request is moving to the high priority NRS head.
- *
- * \param resp	the resource hierarchy that is being released
- *
- * \see ptlrpcnrs_req_hp_move()
- * \see ptlrpc_nrs_req_finalize()
+ * Note: see ptlrpcnrs_req_hp_move() and ptlrpc_nrs_req_finalize()
  */
 static void nrs_resource_put_safe(struct ptlrpc_nrs_resource **resp)
 {
@@ -559,20 +535,18 @@ static void nrs_resource_put_safe(struct ptlrpc_nrs_resource **resp)
 }
 
 /**
- * Obtains an NRS request from \a policy for handling or examination; the
- * request should be removed in the 'handling' case.
+ * nrs_request_get() - Obtains an NRS request from @policy for handling or
+ * examination; the request should be removed in the 'handling' case.
+ * @policy: the policy from which a request
+ * @peek: when set, signifies that we just want to examine the request, and not
+ * handle it, so the request is not removed from the policy.
+ * @force: when set, it will force a policy to return a request if it has one
+ * pending
  *
  * Calling into this function implies we already know the policy has a request
  * waiting to be handled.
  *
- * \param[in] policy the policy from which a request
- * \param[in] peek   when set, signifies that we just want to examine the
- *		     request, and not handle it, so the request is not removed
- *		     from the policy.
- * \param[in] force  when set, it will force a policy to return a request if it
- *		     has one pending
- *
- * \retval the NRS request to be handled
+ * Returns the NRS request to be handled
  */
 static inline
 struct ptlrpc_nrs_request * nrs_request_get(struct ptlrpc_nrs_policy *policy,
@@ -594,14 +568,15 @@ struct ptlrpc_nrs_request * nrs_request_get(struct ptlrpc_nrs_policy *policy,
 }
 
 /**
- * Enqueues request \a nrq for later handling, via one one the policies for
+ * nrs_request_enqueue() - Enqueues request
+ * @nrq: the request being enqueued
+ *
+ * Enqueues request @nrq for later handling, via one one the policies for
  * which resources where earlier obtained via nrs_resource_get_safe(). The
  * function attempts to enqueue the request first on the primary policy
  * (if any), since this is the preferred choice.
  *
- * \param nrq the request being enqueued
- *
- * \see nrs_resource_get_safe()
+ * Note: see nrs_resource_get_safe()
  */
 static inline void nrs_request_enqueue(struct ptlrpc_nrs_request *nrq)
 {
@@ -641,12 +616,10 @@ static inline void nrs_request_enqueue(struct ptlrpc_nrs_request *nrq)
 }
 
 /**
- * Called when a request has been handled
+ * nrs_request_stop() - Called when a request has been handled
+ * @nrq: the request that has been handled; can be used for job/resource control
  *
- * \param[in] nrs the request that has been handled; can be used for
- *		  job/resource control.
- *
- * \see ptlrpc_nrs_req_stop_nolock()
+ * Note: see ptlrpc_nrs_req_stop_nolock()
  */
 static inline void nrs_request_stop(struct ptlrpc_nrs_request *nrq)
 {
@@ -663,22 +636,22 @@ static inline void nrs_request_stop(struct ptlrpc_nrs_request *nrq)
 }
 
 /**
- * Handler for operations that can be carried out on policies.
+ * nrs_policy_ctl() - Handler for operations that can be carried out on policies
+ * @nrs: the NRS head this policy belongs to.
+ * @name: the human-readable policy name; should be the same as
+ * ptlrpc_nrs_pol_desc::pd_name.
+ * @opc: the opcode of the operation being carried out.
+ * @arg: can be used to pass information in and out between when carrying an
+ * operation; usually data that is private to the policy at some level, or
+ * generic policy status information. [out]
  *
+ * Handler for operations that can be carried out on policies
  * Handles opcodes that are common to all policy types within NRS core, and
  * passes any unknown opcodes to the policy-specific control function.
  *
- * \param[in]	  nrs  the NRS head this policy belongs to.
- * \param[in]	  name the human-readable policy name; should be the same as
- *		       ptlrpc_nrs_pol_desc::pd_name.
- * \param[in]	  opc  the opcode of the operation being carried out.
- * \param[in,out] arg  can be used to pass information in and out between when
- *		       carrying an operation; usually data that is private to
- *		       the policy at some level, or generic policy status
- *		       information.
- *
- * \retval -ve error condition
- * \retval   0 operation was carried out successfully
+ * Return:
+ * * %-ve error condition
+ * * %0 operation was carried out successfully
  */
 static int nrs_policy_ctl(struct ptlrpc_nrs *nrs, char *name,
 			  enum ptlrpc_nrs_ctl opc, void *arg)
@@ -723,14 +696,14 @@ out:
 }
 
 /**
- * Unregisters a policy by name.
+ * nrs_policy_unregister() - Unregisters a policy by name.
+ * @nrs: the NRS head this policy belongs to.
+ * @name: the human-readable policy name; should be the same as
+ * ptlrpc_nrs_pol_desc::pd_name
  *
- * \param[in] nrs  the NRS head this policy belongs to.
- * \param[in] name the human-readable policy name; should be the same as
- *	           ptlrpc_nrs_pol_desc::pd_name
- *
- * \retval -ve error
- * \retval   0 success
+ * Return:
+ * * %-ve error
+ * * %0 success
  */
 static int nrs_policy_unregister(struct ptlrpc_nrs *nrs, char *name)
 {
@@ -789,14 +762,15 @@ out_unlock:
 }
 
 /**
- * Register a policy from \policy descriptor \a desc with NRS head \a nrs.
+ * nrs_policy_register() - Register a policy from policy descriptor @desc with
+ * NRS head @nrs.
+ * @nrs: the NRS head on which the policy will be registered.
+ * @desc: the policy descriptor from which the information will be obtained to
+ * register the policy.
  *
- * \param[in] nrs   the NRS head on which the policy will be registered.
- * \param[in] desc  the policy descriptor from which the information will be
- *		    obtained to register the policy.
- *
- * \retval -ve error
- * \retval   0 success
+ * Return:
+ * * %-ve error
+ * * %0 success
  */
 static int nrs_policy_register(struct ptlrpc_nrs *nrs,
 			       struct ptlrpc_nrs_pol_desc *desc)
@@ -869,10 +843,9 @@ static int nrs_policy_register(struct ptlrpc_nrs *nrs,
 }
 
 /**
- * Enqueue request \a req using one of the policies its resources are referring
- * to.
- *
- * \param[in] req the request to enqueue.
+ * ptlrpc_nrs_req_add_nolock() - Enqueue request @req using one of the policies
+ * its resources are referring to.
+ * @req: the request to enqueue.
  */
 static void ptlrpc_nrs_req_add_nolock(struct ptlrpc_request *req)
 {
@@ -895,9 +868,9 @@ static void ptlrpc_nrs_req_add_nolock(struct ptlrpc_request *req)
 }
 
 /**
- * Enqueue a request on the high priority NRS head.
- *
- * \param req the request to enqueue.
+ * ptlrpc_nrs_hpreq_add_nolock() - Enqueue a request on the high priority NRS
+ * head.
+ * @req: the request to enqueue.
  */
 static void ptlrpc_nrs_hpreq_add_nolock(struct ptlrpc_request *req)
 {
@@ -914,14 +887,14 @@ static void ptlrpc_nrs_hpreq_add_nolock(struct ptlrpc_request *req)
 }
 
 /**
- * Returns a boolean predicate indicating whether the policy described by
- * \a desc is adequate for use with service \a svc.
+ * nrs_policy_compatible() - Returns a boolean predicate indicating whether the
+ * policy described by @desc is adequate for use with service @svc.
+ * @svc: the service
+ * @desc: the policy descriptor
  *
- * \param[in] svc  the service
- * \param[in] desc the policy descriptor
- *
- * \retval false the policy is not compatible with the service
- * \retval true	 the policy is compatible with the service
+ * Return:
+ * * %false the policy is not compatible with the service
+ * * %true	 the policy is compatible with the service
  */
 static inline bool nrs_policy_compatible(const struct ptlrpc_service *svc,
 					 const struct ptlrpc_nrs_pol_desc *desc)
@@ -930,17 +903,16 @@ static inline bool nrs_policy_compatible(const struct ptlrpc_service *svc,
 }
 
 /**
- * Registers all compatible policies in nrs_core.nrs_policies, for NRS head
- * \a nrs.
+ * nrs_register_policies_locked() - Registers all compatible policies in
+ * nrs_core.nrs_policies, for NRS head @nrs.
+ * @nrs: the NRS head
  *
- * \param[in] nrs the NRS head
+ * Note: pre mutex_is_locked(&nrs_core.nrs_mutex)
+ *       see ptlrpc_service_nrs_setup()
  *
- * \retval -ve error
- * \retval   0 success
- *
- * \pre mutex_is_locked(&nrs_core.nrs_mutex)
- *
- * \see ptlrpc_service_nrs_setup()
+ * Return:
+ * * %-ve error
+ * * %0 success
  */
 static int nrs_register_policies_locked(struct ptlrpc_nrs *nrs)
 {
@@ -973,22 +945,24 @@ static int nrs_register_policies_locked(struct ptlrpc_nrs *nrs)
 }
 
 /**
- * Initializes NRS head \a nrs of service partition \a svcpt, and registers all
+ * __nrs_svcpt_setup_locked() - Initializes NRS head
+ * @nrs: the NRS head
+ * @svcpt: the PTLRPC service partition to setup
+ *
+ * Initializes NRS head @nrs of service partition @svcpt, and registers all
  * compatible policies in NRS core, with the NRS head.
  *
- * \param[in] nrs   the NRS head
- * \param[in] svcpt the PTLRPC service partition to setup
+ * Note: mutex_is_locked(&nrs_core.nrs_mutex)
  *
- * \retval -ve error
- * \retval   0 success
- *
- * \pre mutex_is_locked(&nrs_core.nrs_mutex)
+ * Return:
+ * * %-ve error
+ * * %0 success
  */
-static int nrs_svcpt_setup_locked0(struct ptlrpc_nrs *nrs,
-				   struct ptlrpc_service_part *svcpt)
+static int __nrs_svcpt_setup_locked(struct ptlrpc_nrs *nrs,
+				    struct ptlrpc_service_part *svcpt)
 {
-	int				rc;
-	enum ptlrpc_nrs_queue_type	queue;
+	enum ptlrpc_nrs_queue_type queue = PTLRPC_NRS_QUEUE_REG;
+	int rc;
 
 	LASSERT(mutex_is_locked(&nrs_core.nrs_mutex));
 
@@ -1012,13 +986,18 @@ static int nrs_svcpt_setup_locked0(struct ptlrpc_nrs *nrs,
 }
 
 /**
+ * nrs_svcpt_setup_locked() - Allocates a regular/high-priority NRS head
+ * @svcpt: the PTLRPC service partition to setup [in,out]
+ *
  * Allocates a regular and optionally a high-priority NRS head (if the service
  * handles high-priority RPCs), and then registers all available compatible
  * policies on those NRS heads.
  *
- * \param[in,out] svcpt the PTLRPC service partition to setup
+ * Note: mutex_is_locked(&nrs_core.nrs_mutex)
  *
- * \pre mutex_is_locked(&nrs_core.nrs_mutex)
+ * Return:
+ * * %-ve error
+ * * %0 success
  */
 static int nrs_svcpt_setup_locked(struct ptlrpc_service_part *svcpt)
 {
@@ -1032,7 +1011,7 @@ static int nrs_svcpt_setup_locked(struct ptlrpc_service_part *svcpt)
 	 * Initialize the regular NRS head.
 	 */
 	nrs = nrs_svcpt2nrs(svcpt, false);
-	rc = nrs_svcpt_setup_locked0(nrs, svcpt);
+	rc = __nrs_svcpt_setup_locked(nrs, svcpt);
 	if (rc < 0)
 		GOTO(out, rc);
 
@@ -1049,19 +1028,18 @@ static int nrs_svcpt_setup_locked(struct ptlrpc_service_part *svcpt)
 		GOTO(out, rc = -ENOMEM);
 
 	nrs = nrs_svcpt2nrs(svcpt, true);
-	rc = nrs_svcpt_setup_locked0(nrs, svcpt);
+	rc = __nrs_svcpt_setup_locked(nrs, svcpt);
 
 out:
 	RETURN(rc);
 }
 
 /**
- * Unregisters all policies on all available NRS heads in a service partition;
- * called at PTLRPC service unregistration time.
+ * nrs_svcpt_cleanup_locked() - Unregisters all policies on all available NRS
+ * heads in a service partition; called at PTLRPC service unregistration time.
+ * @svcpt: the PTLRPC service partition
  *
- * \param[in] svcpt the PTLRPC service partition
- *
- * \pre mutex_is_locked(&nrs_core.nrs_mutex)
+ * Note: pre mutex_is_locked(&nrs_core.nrs_mutex)
  */
 static void nrs_svcpt_cleanup_locked(struct ptlrpc_service_part *svcpt)
 {
@@ -1105,12 +1083,11 @@ again:
 }
 
 /**
- * Returns the descriptor for a policy as identified by by \a name.
+ * nrs_policy_find_desc_locked() - Returns the descriptor for a policy as
+ * identified by by @name.
+ * @name: the policy name
  *
- * \param[in] name the policy name
- *
- * \retval the policy descriptor
- * \retval NULL
+ * Returns the policy descriptor on success and NULL on error
  */
 static struct ptlrpc_nrs_pol_desc *nrs_policy_find_desc_locked(const char *name)
 {
@@ -1125,16 +1102,17 @@ static struct ptlrpc_nrs_pol_desc *nrs_policy_find_desc_locked(const char *name)
 }
 
 /**
- * Removes the policy from all supported NRS heads of all partitions of all
- * PTLRPC services.
+ * nrs_policy_unregister_locked() - Removes the policy from all supported NRS
+ * heads of all partitions of all PTLRPC services.
+ * @desc: the policy descriptor to unregister
  *
- * \param[in] desc the policy descriptor to unregister
+ * pre mutex_is_locked(&nrs_core.nrs_mutex)
+ * pre mutex_is_locked(&ptlrpc_all_services_mutex)
  *
- * \retval -ve error
- * \retval  0  successfully unregistered policy on all supported NRS heads
+ * Return:
+ * * %0  successfully unregistered policy on all supported NRS heads
+ * * %-ve error
  *
- * \pre mutex_is_locked(&nrs_core.nrs_mutex)
- * \pre mutex_is_locked(&ptlrpc_all_services_mutex)
  */
 static int nrs_policy_unregister_locked(struct ptlrpc_nrs_pol_desc *desc)
 {
@@ -1188,7 +1166,8 @@ again:
 }
 
 /**
- * Registers a new policy with NRS core.
+ * ptlrpc_nrs_policy_register() - Registers a new policy with NRS core.
+ * @conf: configuration information for the new policy to register
  *
  * The function will only succeed if policy registration with all compatible
  * service partitions (if any) is successful.
@@ -1197,10 +1176,9 @@ again:
  *	time when registering a policy that ships with NRS core, or in a
  *	module's init() function for policies registering from other modules.
  *
- * \param[in] conf configuration information for the new policy to register
- *
- * \retval -ve error
- * \retval   0 success
+ * Return:
+ * * %-ve error
+ * * %0 success
  */
 static int ptlrpc_nrs_policy_register(struct ptlrpc_nrs_pol_conf *conf)
 {
@@ -1348,18 +1326,18 @@ fail:
 }
 
 /**
- * Setup NRS heads on all service partitions of service \a svc, and register
- * all compatible policies on those NRS heads.
- *
+ * ptlrpc_service_nrs_setup() - Setup NRS heads on all service partitions of
+ * service @svc, and register all compatible policies on those NRS heads.
  * To be called from withing ptl
- * \param[in] svc the service to setup
+ * @svc: the service to setup
  *
- * \retval -ve error, the calling logic should eventually call
- *		      ptlrpc_service_nrs_cleanup() to undo any work performed
- *		      by this function.
+ * Note: see ptlrpc_register_service() and ptlrpc_service_nrs_cleanup()
  *
- * \see ptlrpc_register_service()
- * \see ptlrpc_service_nrs_cleanup()
+ * Return:
+ * * %0 on success
+ * * %-ve error, the calling logic should eventually call
+ * ptlrpc_service_nrs_cleanup() to undo any work performed by this function.
+ *
  */
 int ptlrpc_service_nrs_setup(struct ptlrpc_service *svc)
 {
@@ -1402,9 +1380,9 @@ failed:
 }
 
 /**
- * Unregisters all policies on all service partitions of service \a svc.
- *
- * \param[in] svc the PTLRPC service to unregister
+ * ptlrpc_service_nrs_cleanup() - Unregisters all policies on all service
+ * partitions of service @svc.
+ * @svc: the PTLRPC service to unregister
  */
 void ptlrpc_service_nrs_cleanup(struct ptlrpc_service *svc)
 {
@@ -1436,15 +1414,14 @@ void ptlrpc_service_nrs_cleanup(struct ptlrpc_service *svc)
 }
 
 /**
- * Obtains NRS head resources for request \a req.
+ * ptlrpc_nrs_req_initialize() - Obtains NRS head resources for request @req.
+ * @svcpt: the service partition
+ * @req: the request
+ * @hp: which NRS head of @svcpt to use
  *
- * These could be either on the regular or HP NRS head of \a svcpt; resources
+ * These could be either on the regular or HP NRS head of @svcpt; resources
  * taken on the regular head can later be swapped for HP head resources by
  * ldlm_lock_reorder_req().
- *
- * \param[in] svcpt the service partition
- * \param[in] req   the request
- * \param[in] hp    which NRS head of \a svcpt to use
  */
 void ptlrpc_nrs_req_initialize(struct ptlrpc_service_part *svcpt,
 			       struct ptlrpc_request *req, bool hp)
@@ -1463,12 +1440,11 @@ void ptlrpc_nrs_req_initialize(struct ptlrpc_service_part *svcpt,
 }
 
 /**
- * Releases resources for a request; is called after the request has been
- * handled.
+ * ptlrpc_nrs_req_finalize() - Releases resources for a request; is called after
+ * the request has been handled.
+ * @req: the request
  *
- * \param[in] req the request
- *
- * \see ptlrpc_server_finish_request()
+ * Note: see ptlrpc_server_finish_request()
  */
 void ptlrpc_nrs_req_finalize(struct ptlrpc_request *req)
 {
@@ -1487,13 +1463,11 @@ void ptlrpc_nrs_req_stop_nolock(struct ptlrpc_request *req)
 }
 
 /**
- * Enqueues request \a req on either the regular or high-priority NRS head
- * of service partition \a svcpt.
- *
- * \param[in] svcpt the service partition
- * \param[in] req   the request to be enqueued
- * \param[in] hp    whether to enqueue the request on the regular or
- *		    high-priority NRS head.
+ * ptlrpc_nrs_req_add() - Enqueues request @req on either the regular or
+ * high-priority NRS head of service partition @svcpt.
+ * @svcpt: the service partition
+ * @req: the request to be enqueued
+ * @hp: whether to enqueue the request on the regular or high-priority NRS head.
  */
 void ptlrpc_nrs_req_add(struct ptlrpc_service_part *svcpt,
 			struct ptlrpc_request *req, bool hp)
@@ -1541,24 +1515,20 @@ static void nrs_request_removed(struct ptlrpc_nrs_policy *policy)
 }
 
 /**
- * Obtains a request for handling from an NRS head of service partition
- * \a svcpt.
+ * __ptlrpc_nrs_req_get_nolock() - Obtains a request for handling from an NRS
+ * head of service partition @svcpt.
+ * @svcpt: the service partition
+ * @hp: whether to obtain a request from the regular or high-priority NRS head.
+ * @peek: when set, signifies that we just want to examine the request, and not
+ * handle it, so the request is not removed from the policy.
+ * @force: when set, it will force a policy to return a request if it has one
+ * pending
  *
- * \param[in] svcpt the service partition
- * \param[in] hp    whether to obtain a request from the regular or
- *		    high-priority NRS head.
- * \param[in] peek  when set, signifies that we just want to examine the
- *		    request, and not handle it, so the request is not removed
- *		    from the policy.
- * \param[in] force when set, it will force a policy to return a request if it
- *		    has one pending
- *
- * \retval the	request to be handled
- * \retval NULL the head has no requests to serve
+ * Returns request to be handled or NULL if the head has no request to serve
  */
 struct ptlrpc_request *
-ptlrpc_nrs_req_get_nolock0(struct ptlrpc_service_part *svcpt, bool hp,
-			   bool peek, bool force)
+__ptlrpc_nrs_req_get_nolock(struct ptlrpc_service_part *svcpt, bool hp,
+			    bool peek, bool force)
 {
 	struct ptlrpc_nrs	  *nrs = nrs_svcpt2nrs(svcpt, hp);
 	struct ptlrpc_nrs_policy  *policy;
@@ -1589,9 +1559,9 @@ ptlrpc_nrs_req_get_nolock0(struct ptlrpc_service_part *svcpt, bool hp,
 }
 
 /**
- * Dequeues request \a req from the policy it has been enqueued on.
- *
- * \param[in] req the request
+ * ptlrpc_nrs_req_del_nolock() - Dequeues request @req from the policy it has
+ * been enqueued on.
+ * @req: the request
  */
 void ptlrpc_nrs_req_del_nolock(struct ptlrpc_request *req)
 {
@@ -1605,17 +1575,19 @@ void ptlrpc_nrs_req_del_nolock(struct ptlrpc_request *req)
 }
 
 /**
+ * ptlrpc_nrs_req_pending_nolock() - Returns whether there are any requests
+ * currently enqueued on any of the
+ * @svcpt: the service partition to enquire.
+ * @hp: whether the regular or high-priority NRS head is to be enquired.
+ *
  * Returns whether there are any requests currently enqueued on any of the
- * policies of service partition's \a svcpt NRS head specified by \a hp. Should
+ * policies of service partition's @svcpt NRS head specified by @hp. Should
  * be called while holding ptlrpc_service_part::scp_req_lock to get a reliable
  * result.
  *
- * \param[in] svcpt the service partition to enquire.
- * \param[in] hp    whether the regular or high-priority NRS head is to be
- *		    enquired.
- *
- * \retval false the indicated NRS head has no enqueued requests.
- * \retval true	 the indicated NRS head has some enqueued requests.
+ * Return:
+ * * %false the indicated NRS head has no enqueued requests.
+ * * %true	 the indicated NRS head has some enqueued requests.
  */
 bool ptlrpc_nrs_req_pending_nolock(struct ptlrpc_service_part *svcpt, bool hp)
 {
@@ -1625,14 +1597,14 @@ bool ptlrpc_nrs_req_pending_nolock(struct ptlrpc_service_part *svcpt, bool hp)
 };
 
 /**
- * Returns whether NRS policy is throttling reqeust
+ * ptlrpc_nrs_req_throttling_nolock() - Returns whether NRS policy is throttling
+ * reqeust
+ * @svcpt: the service partition to enquire.
+ * @hp: whether the regular or high-priority NRS head is to be enquired.
  *
- * \param[in] svcpt the service partition to enquire.
- * \param[in] hp    whether the regular or high-priority NRS head is to be
- *		    enquired.
- *
- * \retval false the indicated NRS head has no enqueued requests.
- * \retval true	 the indicated NRS head has some enqueued requests.
+ * Return:
+ * * %false the indicated NRS head has no enqueued requests.
+ * * %true  the indicated NRS head has some enqueued requests.
  */
 bool ptlrpc_nrs_req_throttling_nolock(struct ptlrpc_service_part *svcpt,
 				      bool hp)
@@ -1643,9 +1615,9 @@ bool ptlrpc_nrs_req_throttling_nolock(struct ptlrpc_service_part *svcpt,
 };
 
 /**
- * Moves request \a req from the regular to the high-priority NRS head.
- *
- * \param[in] req the request to move
+ * ptlrpc_nrs_req_hp_move() - Moves request @req from the regular to the
+ * high-priority NRS head.
+ * @req: the request to move
  */
 void ptlrpc_nrs_req_hp_move(struct ptlrpc_request *req)
 {
@@ -1687,30 +1659,32 @@ out:
 }
 
 /**
- * Carries out a control operation \a opc on the policy identified by the
- * human-readable \a name, on either all partitions, or only on the first
- * partition of service \a svc.
+ * ptlrpc_nrs_policy_control() - Carries out control operation @opc on policy
+ * @svc: the service the policy belongs to.
+ * @queue: whether to carry out the command on the policy which
+ *	   belongs to the regular, high-priority, or both NRS
+ *	   heads of service partitions of @svc.
+ * @name: the policy to act upon, by human-readable name
+ * @opc: the opcode of the operation to carry out
+ * @single: when set, the operation will only be carried out on the
+ *	    NRS heads of the first service partition of @svc.
+ *	    This is useful for some policies which e.g. share
+ *	    identical values on the same parameters of different
+ *	    service partitions; when reading these parameters via
+ *	    lprocfs, these policies may just want to obtain and
+ *	    print out the values from the first service partition.
+ *	    Storing these values centrally elsewhere then could be
+ *	    another solution for this.
+ * @arg: can be used as a generic in/out buffer between control operations and
+ *	 the user environment. [in,out]
  *
- * \param[in]	  svc	 the service the policy belongs to.
- * \param[in]	  queue  whether to carry out the command on the policy which
- *			 belongs to the regular, high-priority, or both NRS
- *			 heads of service partitions of \a svc.
- * \param[in]	  name   the policy to act upon, by human-readable name
- * \param[in]	  opc	 the opcode of the operation to carry out
- * \param[in]	  single when set, the operation will only be carried out on the
- *			 NRS heads of the first service partition of \a svc.
- *			 This is useful for some policies which e.g. share
- *			 identical values on the same parameters of different
- *			 service partitions; when reading these parameters via
- *			 lprocfs, these policies may just want to obtain and
- *			 print out the values from the first service partition.
- *			 Storing these values centrally elsewhere then could be
- *			 another solution for this.
- * \param[in,out] arg	 can be used as a generic in/out buffer between control
- *			 operations and the user environment.
+ * Carries out a control operation @opc on the policy identified by the
+ * human-readable @name, on either all partitions, or only on the first
+ * partition of service @svc.
  *
- *\retval -ve error condition
- *\retval   0 operation was carried out successfully
+ * Return:
+ * * %-ve error condition
+ * * %0 operation was carried out successfully
  */
 int ptlrpc_nrs_policy_control(const struct ptlrpc_service *svc,
 			      enum ptlrpc_nrs_queue_type queue, char *name,
@@ -1755,11 +1729,12 @@ out:
 }
 
 /**
- * Adds all policies that ship with the ptlrpc module, to NRS core's list of
- * policies \e nrs_core.nrs_policies.
+ * ptlrpc_nrs_init() - Adds all policies that ship with the ptlrpc module,
+ * to NRS core's list of policies @nrs_core.nrs_policies.
  *
- * \retval 0 all policies have been registered successfully
- * \retval -ve error
+ * Return:
+ * * %0 all policies have been registered successfully
+ * * %-ve error
  */
 int ptlrpc_nrs_init(void)
 {
@@ -1773,7 +1748,7 @@ int ptlrpc_nrs_init(void)
 	if (rc != 0)
 		GOTO(fail, rc);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	rc = ptlrpc_nrs_policy_register(&nrs_conf_crrn);
 	if (rc != 0)
 		GOTO(fail, rc);
@@ -1788,7 +1763,7 @@ int ptlrpc_nrs_init(void)
 	rc = ptlrpc_nrs_policy_register(&nrs_conf_tbf);
 	if (rc != 0)
 		GOTO(fail, rc);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 	rc = ptlrpc_nrs_policy_register(&nrs_conf_delay);
 	if (rc != 0)
@@ -1806,8 +1781,8 @@ fail:
 }
 
 /**
- * Removes all policy descriptors from nrs_core::nrs_policies, and frees the
- * policy descriptors.
+ * ptlrpc_nrs_fini() - Removes all policy descriptors from
+ * nrs_core::nrs_policies, and frees the policy descriptors.
  *
  * Since all PTLRPC services are stopped at this point, there are no more
  * instances of any policies, because each service will have stopped its policy

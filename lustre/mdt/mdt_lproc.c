@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_lproc.c
  *
  * Author: Lai Siyao <lsy@clusterfs.com>
  * Author: Fan Yong <fanyong@clusterfs.com>
@@ -52,11 +32,14 @@
 #include <lustre_export.h>
 /* struct obd_device */
 #include <obd.h>
+#include <obd_cksum.h>
 #include <obd_class.h>
 #include <lustre_mds.h>
 #include <lprocfs_status.h>
 #include "mdt_internal.h"
 #include <obd_cksum.h>
+#include <linux/libcfs/libcfs_caps.h>
+#include <lustre_nodemap.h>
 
 /**
  * The rename stats output would be YAML formats, like
@@ -143,18 +126,19 @@ mdt_rename_stats_seq_write(struct file *file, const char __user *buf,
 
 	return len;
 }
-LPROC_SEQ_FOPS(mdt_rename_stats);
+LDEBUGFS_SEQ_FOPS(mdt_rename_stats);
 
-static int lproc_mdt_attach_rename_seqstat(struct mdt_device *mdt)
+static void lproc_mdt_attach_rename_seqstat(struct mdt_device *mdt)
 {
+	struct obd_device *obd = mdt2obd_dev(mdt);
 	int i;
 
 	for (i = 0; i < RENAME_LAST; i++)
 		spin_lock_init(&mdt->mdt_rename_stats.rs_hist[i].oh_lock);
 	mdt->mdt_rename_stats.rs_init = ktime_get_real();
 
-	return lprocfs_obd_seq_create(mdt2obd_dev(mdt), "rename_stats", 0644,
-				      &mdt_rename_stats_fops, mdt);
+	debugfs_create_file("rename_stats", 0644, obd->obd_debugfs_entry, mdt,
+			    &mdt_rename_stats_fops);
 }
 
 void mdt_rename_counter_tally(struct mdt_thread_info *info,
@@ -360,12 +344,12 @@ static ssize_t identity_flush_store(struct kobject *kobj,
 }
 LUSTRE_WO_ATTR(identity_flush);
 
-static ssize_t
-lprocfs_identity_info_seq_write(struct file *file, const char __user *buffer,
-				size_t count, void *data)
+static ssize_t identity_info_store(struct kobject *kobj,
+				   struct attribute *attr,
+				   const char *buffer, size_t count)
 {
-	struct seq_file	  *m = file->private_data;
-	struct obd_device *obd = m->private;
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
 	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
 	struct identity_downcall_data *param;
 	int size = sizeof(*param), rc, checked = 0;
@@ -381,11 +365,7 @@ again:
 	if (param == NULL)
 		return -ENOMEM;
 
-	if (copy_from_user(param, buffer, size)) {
-		CERROR("%s: bad identity data\n", mdt_obd_name(mdt));
-		GOTO(out, rc = -EFAULT);
-	}
-
+	memcpy(param, buffer, size);
 	if (checked == 0) {
 		checked = 1;
 		if (param->idd_magic != IDENTITY_DOWNCALL_MAGIC) {
@@ -425,7 +405,7 @@ out:
 
 	return rc ? rc : count;
 }
-LPROC_SEQ_FOPS_WR_ONLY(mdt, identity_info);
+LUSTRE_WO_ATTR(identity_info);
 
 static ssize_t identity_int_expire_show(struct kobject *kobj,
 					struct attribute *attr, char *buf)
@@ -487,44 +467,21 @@ static ssize_t identity_int_flush_store(struct kobject *kobj,
 }
 LUSTRE_WO_ATTR(identity_int_flush);
 
-static int mdt_site_stats_seq_show(struct seq_file *m, void *data)
+static ssize_t mdt_evict_client_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer, size_t count)
 {
-	struct obd_device *obd = m->private;
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
 	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
-
-	return lu_site_stats_seq_print(mdt_lu_site(mdt), m);
-}
-LPROC_SEQ_FOPS_RO(mdt_site_stats);
-
-#define BUFLEN LNET_NIDSTR_SIZE
-
-static ssize_t
-lprocfs_mds_evict_client_seq_write(struct file *file, const char __user *buf,
-				   size_t count, loff_t *off)
-{
-	struct seq_file	  *m = file->private_data;
-	struct obd_device *obd = m->private;
-	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
-	char *kbuf;
+	size_t len = min_t(size_t, LNET_NIDSTR_SIZE - 1, count);
 	char *tmpbuf;
 	int rc = 0;
 
-	OBD_ALLOC(kbuf, BUFLEN);
-	if (kbuf == NULL)
-		return -ENOMEM;
-
-	/*
-	 * OBD_ALLOC() will zero kbuf, but we only copy BUFLEN - 1
-	 * bytes into kbuf, to ensure that the string is NUL-terminated.
-	 * LNET_NIDSTR_SIZE includes space for a trailing NUL already.
-	 */
-	if (copy_from_user(kbuf, buf, min_t(unsigned long, BUFLEN - 1, count)))
-		GOTO(out, rc = -EFAULT);
-	tmpbuf = skip_spaces(kbuf);
+	tmpbuf = skip_spaces(buffer);
 	tmpbuf = strsep(&tmpbuf, " \t\n\f\v\r");
-
 	if (strncmp(tmpbuf, "nid:", 4) != 0) {
-		count = lprocfs_evict_client_seq_write(file, buf, count, off);
+		count = evict_client_store(kobj, attr, buffer, len);
 		goto out;
 	}
 
@@ -539,19 +496,26 @@ lprocfs_mds_evict_client_seq_write(struct file *file, const char __user *buf,
 			       tmpbuf + 4, rc);
 	}
 
-	/* See the comments in function lprocfs_wr_evict_client()
-	 * in ptlrpc/lproc_ptlrpc.c for details. - jay */
+	/* See the comments in function evict_client_stor()
+	 * in obdclass/lproc_status_server.c for details. - jay
+	 */
 	class_incref(obd, __func__, current);
 	obd_export_evict_by_nid(obd, tmpbuf + 4);
 	class_decref(obd, __func__, current);
-
-
 out:
-	OBD_FREE(kbuf, BUFLEN);
 	return rc < 0 ? rc : count;
 }
+LUSTRE_ATTR(evict_client, 0200, NULL, mdt_evict_client_store);
 
-#undef BUFLEN
+static int site_stats_seq_show(struct seq_file *m, void *data)
+{
+	struct obd_device *obd = m->private;
+	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
+
+	return lu_site_stats_seq_print(mdt_lu_site(mdt), m);
+}
+
+LDEBUGFS_SEQ_FOPS_RO(site_stats);
 
 static ssize_t commit_on_sharing_show(struct kobject *kobj,
 				      struct attribute *attr, char *buf)
@@ -633,7 +597,8 @@ mdt_root_squash_seq_write(struct file *file, const char __user *buffer,
 	return lprocfs_wr_root_squash(buffer, count, squash,
 				      mdt_obd_name(mdt));
 }
-LPROC_SEQ_FOPS(mdt_root_squash);
+
+LDEBUGFS_SEQ_FOPS(mdt_root_squash);
 
 static int mdt_nosquash_nids_seq_show(struct seq_file *m, void *data)
 {
@@ -667,56 +632,8 @@ mdt_nosquash_nids_seq_write(struct file *file, const char __user *buffer,
 	return lprocfs_wr_nosquash_nids(buffer, count, squash,
 					mdt_obd_name(mdt));
 }
-LPROC_SEQ_FOPS(mdt_nosquash_nids);
 
-static const char *mdt_cap2str(int cap)
-{
-	/* We don't allow using all capabilities, but the fields must exist.
-	 * The supported capabilities are CAP_FS_SET and CAP_NFSD_SET, plus
-	 * CAP_SYS_ADMIN for a bunch of HSM operations (that should be fixed).
-	 */
-	static const char *const capability_names[] = {
-		"cap_chown",			/*  0 */
-		"cap_dac_override",		/*  1 */
-		"cap_dac_read_search",		/*  2 */
-		"cap_fowner",			/*  3 */
-		"cap_fsetid",			/*  4 */
-		NULL,				/*  5 */
-		NULL,				/*  6 */
-		NULL,				/*  7 */
-		NULL,				/*  8 */
-		"cap_linux_immutable",		/*  9 */
-		NULL,				/* 10 */
-		NULL,				/* 11 */
-		NULL,				/* 12 */
-		NULL,				/* 13 */
-		NULL,				/* 14 */
-		NULL,				/* 15 */
-		NULL,				/* 16 */
-		NULL,				/* 17 */
-		NULL,				/* 18 */
-		NULL,				/* 19 */
-		NULL,				/* 20 */
-		/* we should use more precise capabilities than this */
-		"cap_sys_admin",		/* 21 */
-		NULL,				/* 22 */
-		NULL,				/* 23 */
-		"cap_sys_resource",		/* 24 */
-		NULL,				/* 25 */
-		NULL,				/* 26 */
-		"cap_mknod",			/* 27 */
-		NULL,				/* 28 */
-		NULL,				/* 29 */
-		NULL,				/* 30 */
-		NULL,				/* 31 */
-		"cap_mac_override",		/* 32 */
-	};
-
-	if (cap >= ARRAY_SIZE(capability_names))
-		return NULL;
-
-	return capability_names[cap];
-}
+LDEBUGFS_SEQ_FOPS(mdt_nosquash_nids);
 
 static ssize_t enable_cap_mask_show(struct kobject *kobj,
 				    struct attribute *attr, char *buf)
@@ -724,9 +641,9 @@ static ssize_t enable_cap_mask_show(struct kobject *kobj,
 	struct obd_device *obd = container_of(kobj, struct obd_device,
 					      obd_kset.kobj);
 	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
-	u64 mask = mdt_cap2num(mdt->mdt_enable_cap_mask);
+	u64 mask = libcfs_cap2num(mdt->mdt_enable_cap_mask);
 
-	return cfs_mask2str(buf, PAGE_SIZE, mask, mdt_cap2str, ',');
+	return cfs_mask2str(buf, PAGE_SIZE, mask, libcfs_cap2str, ',');
 }
 
 static ssize_t enable_cap_mask_store(struct kobject *kobj,
@@ -742,10 +659,10 @@ static ssize_t enable_cap_mask_store(struct kobject *kobj,
 
 	rc = kstrtoull(buffer, 0, &val);
 	if (rc == -EINVAL) {
-		u64 cap = mdt_cap2num(mdt->mdt_enable_cap_mask);
+		u64 cap = libcfs_cap2num(mdt->mdt_enable_cap_mask);
 
 		/* the "allmask" is filtered by allowed_mask below */
-		rc = cfs_str2mask(buffer, mdt_cap2str, &cap, 0, ~0ULL, 0);
+		rc = cfs_str2mask(buffer, libcfs_cap2str, &cap, 0, ~0ULL, 0);
 		val = cap;
 	}
 	if (rc)
@@ -757,7 +674,8 @@ static ssize_t enable_cap_mask_store(struct kobject *kobj,
 		cap_raise(allowed_cap, CAP_SYS_RESOURCE);
 	}
 
-	mdt->mdt_enable_cap_mask = cap_intersect(mdt_num2cap(val), allowed_cap);
+	mdt->mdt_enable_cap_mask = cap_intersect(libcfs_num2cap(val),
+						 allowed_cap);
 
 	return count;
 }
@@ -830,6 +748,8 @@ static ssize_t name##_show(struct kobject *kobj, struct attribute *attr,\
 	struct obd_device *obd = container_of(kobj, struct obd_device,	\
 					      obd_kset.kobj);		\
 	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);		\
+	if (IS_ERR_OR_NULL(mdt))					\
+		return -ENOENT;						\
 	return scnprintf(buf, PAGE_SIZE, "%u\n", mdt->mdt_##name);	\
 }									\
 static ssize_t name##_store(struct kobject *kobj, struct attribute *attr,\
@@ -840,6 +760,8 @@ static ssize_t name##_store(struct kobject *kobj, struct attribute *attr,\
 	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);		\
 	bool val;							\
 	int rc;								\
+	if (IS_ERR_OR_NULL(mdt))					\
+		return -ENOENT;						\
 	rc = kstrtobool(buffer, &val);					\
 	if (rc)								\
 		return rc;						\
@@ -865,6 +787,100 @@ MDT_BOOL_RW_ATTR(migrate_hsm_allowed);
 MDT_BOOL_RW_ATTR(enable_strict_som);
 MDT_BOOL_RW_ATTR(enable_dmv_implicit_inherit);
 MDT_BOOL_RW_ATTR(enable_dmv_xattr);
+MDT_BOOL_RW_ATTR(enable_rename_trylock);
+
+/**
+ * enable_resource_id_check_show() - Show if resource ID checking is enabled
+ * on the MDT.
+ *
+ * @kobj: kobject for the MDT device
+ * @attr: attribute for the MDT device
+ * @buf: buffer to write the value to
+ *
+ * When enabled, MDT inodes UID/GID are checked against
+ * the nodemap mapping rules.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t enable_resource_id_check_show(struct kobject *kobj,
+					     struct attribute *attr, char *buf)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 mdt->mdt_lut.lut_enable_resource_id_check);
+}
+
+/**
+ * enable_resource_id_check_store() - Enable or disable resource ID checking
+ * on the MDT.
+ *
+ * @kobj: kobject for the MDT device
+ * @attr: attribute for the MDT device
+ * @buffer: buffer containing the value to set
+ * @count: length of the buffer
+ *
+ * This is used to interface to userspace administrative tools to enable
+ * or disable resource ID checking on the MDT.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t enable_resource_id_check_store(struct kobject *kobj,
+					      struct attribute *attr,
+					      const char *buffer, size_t count)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buffer, &val);
+	if (rc)
+		return rc;
+
+	mdt->mdt_lut.lut_enable_resource_id_check = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(enable_resource_id_check);
+
+static ssize_t enable_pin_gid_show(struct kobject *kobj,
+				   struct attribute *attr, char *buf)
+{
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
+	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
+
+	if (mdt->mdt_enable_pin_gid == ~0U)
+		return scnprintf(buf, PAGE_SIZE, "-1\n");
+	return scnprintf(buf, PAGE_SIZE, "%u\n", mdt->mdt_enable_pin_gid);
+}
+
+static ssize_t enable_pin_gid_store(struct kobject *kobj,
+				    struct attribute *attr,
+				    const char *buffer, size_t count)
+{
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
+	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
+	int val;
+	int rc;
+
+	rc = kstrtoint(buffer, 0, &val);
+	if (rc)
+		return rc;
+
+	mdt->mdt_enable_pin_gid = val;
+	return count;
+}
+LUSTRE_RW_ATTR(enable_pin_gid);
 
 /**
  * Show if the MDT is in no create mode.
@@ -1276,41 +1292,6 @@ static ssize_t max_mod_rpcs_in_flight_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(max_mod_rpcs_in_flight);
 
-/*
- * mdt_checksum_type(server) proc handling
- */
-DECLARE_CKSUM_NAME;
-
-static int mdt_checksum_type_seq_show(struct seq_file *m, void *data)
-{
-	struct obd_device *obd = m->private;
-	struct lu_target *lut;
-	enum cksum_types pref;
-	int i;
-
-	if (!obd)
-		return 0;
-
-	lut = obd2obt(obd)->obt_lut;
-	/* select fastest checksum type on the server */
-	pref = obd_cksum_type_select(obd->obd_name,
-				     lut->lut_cksum_types_supported,
-				     lut->lut_dt_conf.ddp_t10_cksum_type);
-
-	for (i = 0; i < ARRAY_SIZE(cksum_name); i++) {
-		if ((BIT(i) & lut->lut_cksum_types_supported) == 0)
-			continue;
-
-		if (pref == BIT(i))
-			seq_printf(m, "[%s] ", cksum_name[i]);
-		else
-			seq_printf(m, "%s ", cksum_name[i]);
-	}
-	seq_puts(m, "\n");
-
-	return 0;
-}
-
 static ssize_t job_xattr_show(struct kobject *kobj, struct attribute *attr,
 			      char *buf)
 {
@@ -1396,17 +1377,38 @@ static ssize_t job_xattr_store(struct kobject *kobj, struct attribute *attr,
 	return count;
 }
 
-LPROC_SEQ_FOPS_RO(mdt_checksum_type);
+static ssize_t force_sync_store(struct kobject *kobj, struct attribute *attr,
+				const char *buffer, size_t count)
+{
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
+	struct mdt_device *mdt = mdt_dev(obd->obd_lu_dev);
+	struct lu_env env;
+	int rc;
 
-LPROC_SEQ_FOPS_RO_TYPE(mdt, hash);
-LPROC_SEQ_FOPS_WR_ONLY(mdt, mds_evict_client);
-LPROC_SEQ_FOPS_RW_TYPE(mdt, checksum_dump);
+	rc = lu_env_init(&env, LCT_MD_THREAD);
+	if (rc)
+		GOTO(out, rc);
+
+	rc = mdt_device_sync(&env, mdt);
+
+	lu_env_fini(&env);
+out:
+	return rc == 0 ? count : rc;
+}
+LUSTRE_WO_ATTR(force_sync);
+
+LDEBUGFS_SEQ_FOPS_RO_TYPE(mdt, hash);
+/* belongs to export directory */
+LDEBUGFS_SEQ_FOPS_RW_TYPE(mdt, nid_stats_clear);
+
+LUSTRE_ATTR(checksum_dump, 0644, dt_checksum_dump_show, dt_checksum_dump_store);
+LUSTRE_ATTR(checksum_type, 0444, dt_checksum_type_show, NULL);
+
 LUSTRE_RW_ATTR(job_cleanup_interval);
 LUSTRE_RW_ATTR(job_xattr);
-LPROC_SEQ_FOPS_RW_TYPE(mdt, nid_stats_clear);
 LUSTRE_RW_ATTR(hsm_control);
 
-LPROC_SEQ_FOPS_RO_TYPE(mdt, recovery_status);
 LUSTRE_RW_ATTR(recovery_time_hard);
 LUSTRE_RW_ATTR(recovery_time_soft);
 LUSTRE_RW_ATTR(ir_factor);
@@ -1426,6 +1428,7 @@ LUSTRE_OBD_UINT_PARAM_ATTR(at_min);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_max);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_history);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_unhealthy_factor);
+LUSTRE_OBD_UINT_PARAM_ATTR(ldlm_enqueue_min);
 
 static struct attribute *mdt_attrs[] = {
 	&lustre_attr_at_min.attr,
@@ -1442,17 +1445,20 @@ static struct attribute *mdt_attrs[] = {
 	&lustre_attr_ir_factor.attr,
 	&lustre_attr_num_exports.attr,
 	&lustre_attr_grant_check_threshold.attr,
+	&lustre_attr_evict_client.attr,
 	&lustre_attr_eviction_count.attr,
 	&lustre_attr_identity_expire.attr,
 	&lustre_attr_identity_acquire_expire.attr,
 	&lustre_attr_identity_upcall.attr,
 	&lustre_attr_identity_flush.attr,
+	&lustre_attr_identity_info.attr,
 	&lustre_attr_identity_int_expire.attr,
 	&lustre_attr_identity_int_acquire_expire.attr,
 	&lustre_attr_identity_int_flush.attr,
 	&lustre_attr_evict_tgt_nids.attr,
 	&lustre_attr_enable_cap_mask.attr,
 	&lustre_attr_enable_chprojid_gid.attr,
+	&lustre_attr_enable_pin_gid.attr,
 	&lustre_attr_enable_dir_migration.attr,
 	&lustre_attr_enable_dir_restripe.attr,
 	&lustre_attr_enable_dir_auto_split.attr,
@@ -1465,6 +1471,8 @@ static struct attribute *mdt_attrs[] = {
 	&lustre_attr_enable_remote_dir_gid.attr,
 	&lustre_attr_enable_remote_rename.attr,
 	&lustre_attr_enable_remote_subdir_mount.attr,
+	&lustre_attr_enable_rename_trylock.attr,
+	&lustre_attr_enable_resource_id_check.attr,
 	&lustre_attr_enable_strict_som.attr,
 	&lustre_attr_enable_striped_dir.attr,
 	&lustre_attr_commit_on_sharing.attr,
@@ -1482,40 +1490,33 @@ static struct attribute *mdt_attrs[] = {
 	&lustre_attr_dir_split_count.attr,
 	&lustre_attr_dir_split_delta.attr,
 	&lustre_attr_dir_restripe_nsonly.attr,
+	&lustre_attr_checksum_dump.attr,
 	&lustre_attr_checksum_t10pi_enforce.attr,
+	&lustre_attr_checksum_type.attr,
 	&lustre_attr_max_mod_rpcs_in_flight.attr,
+	&lustre_attr_force_sync.attr,
+	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,
 };
 
 KOBJ_ATTRIBUTE_GROUPS(mdt); /* creates mdt_groups from mdt_attrs */
 
-static struct lprocfs_vars lprocfs_mdt_obd_vars[] = {
-	{ .name =	"recovery_status",
-	  .fops =	&mdt_recovery_status_fops		},
-	{ .name =	"identity_info",
-	  .fops =	&mdt_identity_info_fops			},
-	{ .name =	"site_stats",
-	  .fops =	&mdt_site_stats_fops			},
-	{ .name =	"evict_client",
-	  .fops =	&mdt_mds_evict_client_fops		},
-	{ .name =	"checksum_dump",
-	  .fops =	&mdt_checksum_dump_fops			},
-	{ .name =	"hash_stats",
-	  .fops =	&mdt_hash_fops				},
-	{ .name =	"root_squash",
-	  .fops =	&mdt_root_squash_fops			},
-	{ .name =	"nosquash_nids",
-	  .fops =	&mdt_nosquash_nids_fops			},
-	{ .name =	"checksum_type",
-	  .fops =	&mdt_checksum_type_fops		},
-	{ NULL }
-};
-
+LDEBUGFS_SEQ_FOPS_RO_TYPE(mdt, recovery_status);
 LDEBUGFS_SEQ_FOPS_RO_TYPE(mdt, recovery_stale_clients);
 
 static struct ldebugfs_vars ldebugfs_mdt_obd_vars[] = {
+	{ .name =	"hash_stats",
+	  .fops =	&mdt_hash_fops				},
+	{ .name =	"nosquash_nids",
+	  .fops =	&mdt_nosquash_nids_fops			},
+	{ .name =	"recovery_status",
+	  .fops =	&mdt_recovery_status_fops		},
 	{ .name =	"recovery_stale_clients",
 	  .fops =	&mdt_recovery_stale_clients_fops	},
+	{ .name =	"root_squash",
+	  .fops =	&mdt_root_squash_fops			},
+	{ .name =	"site_stats",
+	  .fops =	&site_stats_fops			},
 	{ NULL }
 };
 
@@ -1528,7 +1529,7 @@ static struct ldebugfs_vars ldebugfs_mdt_gss_vars[] = {
 };
 
 static int
-lprocfs_mdt_print_open_files(struct obd_export *exp, void *v)
+ldebugfs_mdt_print_open_files(struct obd_export *exp, void *v)
 {
 	struct seq_file		*seq = v;
 
@@ -1547,25 +1548,25 @@ lprocfs_mdt_print_open_files(struct obd_export *exp, void *v)
 	return 0;
 }
 
-static int lprocfs_mdt_open_files_seq_show(struct seq_file *seq, void *v)
+static int ldebugfs_mdt_open_files_seq_show(struct seq_file *seq, void *v)
 {
 	struct nid_stat *stats = seq->private;
 
 	return obd_nid_export_for_each(stats->nid_obd, &stats->nid,
-				       lprocfs_mdt_print_open_files, seq);
+				       ldebugfs_mdt_print_open_files, seq);
 }
 
-int lprocfs_mdt_open_files_seq_open(struct inode *inode, struct file *file)
+int ldebugfs_mdt_open_files_seq_open(struct inode *inode, struct file *file)
 {
 	struct seq_file		*seq;
 	int			rc;
 
-	rc = single_open(file, &lprocfs_mdt_open_files_seq_show, NULL);
+	rc = single_open(file, &ldebugfs_mdt_open_files_seq_show, NULL);
 	if (rc != 0)
 		return rc;
 
 	seq = file->private_data;
-	seq->private = pde_data(inode);
+	seq->private = inode->i_private;
 
 	return 0;
 }
@@ -1573,18 +1574,32 @@ int lprocfs_mdt_open_files_seq_open(struct inode *inode, struct file *file)
 void mdt_counter_incr(struct ptlrpc_request *req, int opcode, long amount)
 {
 	struct obd_export *exp = req->rq_export;
+	struct lu_nodemap *nm;
 
-	if (exp->exp_obd && exp->exp_obd->obd_md_stats)
+	if (unlikely(!exp->exp_obd))
+		return;
+
+	if (likely(exp->exp_obd->obd_md_stats))
 		lprocfs_counter_add(exp->exp_obd->obd_md_stats,
 				    opcode + LPROC_MD_LAST_OPC, amount);
+
 	if (exp->exp_nid_stats && exp->exp_nid_stats->nid_stats != NULL)
 		lprocfs_counter_add(exp->exp_nid_stats->nid_stats, opcode,
 				    amount);
-	if (exp->exp_obd && obd2obt(exp->exp_obd)->obt_jobstats.ojs_hash &&
+
+	if (obd2obt(exp->exp_obd)->obt_jobstats.ojs_cntr_num &&
 	    (exp_connect_flags(exp) & OBD_CONNECT_JOBSTATS))
 		lprocfs_job_stats_log(exp->exp_obd,
 				      lustre_msg_get_jobid(req->rq_reqmsg),
 				      opcode, amount);
+
+	nm = nodemap_get_from_exp(exp);
+	if (!IS_ERR_OR_NULL(nm)) {
+		if (likely(nm->nm_md_stats))
+			lprocfs_counter_add(nm->nm_md_stats,
+					    opcode + LPROC_MD_LAST_OPC, amount);
+		nodemap_putref(nm);
+	}
 }
 
 static const char * const mdt_stats[] = {
@@ -1606,6 +1621,7 @@ static const char * const mdt_stats[] = {
 	[LPROC_MDT_RENAME_PAR_FILE]	= "parallel_rename_file",
 	[LPROC_MDT_RENAME_PAR_DIR]	= "parallel_rename_dir",
 	[LPROC_MDT_RENAME_CROSSDIR]	= "crossdir_rename",
+	[LPROC_MDT_RENAME_TRYLOCK]	= "rename_trylocks",
 	[LPROC_MDT_IO_READ_BYTES]	= "read_bytes",
 	[LPROC_MDT_IO_WRITE_BYTES]	= "write_bytes",
 	[LPROC_MDT_IO_READ]		= "read",
@@ -1649,14 +1665,13 @@ int mdt_tunables_init(struct mdt_device *mdt, const char *name)
 	LASSERT(name != NULL);
 
 	obd->obd_ktype.default_groups = KOBJ_ATTR_GROUPS(mdt);
-	obd->obd_vars = lprocfs_mdt_obd_vars;
+	obd->obd_debugfs_vars = ldebugfs_mdt_obd_vars;
 	rc = lprocfs_obd_setup(obd, true);
 	if (rc) {
 		CERROR("%s: cannot create proc entries: rc = %d\n",
 		       mdt_obd_name(mdt), rc);
 		return rc;
 	}
-	ldebugfs_add_vars(obd->obd_debugfs_entry, ldebugfs_mdt_obd_vars, obd);
 
 	rc = tgt_tunables_init(&mdt->mdt_lut);
 	if (rc) {
@@ -1674,15 +1689,19 @@ int mdt_tunables_init(struct mdt_device *mdt, const char *name)
 
 	obd->obd_debugfs_gss_dir = debugfs_create_dir("gss",
 						      obd->obd_debugfs_entry);
-	if (obd->obd_debugfs_gss_dir)
-		ldebugfs_add_vars(obd->obd_debugfs_gss_dir,
-				  ldebugfs_mdt_gss_vars, obd);
+	if (IS_ERR(obd->obd_debugfs_gss_dir))
+		obd->obd_debugfs_gss_dir = NULL;
 
-	obd->obd_proc_exports_entry = proc_mkdir("exports",
-						 obd->obd_proc_entry);
-	if (obd->obd_proc_exports_entry)
-		lprocfs_add_simple(obd->obd_proc_exports_entry, "clear",
-				   obd, &mdt_nid_stats_clear_fops);
+	ldebugfs_add_vars(obd->obd_debugfs_gss_dir,
+			  ldebugfs_mdt_gss_vars, obd);
+
+	obd->obd_debugfs_exports = debugfs_create_dir("exports",
+						      obd->obd_debugfs_entry);
+	if (IS_ERR(obd->obd_debugfs_exports))
+		obd->obd_debugfs_exports = NULL;
+
+	debugfs_create_file("clear", 0644, obd->obd_debugfs_exports,
+			    obd, &mdt_nid_stats_clear_fops);
 
 	rc = lprocfs_alloc_md_stats(obd, ARRAY_SIZE(mdt_stats));
 	if (rc)
@@ -1694,10 +1713,7 @@ int mdt_tunables_init(struct mdt_device *mdt, const char *name)
 	rc = lprocfs_job_stats_init(obd, ARRAY_SIZE(mdt_stats),
 				    mdt_stats_counter_init);
 
-	rc = lproc_mdt_attach_rename_seqstat(mdt);
-	if (rc)
-		CERROR("%s: MDT can not create rename stats rc = %d\n",
-		       mdt_obd_name(mdt), rc);
+	lproc_mdt_attach_rename_seqstat(mdt);
 
 	RETURN(rc);
 }
@@ -1705,11 +1721,6 @@ int mdt_tunables_init(struct mdt_device *mdt, const char *name)
 void mdt_tunables_fini(struct mdt_device *mdt)
 {
 	struct obd_device *obd = mdt2obd_dev(mdt);
-
-	if (obd->obd_proc_exports_entry != NULL) {
-		lprocfs_remove_proc_entry("clear", obd->obd_proc_exports_entry);
-		obd->obd_proc_exports_entry = NULL;
-	}
 
 	lprocfs_free_per_client_stats(obd);
 	/* hsm_cdt_tunables is disabled earlier than this to avoid

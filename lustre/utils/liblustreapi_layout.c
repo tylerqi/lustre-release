@@ -1,29 +1,13 @@
+// SPDX-License-Identifier: LGPL-2.1+
 /*
- * LGPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 or (at your discretion) any later version.
- * (LGPL) version 2.1 accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * LGPL HEADER END
+ * Copyright (c) 2016, 2017, Intel Corporation.
  */
 /*
- * lustre/utils/liblustreapi_layout.c
+ * This file is part of Lustre, http://www.lustre.org/
  *
  * lustreapi library for layout calls for interacting with the layout of
  * Lustre files while hiding details of the internal data structures
  * from the user.
- *
- * Copyright (c) 2016, 2017, Intel Corporation.
  *
  * Author: Ned Bass <bass6@llnl.gov>
  */
@@ -35,16 +19,19 @@
 #include <errno.h>
 #include <limits.h>
 #include <assert.h>
-#include <sys/xattr.h>
+#include <sys/mman.h>
 #include <sys/param.h>
 #include <sys/time.h>
+#include <sys/xattr.h>
 #include <time.h>
 
 #include <libcfs/util/list.h>
+#include <linux/lustre/lustre_idl.h>
 #include <lustre/lustreapi.h>
 #include "lustreapi_internal.h"
+#include "lstddef.h"
 
-/**
+/*
  * Layout component, which contains all attributes of a plain
  * V1/V3/FOREIGN(HSM) layout.
  */
@@ -65,6 +52,11 @@ struct llapi_layout_comp {
 			 * initialized.
 			 */
 			uint32_t	llc_objects_count;
+			/**
+			 * EC parity comp specific fields.
+			 */
+			uint8_t		llc_dstripe_count;
+			uint8_t		llc_cstripe_count;
 			struct lov_user_ost_data_v1 *llc_objects;
 		};
 		struct { /* For FOREIGN/HSM layout. */
@@ -81,18 +73,22 @@ struct llapi_layout_comp {
 	/* fields used only for composite layouts */
 	struct lu_extent	llc_extent;	/* [start, end) of component */
 	uint32_t		llc_id;		/* unique ID of component */
+	/* mirror ID this component belongs to */
+	uint32_t		llc_mirror_id;
+	/* mirror link id for data and parity components */
+	uint16_t		llc_mirror_link_id;
 	uint32_t		llc_flags;	/* LCME_FL_* flags */
 	uint64_t		llc_timestamp;	/* snapshot timestamp */
-	struct list_head	llc_list;	/* linked to the llapi_layout
-						   components list */
-	bool		llc_ondisk;
+	/* linked to the llapi_layout components list */
+	struct list_head	llc_list;
+	bool			llc_ondisk;
 };
 
 #define llc_archive_id	llc_hsm.lhb_archive_id
 #define llc_archive_ver	llc_hsm.lhb_archive_ver
 #define llc_uuid	llc_hsm.lhb_uuid
 
-/**
+/*
  * An Opaque data type abstracting the layout of a Lustre file.
  */
 struct llapi_layout {
@@ -101,19 +97,19 @@ struct llapi_layout {
 	uint32_t	llot_flags;
 	bool		llot_is_composite;
 	uint16_t	llot_mirror_count;
+	uint16_t	llot_curr_link_id;
 	/* Cursor pointing to one of the components in llot_comp_list */
 	struct llapi_layout_comp *llot_cur_comp;
 	struct list_head	  llot_comp_list;
 };
 
 /**
- * Compute the number of elements in the lmm_objects array of \a lum
- * with size \a lum_size.
+ * llapi_layout_objects_in_lum() - Compute the number of elements in the
+ * lmm_objects array of @lum with size @lum_size.
+ * @lum: the struct lov_user_md to check
+ * @lum_size: the number of bytes in @lum
  *
- * \param[in] lum	the struct lov_user_md to check
- * \param[in] lum_size	the number of bytes in \a lum
- *
- * \retval		number of elements in array lum->lmm_objects
+ * Return number of elements in array lum->lmm_objects
  */
 static int llapi_layout_objects_in_lum(struct lov_user_md *lum, size_t lum_size)
 {
@@ -140,7 +136,7 @@ static int llapi_layout_objects_in_lum(struct lov_user_md *lum, size_t lum_size)
 		return (lum_size - base_size) / sizeof(lum->lmm_objects[0]);
 }
 
-/**
+/*
  * Byte-swap the fields of struct lov_user_md.
  *
  * XXX Rather than duplicating swabbing code here, we should eventually
@@ -179,7 +175,7 @@ llapi_layout_swab_lov_user_md(struct lov_user_md *lum, int lum_size)
 			ent = &comp_v1->lcm_entries[i];
 			ent->lcme_id = __swab32(ent->lcme_id);
 			ent->lcme_flags = __swab32(ent->lcme_flags);
-			ent->lcme_timestamp = __swab64(ent->lcme_timestamp);
+			ent->lcme_time_and_id = __swab64(ent->lcme_time_and_id);
 			ent->lcme_extent.e_start = __swab64(ent->lcme_extent.e_start);
 			ent->lcme_extent.e_end = __swab64(ent->lcme_extent.e_end);
 			ent->lcme_offset = __swab32(ent->lcme_offset);
@@ -228,15 +224,16 @@ llapi_layout_swab_lov_user_md(struct lov_user_md *lum, int lum_size)
 }
 
 /**
- * (Re-)allocate llc_objects[] to \a num_stripes stripes.
+ * __llapi_comp_objects_realloc() - copy existing object to new object
+ * @comp: existing layout to be modified
+ * @new_stripes: number of stripes in new layout
  *
+ * (Re-)allocate llc_objects[] to @num_stripes stripes.
  * Copy over existing llc_objects[], if any, to the new llc_objects[].
  *
- * \param[in] layout		existing layout to be modified
- * \param[in] num_stripes	number of stripes in new layout
- *
- * \retval	0 if the objects are re-allocated successfully
- * \retval	-1 on error with errno set
+ * Return:
+ * * %0 if the objects are re-allocated successfully
+ * * %negative on error with errno set
  */
 static int __llapi_comp_objects_realloc(struct llapi_layout_comp *comp,
 					unsigned int new_stripes)
@@ -272,12 +269,11 @@ static int __llapi_comp_objects_realloc(struct llapi_layout_comp *comp,
 }
 
 /**
- * Allocate storage for a llapi_layout_comp with \a num_stripes stripes.
+ * __llapi_comp_alloc() - Allocate storage for a llapi_layout_comp with
+ * @num_stripes stripes.
+ * @num_stripes: number of stripes in new layout
  *
- * \param[in] num_stripes	number of stripes in new layout
- *
- * \retval	valid pointer if allocation succeeds
- * \retval	NULL if allocation fails
+ * Return valid pointer if allocation succeeds or NULL if allocation fails
  */
 static struct llapi_layout_comp *__llapi_comp_alloc(unsigned int num_stripes)
 {
@@ -312,16 +308,18 @@ static struct llapi_layout_comp *__llapi_comp_alloc(unsigned int num_stripes)
 	comp->llc_extent.e_end = LUSTRE_EOF;
 	comp->llc_flags = 0;
 	comp->llc_id = 0;
+	comp->llc_mirror_id = 0;
+	comp->llc_mirror_link_id = LLAPI_MIRROR_LINK_NONE;
 	INIT_LIST_HEAD(&comp->llc_list);
 
 	return comp;
 }
 
 /**
- * Allocate storage for a HSM component with \a length buffer.
+ * __llapi_comp_hsm_alloc() - Alloc storage for HSM component with @length buffer.
+ * @length: size of allocation
  *
- * \retval	valid pointer if allocation succeeds
- * \retval	NULL if allocate fails
+ * Return valid pointer if allocation succeeds or NULL if allocate fails
  */
 static struct llapi_layout_comp *__llapi_comp_hsm_alloc(uint32_t length)
 {
@@ -354,9 +352,8 @@ static struct llapi_layout_comp *__llapi_comp_hsm_alloc(uint32_t length)
 }
 
 /**
- * Free memory allocated for \a comp
- *
- * \param[in] comp	previously allocated by __llapi_comp_alloc()
+ * __llapi_comp_free() - Free memory allocated for @comp
+ * @comp: previously allocated by __llapi_comp_alloc()
  */
 static void __llapi_comp_free(struct llapi_layout_comp *comp)
 {
@@ -368,9 +365,8 @@ static void __llapi_comp_free(struct llapi_layout_comp *comp)
 }
 
 /**
- * Free memory allocated for \a layout.
- *
- * \param[in] layout	previously allocated by llapi_layout_alloc()
+ * llapi_layout_free() - Free memory allocated for @layout.
+ * @layout: previously allocated by llapi_layout_alloc()
  */
 void llapi_layout_free(struct llapi_layout *layout)
 {
@@ -387,10 +383,10 @@ void llapi_layout_free(struct llapi_layout *layout)
 }
 
 /**
- * Allocate and initialize a llapi_layout structure.
+ * __llapi_layout_alloc() - Allocate and initialize a llapi_layout structure.
  *
- * \retval	valid llapi_layout pointer on success
- * \retval	NULL if memory allocation fails
+ * Returns valid llapi_layout pointer on success or NULL if memory allocation
+ * fails
  */
 static struct llapi_layout *__llapi_layout_alloc(void)
 {
@@ -408,6 +404,7 @@ static struct llapi_layout *__llapi_layout_alloc(void)
 	layout->llot_flags = 0;
 	layout->llot_is_composite = false;
 	layout->llot_mirror_count = 1;
+	layout->llot_curr_link_id = 1;
 	layout->llot_cur_comp = NULL;
 	INIT_LIST_HEAD(&layout->llot_comp_list);
 
@@ -415,10 +412,10 @@ static struct llapi_layout *__llapi_layout_alloc(void)
 }
 
 /**
- * Allocate and initialize a new plain layout.
+ * llapi_layout_alloc() - Allocate and initialize a new plain layout.
  *
- * \retval	valid llapi_layout pointer on success
- * \retval	NULL if memory allocation fails
+ * Return valid llapi_layout pointer on success or NULL if memory allocation
+ * fails
  */
 struct llapi_layout *llapi_layout_alloc(void)
 {
@@ -442,14 +439,14 @@ struct llapi_layout *llapi_layout_alloc(void)
 }
 
 /**
- * Check if the given \a lum_size is large enough to hold the required
- * fields in \a lum.
+ * llapi_layout_lum_truncated() - Check if the given @lum_size is large enough
+ * to hold the required fields in @lum.
+ * @lum: the struct lov_user_md to check
+ * @lum_size: the number of bytes in @lum
  *
- * \param[in] lum	the struct lov_user_md to check
- * \param[in] lum_size	the number of bytes in \a lum
- *
- * \retval true		the \a lum_size is too small
- * \retval false	the \a lum_size is large enough
+ * Return:
+ * * %true the @lum_size is too small
+ * * %false the @lum_size is large enough
  */
 static bool llapi_layout_lum_truncated(struct lov_user_md *lum, size_t lum_size)
 {
@@ -480,7 +477,8 @@ static bool llapi_layout_lum_truncated(struct lov_user_md *lum, size_t lum_size)
 }
 
 /* Verify if the objects count in lum is consistent with the
- * stripe count in lum. It applies to regular file only. */
+ * stripe count in lum. It applies to regular file only.
+ */
 static bool llapi_layout_lum_valid(struct lov_user_md *lum, int lum_size)
 {
 	struct lov_comp_md_v1 *comp_v1 = NULL;
@@ -519,15 +517,16 @@ static bool llapi_layout_lum_valid(struct lov_user_md *lum, int lum_size)
 }
 
 /**
- * Convert the data from a lov_user_md to a newly allocated llapi_layout.
- * The caller is responsible for freeing the returned pointer.
+ * llapi_layout_get_by_xattr() - Convert data from  lov_user_md to llapi_layout
+ * @lov_xattr: LOV user metadata xattr to copy data from
+ * @lov_xattr_size: size the lov_xattr_size passed in
+ * @flags: flags to control how layout is retrieved
  *
- * \param[in] lov_xattr		LOV user metadata xattr to copy data from
- * \param[in] lov_xattr_size	size the lov_xattr_size passed in
- * \param[in] flags		flags to control how layout is retrieved
+ * Convert the data from a lov_user_md to a newly allocated llapi_layout. The
+ * caller is responsible for freeing the returned pointer.
  *
- * \retval		valid llapi_layout pointer on success
- * \retval		NULL if memory allocation fails
+ * Return valid llapi_layout pointer on success or NULL if memory allocation
+ * fails
  */
 struct llapi_layout *llapi_layout_get_by_xattr(void *lov_xattr,
 					      ssize_t lov_xattr_size,
@@ -654,9 +653,14 @@ struct llapi_layout *llapi_layout_get_by_xattr(void *lov_xattr,
 			comp->llc_extent.e_start = ent->lcme_extent.e_start;
 			comp->llc_extent.e_end = ent->lcme_extent.e_end;
 			comp->llc_id = ent->lcme_id;
+			comp->llc_mirror_id = mirror_id_of(ent->lcme_id);
 			comp->llc_flags = ent->lcme_flags;
-			if (comp->llc_flags & LCME_FL_NOSYNC)
-				comp->llc_timestamp = ent->lcme_timestamp;
+			comp->llc_timestamp = lcme_timestamp_time_unpack(
+				ent->lcme_time_and_id);
+			comp->llc_mirror_link_id =
+				lcme_timestamp_id_unpack(ent->lcme_time_and_id);
+			comp->llc_dstripe_count = ent->lcme_dstripe_count;
+			comp->llc_cstripe_count = ent->lcme_cstripe_count;
 		} else {
 			comp->llc_extent.e_start = 0;
 			comp->llc_extent.e_end = LUSTRE_EOF;
@@ -743,11 +747,61 @@ out_layout:
 	goto out;
 }
 
-__u32 llapi_pattern_to_lov(uint64_t pattern)
+/**
+ * get_lum_size() - Get @lum_size from a lov_user_md @lum
+ * @lum: lov_user_md to get lum_size
+ *
+ * Returns -1 on error and lum_size on success
+ */
+static size_t get_lum_size(struct lov_user_md *lum)
 {
-	__u32 lov_pattern;
+	size_t lum_size;
 
-	switch (pattern) {
+	if (lum == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (lum->lmm_magic == LOV_USER_MAGIC_COMP_V1)
+		lum_size = ((struct lov_comp_md_v1 *)lum)->lcm_size;
+	else if (lum->lmm_magic == LOV_USER_MAGIC_SPECIFIC)
+		lum_size = lov_user_md_size(lum->lmm_stripe_count,
+					    lum->lmm_magic);
+	else
+		lum_size = lov_user_md_size(0, lum->lmm_magic);
+
+	return lum_size;
+}
+
+
+/**
+ * llapi_layout_set_by_xattr() - Set @lum on the file descriptor @fd and write
+ * the lum on the file referenced by the file descriptor
+ * @fd: open file descriptor
+ * @lum: lov_user_md to write on the file
+ *
+ * Returns -1 on error and set errno
+ */
+int llapi_layout_set_by_xattr(int fd, struct lov_user_md *lum)
+{
+	int rc;
+	ssize_t lum_size;
+
+	lum_size = get_lum_size(lum);
+	if (lum_size < 0) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	rc = fsetxattr(fd, XATTR_LUSTRE_LOV, lum, lum_size, 0);
+	return rc;
+}
+
+enum lov_pattern llapi_pattern_to_lov(uint64_t llapi_pattern)
+{
+	enum lov_pattern lov_pattern;
+
+	switch (llapi_pattern) {
 	case LLAPI_LAYOUT_DEFAULT:
 		lov_pattern = LOV_PATTERN_RAID0;
 		break;
@@ -771,13 +825,14 @@ __u32 llapi_pattern_to_lov(uint64_t pattern)
 }
 
 /**
+ * llapi_layout_to_lum() - Convert data from llapi_layout to lov_user_md.
+ * @layout: the layout to copy from
+ *
  * Convert the data from a llapi_layout to a newly allocated lov_user_md.
  * The caller is responsible for freeing the returned pointer.
  *
- * \param[in] layout	the layout to copy from
- *
- * \retval	valid lov_user_md pointer on success
- * \retval	NULL if memory allocation fails or the layout is invalid
+ * Return valid lov_user_md pointer on success or NULL if memory allocation
+ * fails or the layout is invalid
  */
 static struct lov_user_md *
 llapi_layout_to_lum(const struct llapi_layout *layout)
@@ -917,8 +972,11 @@ llapi_layout_to_lum(const struct llapi_layout *layout)
 			ent = &comp_v1->lcm_entries[ent_idx];
 			ent->lcme_id = comp->llc_id;
 			ent->lcme_flags = comp->llc_flags;
-			if (ent->lcme_flags & LCME_FL_NOSYNC)
-				ent->lcme_timestamp = comp->llc_timestamp;
+			ent->lcme_time_and_id =
+				lcme_timestamp_and_id_pack(comp->llc_timestamp,
+					     comp->llc_mirror_link_id);
+			ent->lcme_dstripe_count = comp->llc_dstripe_count;
+			ent->lcme_cstripe_count = comp->llc_cstripe_count;
 			ent->lcme_extent.e_start = comp->llc_extent.e_start;
 			ent->lcme_extent.e_end = comp->llc_extent.e_end;
 			ent->lcme_size = blob_size;
@@ -938,11 +996,10 @@ error:
 }
 
 /**
- * Get the parent directory of a path.
- *
- * \param[in] path	path to get parent of
- * \param[out] buf	buffer in which to store parent path
- * \param[in] size	size in bytes of buffer \a buf
+ * get_parent_dir() - Get the parent directory of a path.
+ * @path: path to get parent of
+ * @buf: buffer in which to store parent path [out]
+ * @size: size in bytes of buffer @buf
  */
 static void get_parent_dir(const char *path, char *buf, size_t size)
 {
@@ -960,12 +1017,13 @@ static void get_parent_dir(const char *path, char *buf, size_t size)
 }
 
 /**
- * Substitute unspecified attribute values in \a layout with values
+ * inherit_sys_attributes() - Substitute unspecified attribute values in layout
+ * @layout: layout to inherit values from
+ * @path: file path of the filesystem
+ *
+ * Substitute unspecified attribute values in @layout with values
  * from fs global settings. (lov.stripesize, lov.stripecount,
  * lov.stripeoffset)
- *
- * \param[in] layout	layout to inherit values from
- * \param[in] path	file path of the filesystem
  */
 static void inherit_sys_attributes(struct llapi_layout *layout,
 				   const char *path)
@@ -991,12 +1049,10 @@ static void inherit_sys_attributes(struct llapi_layout *layout,
 }
 
 /**
- * Get the current component of \a layout.
+ * __llapi_layout_cur_comp() - Get the current component of @layout.
+ * @layout: layout to get current component
  *
- * \param[in] layout	layout to get current component
- *
- * \retval	valid llapi_layout_comp pointer on success
- * \retval	NULL on error
+ * Return valid llapi_layout_comp pointer on success or NULL on error
  */
 static struct llapi_layout_comp *
 __llapi_layout_cur_comp(const struct llapi_layout *layout)
@@ -1020,12 +1076,12 @@ __llapi_layout_cur_comp(const struct llapi_layout *layout)
 }
 
 /**
- * Test if any attributes of \a layout are specified.
+ * is_any_specified() - Test if any attributes of @layout are specified.
+ * @layout: the layout to check
  *
- * \param[in] layout	the layout to check
- *
- * \retval true		any attributes are specified
- * \retval false	all attributes are unspecified
+ * Return:
+ * * %true any attributes are specified
+ * * %false all attributes are unspecified
  */
 static bool is_any_specified(const struct llapi_layout *layout)
 {
@@ -1046,7 +1102,10 @@ static bool is_any_specified(const struct llapi_layout *layout)
 }
 
 /**
- * Get the striping layout for the file referenced by file descriptor \a fd.
+ * llapi_layout_get_by_fd() - Get the striping layout for the file referenced
+ * by file descriptor @fd.
+ * @fd: open file descriptor
+ * @flags: open file descriptor
  *
  * If the filesystem does not support the "lustre." xattr namespace, the
  * file must be on a non-Lustre filesystem, so set errno to ENOTTY per
@@ -1056,11 +1115,7 @@ static bool is_any_specified(const struct llapi_layout *layout)
  * If the kernel gives us back less than the expected amount of data,
  * we fail with errno set to EINTR.
  *
- * \param[in] fd	open file descriptor
- * \param[in] flags	open file descriptor
- *
- * \retval	valid llapi_layout pointer on success
- * \retval	NULL if an error occurs
+ * Return valid llapi_layout pointer on success or NULL if an error occurs
  */
 struct llapi_layout *llapi_layout_get_by_fd(int fd,
 					    enum llapi_layout_get_flags flags)
@@ -1100,7 +1155,50 @@ out:
 }
 
 /**
- * Get the expected striping layout for a file at \a path.
+ * llapi_layout_set_by_fd() - Set @layout on the file descriptor @fd
+ * @fd: open file descriptor
+ * @layout: layout to write on the file
+ *
+ * Set @layout on the file descriptor @fd and write the layout on the
+ * file referenced by the file descriptor
+ *
+ * Return %0 on success or -1 on error and set errno
+ */
+int llapi_layout_set_by_fd(int fd, struct llapi_layout *layout)
+{
+	struct lov_user_md *lum;
+	int rc;
+	int tmp_errno;
+
+	if (layout == NULL) {
+		errno = EINVAL;
+		return -1;
+	}
+	rc = llapi_layout_v2_sanity(layout, false, false, NULL);
+	if (rc) {
+		errno = EINVAL;
+		return -1;
+	}
+	lum = llapi_layout_to_lum(layout);
+	if (!lum) {
+		errno = EINVAL;
+		return -1;
+	}
+	rc = llapi_layout_set_by_xattr(fd, lum);
+	if (rc < 0) {
+		tmp_errno = errno;
+		free(lum);
+		errno = tmp_errno;
+		return rc;
+	}
+
+	free(lum);
+	return 0;
+}
+
+/**
+ * llapi_layout_expected() - Get expected striping layout for a file at @path.
+ * @path: Path to get striping info
  *
  * Substitute expected inherited attribute values for unspecified
  * attributes.  Unspecified attributes may belong to directories and
@@ -1110,15 +1208,12 @@ out:
  * there, otherwise it is inherited from the filesystem root.
  * Unspecified attributes normally have the value LLAPI_LAYOUT_DEFAULT.
  *
- * The complete \a path need not refer to an existing file or directory,
+ * The complete @path need not refer to an existing file or directory,
  * but some leading portion of it must reside within a lustre filesystem.
  * A use case for this interface would be to obtain the literal striping
  * values that would be assigned to a new file in a given directory.
  *
- * \param[in] path	path for which to get the expected layout
- *
- * \retval	valid llapi_layout pointer on success
- * \retval	NULL if an error occurs
+ * Return valid llapi_layout pointer on success or NULL if an error occurs
  */
 static struct llapi_layout *llapi_layout_expected(const char *path)
 {
@@ -1189,17 +1284,14 @@ static struct llapi_layout *llapi_layout_expected(const char *path)
 }
 
 /**
- * Get the striping layout for the file at \a path.
+ * llapi_layout_get_by_path() - Get the striping layout for the file at @path
+ * @path: path for which to get the layout
+ * @flags: flags to control how layout is retrieved
  *
- * If \a flags contains LLAPI_LAYOUT_GET_EXPECTED, substitute
- * expected inherited attribute values for unspecified attributes. See
- * llapi_layout_expected().
+ * If @flags contains LLAPI_LAYOUT_GET_EXPECTED, substitute expected inherited
+ * attribute values for unspecified attributes. See llapi_layout_expected().
  *
- * \param[in] path	path for which to get the layout
- * \param[in] flags	flags to control how layout is retrieved
- *
- * \retval	valid llapi_layout pointer on success
- * \retval	NULL if an error occurs
+ * Return valid llapi_layout pointer on success or NULL on error
  */
 struct llapi_layout *llapi_layout_get_by_path(const char *path,
 					      enum llapi_layout_get_flags flags)
@@ -1236,13 +1328,13 @@ do_open:
 }
 
 /**
- * Get the layout for the file with FID \a fidstr in filesystem \a lustre_dir.
+ * llapi_layout_get_by_fid() - Get the layout for the file with @fid in
+ * filesystem @lustre_dir.
+ * @lustre_dir: path within Lustre filesystem containing @fid
+ * @fid: Lustre identifier of file to get layout for
+ * @flags: open file descriptor
  *
- * \param[in] lustre_dir	path within Lustre filesystem containing \a fid
- * \param[in] fid		Lustre identifier of file to get layout for
- *
- * \retval	valid llapi_layout pointer on success
- * \retval	NULL if an error occurs
+ * Return valid llapi_layout pointer on success or NULL if an error occurs
  */
 struct llapi_layout *llapi_layout_get_by_fid(const char *lustre_dir,
 					     const struct lu_fid *fid,
@@ -1272,13 +1364,13 @@ struct llapi_layout *llapi_layout_get_by_fid(const char *lustre_dir,
 }
 
 /**
- * Get the stripe count of \a layout.
+ * llapi_layout_stripe_count_get() - Get the stripe count of @layout.
+ * @layout: layout to get stripe count from
+ * @count: integer to store stripe count in [out]
  *
- * \param[in] layout	layout to get stripe count from
- * \param[out] count	integer to store stripe count in
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 int llapi_layout_stripe_count_get(const struct llapi_layout *layout,
 				  uint64_t *count)
@@ -1340,13 +1432,13 @@ static bool llapi_layout_stripe_index_is_valid(int64_t stripe_index)
 }
 
 /**
- * Set the stripe count of \a layout.
+ * llapi_layout_stripe_count_set() - Set the stripe count of @layout.
+ * @layout: layout to set stripe count in
+ * @count: value to be set
  *
- * \param[in] layout	layout to set stripe count in
- * \param[in] count	value to be set
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 int llapi_layout_stripe_count_set(struct llapi_layout *layout,
 				  uint64_t count)
@@ -1356,6 +1448,11 @@ int llapi_layout_stripe_count_set(struct llapi_layout *layout,
 	comp = __llapi_layout_cur_comp(layout);
 	if (comp == NULL)
 		return -1;
+
+	if (comp->llc_flags & LCME_FL_PARITY) {
+		errno = EINVAL;
+		return -1;
+	}
 
 	if (!llapi_layout_stripe_count_is_valid(count)) {
 		errno = EINVAL;
@@ -1367,14 +1464,14 @@ int llapi_layout_stripe_count_set(struct llapi_layout *layout,
 }
 
 /**
- * Get the stripe/extension size of \a layout.
+ * layout_stripe_size_get() - Get the stripe/extension size of @layout.
+ * @layout: layout to get stripe size from
+ * @size: integer to store stripe size in [out]
+ * @extension: flag if extenion size is requested
  *
- * \param[in] layout	layout to get stripe size from
- * \param[out] size	integer to store stripe size in
- * \param[in] extension flag if extenion size is requested
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 static int layout_stripe_size_get(const struct llapi_layout *layout,
 				  uint64_t *size, bool extension)
@@ -1423,14 +1520,14 @@ int llapi_layout_extension_size_get(const struct llapi_layout *layout,
 }
 
 /**
- * Set the stripe/extension size of \a layout.
+ * layout_stripe_size_set() - Set the stripe/extension size of @layout.
+ * @layout: layout to set stripe size in
+ * @size: value to be set
+ * @extension: flag if extenion size is passed
  *
- * \param[in] layout	layout to set stripe size in
- * \param[in] size	value to be set
- * \param[in] extension flag if extenion size is passed
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 static int layout_stripe_size_set(struct llapi_layout *layout,
 				  uint64_t size, bool extension)
@@ -1442,7 +1539,8 @@ static int layout_stripe_size_set(struct llapi_layout *layout,
 	if (comp == NULL)
 		return -1;
 
-	if (comp->llc_pattern == LLAPI_LAYOUT_FOREIGN) {
+	if (comp->llc_pattern == LLAPI_LAYOUT_FOREIGN ||
+	    comp->llc_flags & LCME_FL_PARITY) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -1479,13 +1577,13 @@ int llapi_layout_extension_size_set(struct llapi_layout *layout,
 }
 
 /**
- * Get the RAID pattern of \a layout.
+ * llapi_layout_pattern_get() - Get the RAID pattern of @layout.
+ * @layout: layout to get pattern from
+ * @pattern: integer to store pattern in [out]
  *
- * \param[in] layout	layout to get pattern from
- * \param[out] pattern	integer to store pattern in
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 int llapi_layout_pattern_get(const struct llapi_layout *layout,
 			     uint64_t *pattern)
@@ -1507,14 +1605,13 @@ int llapi_layout_pattern_get(const struct llapi_layout *layout,
 }
 
 /**
- * Set the pattern of \a layout.
+ * llapi_layout_pattern_set() - Set the pattern of @layout.
+ * @layout: layout to set pattern in
+ * @pattern: value to be set
  *
- * \param[in] layout	layout to set pattern in
- * \param[in] pattern	value to be set
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid or RAID pattern
- *		is unsupported
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid or RAID pattern is unsupported
  */
 int llapi_layout_pattern_set(struct llapi_layout *layout, uint64_t pattern)
 {
@@ -1546,20 +1643,21 @@ static inline int stripe_number_roundup(int stripe_number)
 }
 
 /**
- * Set the OST index of stripe number \a stripe_number to \a ost_index.
+ * llapi_layout_ost_index_set() - Set the OST index of stripe number
+ * @stripe_number to @ost_index.
+ * @layout: layout to set OST index in
+ * @stripe_number: stripe number to set index for
+ * @ost_index: the index to set
  *
  * If only the starting stripe's OST index is specified, then this can use
  * the normal LOV_MAGIC_{V1,V3} layout type.  If multiple OST indices are
  * given, then allocate an array to hold the list of indices and ensure that
  * the LOV_USER_MAGIC_SPECIFIC layout is used when creating the file.
  *
- * \param[in] layout		layout to set OST index in
- * \param[in] stripe_number	stripe number to set index for
- * \param[in] ost_index		the index to set
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid or an unsupported stripe number
- *		was specified, error returned in errno
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid or an unsupported stripe number was
+ *   specified, error returned in errno
  */
 int llapi_layout_ost_index_set(struct llapi_layout *layout, int stripe_number,
 			       uint64_t ost_index)
@@ -1629,14 +1727,17 @@ static int reset_index_cb(struct llapi_layout *layout, void *cbdata)
 }
 
 /**
- * Reset the OST index on all components in \a layout to LLAPI_LAYOUT_DEFAULT.
+ * llapi_layout_ost_index_reset() - Reset the OST index on all components in
+ * @layout to LLAPI_LAYOUT_DEFAULT.
+ * @layout: layout to reset OST index in
  *
  * This is useful when reusing a file layout that was copied from an existing
  * file and to be used for a new file (e.g. when mirroring or migrating or
  * copying a file), so the objects are allocated on different OSTs.
  *
- * \retval  0 Success.
- * \retval -ve errno Error with errno set to non-zero value.
+ * Return:
+ * * %0 Success.
+ * * %negative errno Error with errno set to non-zero value.
  */
 int llapi_layout_ost_index_reset(struct llapi_layout *layout)
 {
@@ -1651,16 +1752,16 @@ int llapi_layout_ost_index_reset(struct llapi_layout *layout)
 }
 
 /**
- * Get the OST index associated with stripe \a stripe_number.
+ * llapi_layout_ost_index_get() - Get OST index associated with @stripe_number.
+ * @layout: layout to get index from
+ * @stripe_number: stripe number to get index for
+ * @index: integer to store index in [out]
  *
  * Stripes are indexed starting from zero.
  *
- * \param[in] layout		layout to get index from
- * \param[in] stripe_number	stripe number to get index for
- * \param[out] index		integer to store index in
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 int llapi_layout_ost_index_get(const struct llapi_layout *layout,
 			       uint64_t stripe_number, uint64_t *index)
@@ -1696,15 +1797,14 @@ int llapi_layout_ost_index_get(const struct llapi_layout *layout,
 }
 
 /**
+ * llapi_layout_pool_name_get() - Get the pool name of layout @layout.
+ * @layout: layout to get pool name from
+ * @dest: buffer to store pool name in [out]
+ * @n: size in bytes of buffer @dest
  *
- * Get the pool name of layout \a layout.
- *
- * \param[in] layout	layout to get pool name from
- * \param[out] dest	buffer to store pool name in
- * \param[in] n		size in bytes of buffer \a dest
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid
  */
 int llapi_layout_pool_name_get(const struct llapi_layout *layout, char *dest,
 			       size_t n)
@@ -1731,13 +1831,13 @@ int llapi_layout_pool_name_get(const struct llapi_layout *layout, char *dest,
 }
 
 /**
- * Set the name of the pool of layout \a layout.
+ * llapi_layout_pool_name_set() - Set the name of the pool of layout @layout.
+ * @layout: layout to set pool name in
+ * @pool_name: pool name to set
  *
- * \param[in] layout	layout to set pool name in
- * \param[in] pool_name	pool name to set
- *
- * \retval	0 on success
- * \retval	-1 if arguments are invalid or pool name is too long
+ * Return:
+ * * %0 on success
+ * * %negative if arguments are invalid or pool name is too long
  */
 int llapi_layout_pool_name_set(struct llapi_layout *layout,
 			       const char *pool_name)
@@ -1764,30 +1864,27 @@ int llapi_layout_pool_name_set(struct llapi_layout *layout,
 }
 
 /**
- * Open and possibly create a file with a given \a layout.
+ * llapi_layout_file_open() - Open and possibly create file with given @layout.
+ * @path: name of the file to open
+ * @open_flags: open() flags
+ * @mode: permissions to create file, filtered by umask
+ * @layout: layout to create new file with
  *
- * If \a layout is NULL this function acts as a simple wrapper for
- * open().  By convention, ENOTTY is returned in errno if \a path
+ * If @layout is NULL this function acts as a simple wrapper for
+ * open(). By convention, ENOTTY is returned in errno if @path
  * refers to a non-Lustre file.
  *
- * \param[in] path		name of the file to open
- * \param[in] open_flags	open() flags
- * \param[in] mode		permissions to create file, filtered by umask
- * \param[in] layout		layout to create new file with
- *
- * \retval		non-negative file descriptor on successful open
- * \retval		-1 if an error occurred
+ * Return:
+ * * %non-negative file descriptor on successful open
+ * * %negative if an error occurred
  */
 int llapi_layout_file_open(const char *path, int open_flags, mode_t mode,
 			   const struct llapi_layout *layout)
 {
-	int fd;
-	int rc;
-	int tmp;
-	struct lov_user_md *lum;
-	size_t lum_size;
 	char fsname[MAX_OBD_NAME + 1] = { 0 };
 	struct llapi_layout_comp *comp;
+	int fd;
+	int rc;
 
 	comp = __llapi_layout_cur_comp(layout);
 
@@ -1817,9 +1914,10 @@ int llapi_layout_file_open(const char *path, int open_flags, mode_t mode,
 		}
 	}
 
-	/* Object creation must be postponed until after layout attributes
-	 * have been applied. */
-	if (layout != NULL && (open_flags & O_CREAT))
+	/* Object creation must be postponed until after layout
+	 * attributes have been applied.
+	 */
+	if (open_flags & O_CREAT)
 		open_flags |= O_LOV_DELAY_CREATE;
 
 	fd = open(path, open_flags, mode);
@@ -1827,50 +1925,45 @@ int llapi_layout_file_open(const char *path, int open_flags, mode_t mode,
 	if (layout == NULL || fd < 0)
 		return fd;
 
-	lum = llapi_layout_to_lum(layout);
-
-	if (lum == NULL) {
-		tmp = errno;
-		close(fd);
-		errno = tmp;
-		return -1;
-	}
-
-	if (lum->lmm_magic == LOV_USER_MAGIC_COMP_V1)
-		lum_size = ((struct lov_comp_md_v1 *)lum)->lcm_size;
-	else if (lum->lmm_magic == LOV_USER_MAGIC_SPECIFIC)
-		lum_size = lov_user_md_size(lum->lmm_stripe_count,
-					    lum->lmm_magic);
-	else
-		lum_size = lov_user_md_size(0, lum->lmm_magic);
-
-	rc = fsetxattr(fd, XATTR_LUSTRE_LOV, lum, lum_size, 0);
+	rc = llapi_layout_set_by_fd(fd, (struct llapi_layout *)layout);
 	if (rc < 0) {
-		tmp = errno;
+		struct lov_user_md *lum;
+		size_t lum_size;
+		int tmp = errno;
+
+		lum = llapi_layout_to_lum(layout);
+
+		lum_size = get_lum_size(lum);
+
+		/* caller usually prints error, but doesn't know xattr size */
+		if (errno == ENOSPC)
+			llapi_error(LLAPI_MSG_ERROR, errno,
+				    "error setting %zd-byte layout on '%s'\n",
+				    lum_size, path);
+		free(lum);
 		close(fd);
 		errno = tmp;
 		fd = -1;
 	}
 
-	free(lum);
 	errno = errno == EOPNOTSUPP ? ENOTTY : errno;
 
 	return fd;
 }
 
 /**
- * Create a file with a given \a layout.
+ * llapi_layout_file_create() - Create a file with a given @layout.
+ * @path: name of the file to open
+ * @open_flags: open() flags
+ * @mode: permissions to create new file with
+ * @layout: layout to create new file with
  *
  * Force O_CREAT and O_EXCL flags on so caller is assured that file was
- * created with the given \a layout on successful function return.
+ * created with the given @layout on successful function return.
  *
- * \param[in] path		name of the file to open
- * \param[in] open_flags	open() flags
- * \param[in] mode		permissions to create new file with
- * \param[in] layout		layout to create new file with
- *
- * \retval		non-negative file descriptor on successful open
- * \retval		-1 if an error occurred
+ * Return:
+ * * %non-negative file descriptor on successful open
+ * * %negative if an error occurred
  */
 int llapi_layout_file_create(const char *path, int open_flags, int mode,
 			     const struct llapi_layout *layout)
@@ -1890,9 +1983,7 @@ int llapi_layout_flags_get(struct llapi_layout *layout, uint32_t *flags)
 	return 0;
 }
 
-/**
- * Set flags to the header of a component layout.
- */
+/* Set flags to the header of a component layout */
 int llapi_layout_flags_set(struct llapi_layout *layout, uint32_t flags)
 {
 	if (layout->llot_magic != LLAPI_LAYOUT_MAGIC) {
@@ -1936,6 +2027,85 @@ __u16 llapi_layout_string_flags(char *string)
 	return 0;
 }
 
+static struct {
+	enum lov_pattern	 llpn_pattern;
+	const char		*llpn_pattern_name;
+} lov_pattern_names[] = {
+	{ LOV_PATTERN_RAID0,		"raid0" },
+	{ LOV_PATTERN_RAID1,		"raid1" },
+	{ LOV_PATTERN_PARITY,		"parity" },
+	{ LOV_PATTERN_MDT,		"mdt" },
+	{ LOV_PATTERN_OVERSTRIPING,	"overstriped" },  /* getstripe */
+	{ LOV_PATTERN_OVERSTRIPING,	"overstriping" }, /* setstripe compat */
+	{ LOV_PATTERN_BAD,		"bad" },
+	{ LOV_PATTERN_FOREIGN,		"foreign" },
+	{ LOV_PATTERN_COMPRESS,		"compress" },
+	{ LOV_PATTERN_F_HOLE,		"hole" },
+	{ LOV_PATTERN_F_RELEASED,	"released" },
+	{ LOV_PATTERN_DEFAULT,		"default" },
+	{ 0, NULL }
+};
+
+int llapi_lov_string_pattern(const char *string, enum lov_pattern *pattern)
+{
+	const char *p;
+
+	*pattern = 0;
+	for (p = string; p != NULL; p = strchr(p, ',')) {
+		int i;
+
+		while (*p == ',')
+			p++;
+		if (*p == '\0')
+			break;
+		for (i = 0; lov_pattern_names[i].llpn_pattern != 0; i++) {
+			int l;
+
+			l = strlen(lov_pattern_names[i].llpn_pattern_name);
+			if (strncmp(p, lov_pattern_names[i].llpn_pattern_name,
+				    l))
+				continue;
+			*pattern |= lov_pattern_names[i].llpn_pattern;
+			break;
+		}
+		if (lov_pattern_names[i].llpn_pattern == 0) {
+			errno = EINVAL;
+			return -errno;
+		}
+	}
+
+	return 0;
+}
+
+char *llapi_lov_pattern_string(enum lov_pattern pattern, char *buf,
+			       size_t buflen)
+{
+	char *p = buf;
+	int l = 0;
+	int i;
+
+	p[0] = '\0';
+	for (i = 0; lov_pattern_names[i].llpn_pattern && pattern; i++) {
+		if ((lov_pattern_names[i].llpn_pattern & pattern) ==
+		    lov_pattern_names[i].llpn_pattern) {
+			l += snprintf(p, buflen - l, "%s%s", buf[0] ? "," : "",
+				      lov_pattern_names[i].llpn_pattern_name);
+			pattern &= ~lov_pattern_names[i].llpn_pattern;
+			if (l >= buflen) {
+				errno = EOVERFLOW;
+				return NULL;
+			}
+			p = buf + l;
+		}
+	}
+
+	if (pattern)
+		snprintf(buf, buflen, "%sunknown_%x", buf[0] ? "," : "",
+			pattern);
+
+	return buf;
+}
+
 /**
  * llapi_layout_mirror_count_is_valid() - Check the validity of mirror count.
  * @count: Mirror count value to be checked.
@@ -1950,14 +2120,13 @@ static bool llapi_layout_mirror_count_is_valid(uint16_t count)
 }
 
 /**
- * llapi_layout_mirror_count_get() - Get mirror count from the header of
- *				     a layout.
+ * llapi_layout_mirror_count_get() - Get mirror count from header of a layout.
  * @layout: Layout to get mirror count from.
  * @count:  Returned mirror count value.
  *
  * This function gets mirror count from the header of a layout.
  *
- * Return: 0 on success or -1 on failure.
+ * Return: 0 on success or %negative on failure.
  */
 int llapi_layout_mirror_count_get(struct llapi_layout *layout,
 				  uint16_t *count)
@@ -1978,7 +2147,7 @@ int llapi_layout_mirror_count_get(struct llapi_layout *layout,
  *
  * This function sets mirror count to the header of a layout.
  *
- * Return: 0 on success or -1 on failure.
+ * Return: 0 on success or %negative on failure.
  */
 int llapi_layout_mirror_count_set(struct llapi_layout *layout,
 				  uint16_t count)
@@ -1998,14 +2167,63 @@ int llapi_layout_mirror_count_set(struct llapi_layout *layout,
 }
 
 /**
- * Fetch the start and end offset of the current layout component.
+ * llapi_layout_mirror_count_sync() - Synchronize mirror count from components
+ * @layout: layout to synchronize
  *
- * \param[in] layout	the layout component
- * \param[out] start	extent start, inclusive
- * \param[out] end	extent end, exclusive
+ * Iterates over all components and counts mirror boundaries (components with
+ * extent start == 0). Updates llot_mirror_count and each component's
+ * llc_mirror_id accordingly. Note, mirror IDs are decoupled from mirror count
+ * and need to be tracked separately.
  *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
+ */
+int llapi_layout_mirror_count_sync(struct llapi_layout *layout)
+{
+	struct llapi_layout_comp *comp;
+	uint16_t mirror_count = 0;
+	uint32_t mirror_id = 0;
+
+	if (!layout || layout->llot_magic != LLAPI_LAYOUT_MAGIC) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	list_for_each_entry(comp, &layout->llot_comp_list, llc_list) {
+		if (comp->llc_extent.e_start == 0) {
+			if (!llapi_layout_mirror_count_is_valid(mirror_count +
+								1)) {
+				errno = EINVAL;
+				return -1;
+			}
+			mirror_count++;
+			mirror_id++;
+		}
+		/* Only count/assign for components without a mirror ID set */
+		if (comp->llc_mirror_id == 0) {
+			comp->llc_mirror_id = mirror_id;
+		} else {
+			/* Track existing mirror IDs */
+			if (comp->llc_mirror_id > mirror_id)
+				mirror_id = comp->llc_mirror_id;
+		}
+	}
+
+	layout->llot_mirror_count = mirror_count;
+	return 0;
+}
+
+/**
+ * llapi_layout_comp_extent_get() - Fetch the start and end offset of the
+ * current layout component.
+ * @layout: the layout component
+ * @start: extent start, inclusive [out]
+ * @end: extent end, exclusive [out]
+ *
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_extent_get(const struct llapi_layout *layout,
 				 uint64_t *start, uint64_t *end)
@@ -2028,14 +2246,14 @@ int llapi_layout_comp_extent_get(const struct llapi_layout *layout,
 }
 
 /**
- * Set the layout extent of a layout.
+ * llapi_layout_comp_extent_set() - Set the layout extent of a layout.
+ * @layout: the layout to be set
+ * @start: extent start, inclusive
+ * @end: extent end, exclusive
  *
- * \param[in] layout	the layout to be set
- * \param[in] start	extent start, inclusive
- * \param[in] end	extent end, exclusive
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_extent_set(struct llapi_layout *layout,
 				 uint64_t start, uint64_t end)
@@ -2059,13 +2277,14 @@ int llapi_layout_comp_extent_set(struct llapi_layout *layout,
 }
 
 /**
- * Gets the attribute flags of the current component.
+ * llapi_layout_comp_flags_get() - Gets the attribute flags of the current
+ * component.
+ * @layout: the layout component
+ * @flags: stored the returned component flags [out]
  *
- * \param[in] layout	the layout component
- * \param[out] flags	stored the returned component flags
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_flags_get(const struct llapi_layout *layout,
 				uint32_t *flags)
@@ -2087,17 +2306,24 @@ int llapi_layout_comp_flags_get(const struct llapi_layout *layout,
 }
 
 /**
- * Sets the specified flags of the current component leaving other flags as-is.
+ * llapi_layout_comp_flags_set() - Sets the specified flags of the current
+ * component leaving other flags as-is.
+ * @layout: the layout component
+ * @flags: component flags to be set
  *
- * \param[in] layout	the layout component
- * \param[in] flags	component flags to be set
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_flags_set(struct llapi_layout *layout, uint32_t flags)
 {
 	struct llapi_layout_comp *comp;
+
+	/* LCME_FL_PARITY cannot be set with this function */
+	if (flags & LCME_FL_PARITY) {
+		errno = EINVAL;
+		return -1;
+	}
 
 	comp = __llapi_layout_cur_comp(layout);
 	if (comp == NULL)
@@ -2109,13 +2335,14 @@ int llapi_layout_comp_flags_set(struct llapi_layout *layout, uint32_t flags)
 }
 
 /**
- * Clears the flags specified in the flags leaving other flags as-is.
+ * llapi_layout_comp_flags_clear() - Clears the flags specified in the flags
+ * leaving other flags as-is.
+ * @layout:	the layout component
+ * @flags:	component flags to be cleared
  *
- * \param[in] layout	the layout component
- * \param[in] flags	component flags to be cleared
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_flags_clear(struct llapi_layout *layout,
 				  uint32_t flags)
@@ -2132,13 +2359,14 @@ int llapi_layout_comp_flags_clear(struct llapi_layout *layout,
 }
 
 /**
- * Fetches the file-unique component ID of the current layout component.
+ * llapi_layout_comp_id_get() - Fetches the file-unique component ID of the
+ * current layout component.
+ * @layout: the layout component
+ * @id: stored the returned component ID [out]
  *
- * \param[in] layout	the layout component
- * \param[out] id	stored the returned component ID
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_id_get(const struct llapi_layout *layout, uint32_t *id)
 {
@@ -2158,48 +2386,99 @@ int llapi_layout_comp_id_get(const struct llapi_layout *layout, uint32_t *id)
 }
 
 /**
- * Return the mirror id of the current layout component.
+ * llapi_layout_mirror_id_get() - Return mirror id of current layout component.
+ * @layout: the layout component
+ * @id: stored the returned mirror ID [out]
  *
- * \param[in] layout	the layout component
- * \param[out] id	stored the returned mirror ID
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_mirror_id_get(const struct llapi_layout *layout, uint32_t *id)
 {
 	struct llapi_layout_comp *comp;
 
 	comp = __llapi_layout_cur_comp(layout);
-	if (comp == NULL)
+	if (!comp)
 		return -1;
 
-	if (id == NULL) {
+	if (!id) {
 		errno = EINVAL;
 		return -1;
 	}
 
-	*id = mirror_id_of(comp->llc_id);
+	*id = comp->llc_mirror_id;
 
 	return 0;
 }
 
 /**
- * Adds a component to \a layout, the new component will be added to
+ * llapi_layout_comp_mirror_link_id_get() - Return mirror link ID of current
+ * layout component.
+ * @layout: the layout component
+ * @id: stored the returned  mirror link ID [out]
+ *
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
+ */
+int llapi_layout_comp_mirror_link_id_get(const struct llapi_layout *layout,
+					 uint16_t *id)
+{
+	struct llapi_layout_comp *comp;
+
+	comp = __llapi_layout_cur_comp(layout);
+	if (!comp)
+		return -1;
+
+	if (!id) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	*id = comp->llc_mirror_link_id;
+
+	return 0;
+}
+
+/**
+ * llapi_layout_comp_add() - Adds a component to @layout
+ * @layout: existing composite or plain layout
+ *
+ * Adds a component to @layout, the new component will be added to
  * the tail of components list and it'll inherit attributes of existing
- * ones. The \a layout will change it's current component pointer to
+ * ones. The @layout will change it's current component pointer to
  * the newly added component, and it'll be turned into a composite
  * layout if it was not before the adding.
  *
- * \param[in] layout	existing composite or plain layout
- *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_add(struct llapi_layout *layout)
 {
+	return llapi_layout_comp_add_extent(layout, 0, 0);
+}
+
+int llapi_layout_comp_add_extent(struct llapi_layout *layout,
+				 uint64_t start, uint64_t end)
+{
 	struct llapi_layout_comp *last, *comp, *new;
-	bool composite = layout->llot_is_composite;
+	bool save_composite;
+
+	/* Validate input parameters */
+	if (!layout) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* extent start should be less than extent end */
+	if (start != 0 && start >= end) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	save_composite = layout->llot_is_composite;
 
 	comp = __llapi_layout_cur_comp(layout);
 	if (comp == NULL)
@@ -2211,37 +2490,277 @@ int llapi_layout_comp_add(struct llapi_layout *layout)
 
 	last = list_last_entry(&layout->llot_comp_list, typeof(*last),
 			       llc_list);
-
 	list_add_tail(&new->llc_list, &layout->llot_comp_list);
 
-	/* We must mark the layout composite for the sanity check, but it may
-	 * not stay that way if the check fails */
 	layout->llot_is_composite = true;
 	layout->llot_cur_comp = new;
 
-	/* We need to set a temporary non-zero value for "end" when we call
+	/* If no extent was provided:
+	 * We need to set a temporary non-zero value for "end" when we call
 	 * comp_extent_set, so we use LUSTRE_EOF-1, which is > all allowed
 	 * for the end of the previous component.  (If we're adding this
-	 * component, the end of the previous component cannot be EOF.) */
-	if (llapi_layout_comp_extent_set(layout, last->llc_extent.e_end,
-					LUSTRE_EOF - 1)) {
+	 * component, the end of the previous component cannot be EOF.)
+	 */
+	if (start == 0 && end == 0) {
+		start = last->llc_extent.e_end;
+		end = LUSTRE_EOF - 1;
+	}
+	if (llapi_layout_comp_extent_set(layout, start, end)) {
 		(void)llapi_layout_comp_del(layout);
-		layout->llot_is_composite = composite;
+		layout->llot_is_composite = save_composite;
 		return -1;
 	}
 
 	return 0;
 }
+
+static int layout_ec_verify_stripes(__u64 stripe_count, __u8 k, __u8 p)
+{
+	struct ec_split_comp sc;
+
+	/* Validate stripe counts */
+	if (p == 0 || k == 0)
+		return -EINVAL;
+
+	/*
+	 * The total number of parities we will need across all the raid
+	 * sets can not exceed the number of stripes in the data comp
+	 * it protects.
+	 */
+	ec_split_stripes(stripe_count, k, &sc);
+	if (sc.esc_n0 * sc.esc_k0 + sc.esc_n1 * sc.esc_k1 != stripe_count ||
+	    (sc.esc_n0 + sc.esc_n1) * p  > stripe_count)
+		return -EINVAL;
+
+	return 0;
+}
+
+/**
+ * llapi_layout_comp_add_ec() - Adds a EC component to @layout
+ * @layout:	existing composite or plain layout
+ * @mirror_id:	mirror id of the data component to be protected by the EC
+ *		component, a mirror id of 0 is invalid
+ * @start:	start offset of the extent
+ * @end:	end offset of the extent
+ * @dstripe_count: number of data stripes
+ * @cstripe_count: number of coding stripes
+ *
+ * Adds a EC component to @layout at the tail of components list and if
+ * @comp_id is specified, the EC component will protect the data component for
+ * the specified mirror id. A data component can only protected by one EC
+ * component. The @layout will change it's current component pointer to the
+ * newly added EC component, and it'll be turned into a composite layout if it
+ * was not before the adding.
+ *
+ * Before (and after) adding the EC component the mirror count and IDs are
+ * synced to ensure the EC component is added to the correct mirror.
+ *
+ * Return:
+ * * %0		on success
+ * * %negative	if error occurs
+ */
+int llapi_layout_comp_add_ec(struct llapi_layout *layout, uint32_t mirror_id,
+			     uint64_t start, uint64_t end,
+			     uint8_t dstripe_count, uint8_t cstripe_count)
+{
+	struct llapi_layout_comp *parity_comp, *comp;
+	bool found = false;
+	int rc;
+
+	/* Validate input parameters */
+	if (!layout) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* Validate extent parameters */
+	if (mirror_id == 0 || start >= end) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* Validate EC stripe count limits */
+	if (dstripe_count > LOV_EC_MAX_DATA_STRIPES) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (cstripe_count > LOV_EC_MAX_CODING_STRIPES) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	/* Sync mirror count and IDs so that the data component can be found */
+	rc = llapi_layout_mirror_count_sync(layout);
+	if (rc)
+		return rc;
+
+	/*
+	 * Find the matching data component. A data component with the same
+	 * extent must exist before adding an EC component.
+	 */
+	list_for_each_entry(comp, &layout->llot_comp_list, llc_list) {
+		if (comp->llc_mirror_id != mirror_id)
+			continue;
+		/* component to protect should not be a parity component */
+		if (comp->llc_flags & LCME_FL_PARITY) {
+			errno = EINVAL;
+			return -1;
+		}
+
+		if (comp->llc_extent.e_start == start &&
+		    comp->llc_extent.e_end == end) {
+			/* Data comp is already protected by a parity comp */
+			if (comp->llc_mirror_link_id !=
+			    LLAPI_MIRROR_LINK_NONE) {
+				errno = EINVAL;
+				return -1;
+			}
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		errno = ENOENT;
+		return -1;
+	}
+
+	/*
+	 * If the data component's stripe count is still LLAPI_LAYOUT_DEFAULT,
+	 * set it to dstripe_count (the number of data stripes in the EC layout)
+	 */
+	if (comp->llc_stripe_count == LLAPI_LAYOUT_DEFAULT ||
+	    comp->llc_stripe_count == LLAPI_LAYOUT_WIDE)
+		comp->llc_stripe_count = dstripe_count;
+
+	/* Parity components require non-zero cstripe and dstripe */
+	if (layout_ec_verify_stripes(comp->llc_stripe_count,
+				     dstripe_count, cstripe_count)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	rc = llapi_layout_comp_add_extent(layout, start, end);
+	if (rc)
+		return rc;
+
+	/* Sync mirror count and IDs to generate the mirror ID for the new
+	 * parity component, which is needed for the bi-directional link.
+	 */
+	rc = llapi_layout_mirror_count_sync(layout);
+	if (rc) {
+		(void)llapi_layout_comp_del(layout);
+		return rc;
+	}
+
+	parity_comp = __llapi_layout_cur_comp(layout);
+	if (!parity_comp) {
+		(void)llapi_layout_comp_del(layout);
+		return -1;
+	}
+
+	parity_comp->llc_flags |= LCME_FL_PARITY;
+	parity_comp->llc_cstripe_count = cstripe_count;
+	parity_comp->llc_dstripe_count = dstripe_count;
+
+	/* mark the data component as protected indirectly */
+	comp->llc_cstripe_count = cstripe_count;
+	comp->llc_dstripe_count = dstripe_count;
+
+	/*
+	 * Copy stripe size from the matching data component.
+	 * EC/parity components must have the same stripe size as their
+	 * corresponding data components.
+	 */
+	parity_comp->llc_stripe_size = comp->llc_stripe_size;
+
+	/* bi-directional link for data and parity components */
+	parity_comp->llc_mirror_link_id = layout->llot_curr_link_id;
+	comp->llc_mirror_link_id = layout->llot_curr_link_id;
+	parity_comp->llc_flags |= LCME_FL_IS_LINK_ID;
+	comp->llc_flags |= LCME_FL_IS_LINK_ID;
+	layout->llot_curr_link_id++;
+
+	return 0;
+}
+
+/**
+ * Get EC coding stripe count from the current component.
+ *
+ * \param[in] layout		existing layout
+ * \param[out] cstripe_count	EC coding stripe count
+ *
+ * \retval	0 on success
+ * \retval	<0 if error occurs
+ */
+int llapi_layout_ec_cstripe_count_get(const struct llapi_layout *layout,
+				      uint8_t *cstripe_count)
+{
+	struct llapi_layout_comp *comp;
+
+	comp = __llapi_layout_cur_comp(layout);
+	if (!comp)
+		return -1;
+
+	if (!cstripe_count) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (!(comp->llc_flags & LCME_FL_PARITY)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	*cstripe_count = comp->llc_cstripe_count;
+	return 0;
+}
+
+/**
+ * Get EC data stripe count from the current component.
+ *
+ * \param[in] layout		existing layout
+ * \param[out] dstripe_count	EC data stripe count
+ *
+ * \retval	0 on success
+ * \retval	<0 if error occurs
+ */
+int llapi_layout_ec_dstripe_count_get(const struct llapi_layout *layout,
+				      uint8_t *dstripe_count)
+{
+	struct llapi_layout_comp *comp;
+
+	comp = __llapi_layout_cur_comp(layout);
+	if (!comp)
+		return -1;
+
+	if (!dstripe_count) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (!(comp->llc_flags & LCME_FL_PARITY)) {
+		errno = EINVAL;
+		return -1;
+	}
+
+	*dstripe_count = comp->llc_dstripe_count;
+	return 0;
+}
+
 /**
  * Adds a first component of a mirror to \a layout.
  * The \a layout will change it's current component pointer to
  * the newly added component, and it'll be turned into a composite
  * layout if it was not before the adding.
  *
- * \param[in] layout		existing composite or plain layout
+ * The @layout will change it's current component pointer to the newly added
+ * component, and it'll be turned into a composite layout if it was not before
+ * the adding.
  *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_add_first_comp(struct llapi_layout *layout)
 {
@@ -2265,18 +2784,25 @@ int llapi_layout_add_first_comp(struct llapi_layout *layout)
 }
 
 /**
- * Deletes current component from the composite layout. The component
- * to be deleted must be the tail of components list, and it can't be
- * the only component in the layout.
+ * llapi_layout_comp_del() - Deletes current component from the composite layout
+ * @layout: composite layout
  *
- * \param[in] layout	composite layout
+ * Deletes current component from the composite layout. The component to be
+ * deleted must be the tail of components list, and it can't be the only
+ * component in the layout.
  *
- * \retval	0 on success
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_del(struct llapi_layout *layout)
 {
 	struct llapi_layout_comp *comp;
+	struct llapi_layout_comp *data_comp = NULL;
+	uint32_t comp_mirror_link_id = 0;
+	bool is_parity_comp = false;
+	uint64_t comp_start = 0;
+	uint64_t comp_end = 0;
 
 	comp = __llapi_layout_cur_comp(layout);
 	if (comp == NULL)
@@ -2285,6 +2811,44 @@ int llapi_layout_comp_del(struct llapi_layout *layout)
 	if (!layout->llot_is_composite) {
 		errno = EINVAL;
 		return -1;
+	}
+
+	if (comp->llc_flags & LCME_FL_PARITY) {
+		bool found = false;
+
+		/* Save protected comp info to clear link later on data comp */
+		is_parity_comp = true;
+		comp_start = comp->llc_extent.e_start;
+		comp_end = comp->llc_extent.e_end;
+		comp_mirror_link_id = comp->llc_flags & LCME_FL_IS_LINK_ID ?
+					      comp->llc_mirror_link_id :
+					      comp->llc_mirror_id;
+
+		/* find the protected data component */
+		list_for_each_entry(data_comp, &layout->llot_comp_list,
+				    llc_list) {
+			if (data_comp->llc_mirror_link_id ==
+				    comp_mirror_link_id &&
+			    data_comp->llc_extent.e_start == comp_start &&
+			    data_comp->llc_extent.e_end == comp_end) {
+				found = true;
+				break;
+			}
+		}
+
+		/* data component must exist; otherwise layout is invalid */
+		if (!found) {
+			errno = ENOENT;
+			return -1;
+		}
+	} else {
+		/* A data comp that is protected by a parity comp can't be
+		 * deleted until the parity comp is deleted.
+		 */
+		if (comp->llc_mirror_link_id != LLAPI_MIRROR_LINK_NONE) {
+			errno = EINVAL;
+			return -1;
+		}
 	}
 
 	/* It must be the tail of the list (for PFL, can be relaxed
@@ -2301,18 +2865,25 @@ int llapi_layout_comp_del(struct llapi_layout *layout)
 	list_del_init(&comp->llc_list);
 	__llapi_comp_free(comp);
 
+	if (!is_parity_comp)
+		return 0;
+
+	/* Clear link on protected data_component */
+	data_comp->llc_mirror_link_id = LLAPI_MIRROR_LINK_NONE;
+	data_comp->llc_flags &= ~LCME_FL_IS_LINK_ID;
+
 	return 0;
 }
 
 /**
- * Move the current component pointer to the component with
- * specified component ID.
+ * llapi_layout_comp_use_id() - Move the current component pointer to the
+ * component with specified component ID.
+ * @layout: composite layout
+ * @comp_id: component ID
  *
- * \param[in] layout	composite layout
- * \param[in] id	component ID
- *
- * \retval	=0 : moved successfully
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_comp_use_id(struct llapi_layout *layout, uint32_t comp_id)
 {
@@ -2343,18 +2914,20 @@ int llapi_layout_comp_use_id(struct llapi_layout *layout, uint32_t comp_id)
 }
 
 /**
- * Move the current component pointer to a specified position.
+ * llapi_layout_comp_use() - Move the current component pointer to a specified
+ * position.
  *
- * \param[in] layout	composite layout
- * \param[in] pos	the position to be moved, it can be:
- *			LLAPI_LAYOUT_COMP_USE_FIRST: use first component
- *			LLAPI_LAYOUT_COMP_USE_LAST: use last component
- *			LLAPI_LAYOUT_COMP_USE_NEXT: use component after current
- *			LLAPI_LAYOUT_COMP_USE_PREV: use component before current
+ * @layout: composite layout
+ * @pos: the position to be moved, it can be:
+ *       LLAPI_LAYOUT_COMP_USE_FIRST: use first component
+ *       LLAPI_LAYOUT_COMP_USE_LAST: use last component
+ *       LLAPI_LAYOUT_COMP_USE_NEXT: use component after current
+ *       LLAPI_LAYOUT_COMP_USE_PREV: use component before current
  *
- * \retval	=0 : moved successfully
- * \retval	=1 : at last component with NEXT, at first component with PREV
- * \retval	<0 if error occurs
+ * Return:
+ * * %0 moved successfully
+ * * %1 at last component with NEXT, at first component with PREV
+ * * %negative if error occurs
  */
 int llapi_layout_comp_use(struct llapi_layout *layout,
 			  enum llapi_layout_comp_use pos)
@@ -2411,10 +2984,13 @@ int llapi_layout_comp_use(struct llapi_layout *layout,
 }
 
 /**
- * Add layout component(s) to an existing file.
+ * llapi_layout_file_comp_add() - Add layout component(s) to an existing file.
+ * @path: The path name of the file
+ * @layout: The layout component(s) to be added
  *
- * \param[in] path	The path name of the file
- * \param[in] layout	The layout component(s) to be added
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_file_comp_add(const char *path,
 			       const struct llapi_layout *layout)
@@ -2502,13 +3078,17 @@ out:
 }
 
 /**
+ * llapi_layout_file_comp_del() - Delete component(s) by component id
+ * @path: path name of the file
+ * @id: unique component ID
+ * @flags: flags: LCME_FL_* or; negative flags: (LCME_FL_NEG|LCME_FL_*)
+ *
  * Delete component(s) by the specified component id or component flags
  * from an existing file.
  *
- * \param[in] path	path name of the file
- * \param[in] id	unique component ID
- * \param[in] flags	flags: LCME_FL_* or;
- *			negative flags: (LCME_FL_NEG|LCME_FL_*)
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_file_comp_del(const char *path, uint32_t id, uint32_t flags)
 {
@@ -2693,15 +3273,19 @@ static int llapi_layout_apply_flags(struct llapi_layout *layout, uint32_t *ids,
 	return rc;
 }
 /**
+ * llapi_layout_file_comp_set() - Change flags by component ID of components
+ * @path: path name of the file
+ * @ids: An array of component IDs
+ * @flags: flags: LCME_FL_* or; negative flags: (LCME_FL_NEG|LCME_FL_*)
+ * @count: Number of elements in ids and flags array
+ *
  * Change flags by component ID of components of an existing file.
  * The component to be modified is specified by the comp->lcme_id value,
  * which must be a unique component ID.
  *
- * \param[in] path	path name of the file
- * \param[in] ids	An array of component IDs
- * \param[in] flags	flags: LCME_FL_* or;
- *			negative flags: (LCME_FL_NEG|LCME_FL_*)
- * \param[in] count	Number of elements in ids and flags array
+ * Return:
+ * * %0 on success
+ * * %negative if error occurs
  */
 int llapi_layout_file_comp_set(const char *path, uint32_t *ids, uint32_t *flags,
 			       size_t count)
@@ -2840,12 +3424,12 @@ out:
 }
 
 /**
- * Check if the file layout is composite.
+ * llapi_layout_is_composite() - Check if the file layout is composite.
+ * @layout: the file layout to check
  *
- * \param[in] layout	the file layout	to check
- *
- * \retval true		composite
- * \retval false	not composite
+ * Return:
+ * * %true composite
+ * * %false not composite
  */
 bool llapi_layout_is_composite(struct llapi_layout *layout)
 {
@@ -2853,15 +3437,16 @@ bool llapi_layout_is_composite(struct llapi_layout *layout)
 }
 
 /**
- * Iterate every components in the @layout and call callback function @cb.
+ * llapi_layout_comp_iterate() - Iterate every components in the @layout and
+ * call callback function @cb.
+ * @layout: component layout list.
+ * @cb: callback function called for each component
+ * @cbdata: callback data passed to the callback function
  *
- * \param[in] layout	component layout list.
- * \param[in] cb	callback function called for each component
- * \param[in] cbdata	callback data passed to the callback function
- *
- * \retval < 0				error happens during the iteration
- * \retval LLAPI_LAYOUT_ITER_CONT	finished the iteration w/o error
- * \retval LLAPI_LAYOUT_ITER_STOP	got something, stop the iteration
+ * Return:
+ * * %negative error happens during the iteration
+ * * %LLAPI_LAYOUT_ITER_CONT finished the iteration w/o error
+ * * %LLAPI_LAYOUT_ITER_STOP got something, stop the iteration
  */
 int llapi_layout_comp_iterate(struct llapi_layout *layout,
 			      llapi_layout_iter_cb cb, void *cbdata)
@@ -2901,7 +3486,7 @@ int llapi_layout_comp_iterate(struct llapi_layout *layout,
  * This function copies all of the components from @src_layout and
  * appends them to @dst_layout.
  *
- * Return: 0 on success or -1 on failure.
+ * Return: 0 on success or %negative on failure.
  */
 int llapi_layout_merge(struct llapi_layout **dst_layout,
 		       const struct llapi_layout *src_layout)
@@ -2954,6 +3539,7 @@ int llapi_layout_merge(struct llapi_layout **dst_layout,
 		new->llc_extent.e_start = comp->llc_extent.e_start;
 		new->llc_extent.e_end = comp->llc_extent.e_end;
 		new->llc_id = comp->llc_id;
+		new->llc_mirror_id = comp->llc_mirror_id;
 		new->llc_flags = comp->llc_flags;
 
 		list_add_tail(&new->llc_list, &new_layout->llot_comp_list);
@@ -2970,13 +3556,13 @@ error:
 }
 
 /**
- * Get the last initialized component
+ * llapi_layout_get_last_init_comp() - Get the last initialized component
+ * @layout: component layout list.
  *
- * \param[in] layout	component layout list.
- *
- * \retval 0		found
- * \retval -EINVAL	not found
- * \retval -EISDIR	directory layout
+ * Return:
+ * * %0 found
+ * * %-EINVAL not found
+ * * %-EISDIR directory layout
  */
 int llapi_layout_get_last_init_comp(struct llapi_layout *layout)
 {
@@ -3009,13 +3595,14 @@ int llapi_layout_get_last_init_comp(struct llapi_layout *layout)
 }
 
 /**
- * Interit stripe info from the file's component to the mirror
+ * llapi_layout_mirror_inherit() - Interit stripe info from the file's component
+ * to the mirror
+ * @f_layout: file component layout list.
+ * @m_layout: mirro component layout list.
  *
- * \param[in] layout	file component layout list.
- * \param[in] layout	mirro component layout list.
- *
- * \retval 0		on success
- * \retval -EINVAL	on error
+ * Return:
+ * * %0 on success
+ * * %-EINVAL on error
  */
 int llapi_layout_mirror_inherit(struct llapi_layout *f_layout,
 				struct llapi_layout *m_layout)
@@ -3040,17 +3627,15 @@ int llapi_layout_mirror_inherit(struct llapi_layout *f_layout,
 }
 
 /**
- * Find all stale components.
+ * llapi_mirror_find_stale() - Find all stale components.
+ * @layout: component layout list.
+ * @comp: array of stale component info. [out]
+ * @comp_size: array size of @comp.
+ * @mirror_ids: array of mirror id that only components belonging to these
+ *              mirror will be collected.
+ * @ids_nr: number of mirror ids array.
  *
- * \param[in] layout		component layout list.
- * \param[out] comp		array of stale component info.
- * \param[in] comp_size		array size of @comp.
- * \param[in] mirror_ids	array of mirror id that only components
- *				belonging to these mirror will be collected.
- * \param[in] ids_nr		number of mirror ids array.
- *
- * \retval		number of component info collected on success or
- *			an error code on failure.
+ * Return number of component info collected on success or error code on failure
  */
 int llapi_mirror_find_stale(struct llapi_layout *layout,
 		struct llapi_resync_comp *comp, size_t comp_size,
@@ -3188,57 +3773,13 @@ int llapi_mirror_find(struct llapi_layout *layout, uint64_t file_start,
 	return mirror_id;
 }
 
-#ifndef NSEC_PER_SEC
-# define NSEC_PER_SEC 1000000000UL
-#endif
-#define ONE_MB 0x100000
-static struct timespec timespec_sub(struct timespec *before,
-				    struct timespec *after)
-{
-	struct timespec ret;
-
-	ret.tv_sec = after->tv_sec - before->tv_sec;
-	if (after->tv_nsec < before->tv_nsec) {
-		ret.tv_sec--;
-		ret.tv_nsec = NSEC_PER_SEC + after->tv_nsec - before->tv_nsec;
-	} else {
-		ret.tv_nsec = after->tv_nsec - before->tv_nsec;
-	}
-
-	return ret;
-}
-
-static void stats_log(struct timespec *now, struct timespec *start_time,
-		      ssize_t read_bytes, size_t write_bytes,
-		      off_t file_size_bytes)
-{
-	struct timespec diff = timespec_sub(start_time, now);
-
-	if (file_size_bytes == 0)
-		return;
-
-	if (diff.tv_sec == 0 && diff.tv_nsec == 0)
-		return;
-
-	llapi_printf(LLAPI_MSG_NORMAL,
-		     "- { seconds: %li, rmbps: %5.2g, wmbps: %5.2g, copied: %lu, size: %lu, pct: %lu%% }\n",
-		     diff.tv_sec,
-		     (double) read_bytes/((ONE_MB * diff.tv_sec) +
-			     ((ONE_MB * diff.tv_nsec)/NSEC_PER_SEC)),
-		     (double) write_bytes/((ONE_MB * diff.tv_sec) +
-			     ((ONE_MB * diff.tv_nsec)/NSEC_PER_SEC)),
-		     write_bytes/ONE_MB,
-		     file_size_bytes/ONE_MB,
-		     ((write_bytes*100)/file_size_bytes));
-}
-
 int llapi_mirror_resync_many_params(int fd, struct llapi_layout *layout,
 				    struct llapi_resync_comp *comp_array,
-				    int comp_size,  uint64_t start,
-				    uint64_t end,
+				    int comp_size, uint64_t start, uint64_t end,
 				    unsigned long stats_interval_sec,
-				    unsigned long bandwidth_bytes_sec)
+				    uint64_t bandwidth_bytes_sec)
 {
+	struct stat stbuf;
 	size_t buflen = 64 << 20; /* 64M */
 	ssize_t page_size;
 	void *buf;
@@ -3252,16 +3793,22 @@ int llapi_mirror_resync_many_params(int fd, struct llapi_layout *layout,
 	struct timespec start_time;
 	struct timespec now;
 	struct timespec last_bw_print;
-	size_t total_bytes_read = 0;
-	size_t total_bytes_written = 0;
-	off_t write_estimation_bytes = 0;
-	struct stat st;
+	uint64_t total_bytes_read = 0;
+	uint64_t total_bytes_written = 0;
+	uint64_t write_estimation_bytes = 0;
 
-	rc = fstat(fd, &st);
+	rc = fstat(fd, &stbuf);
 	if (rc < 0)
 		return -errno;
-	if (bandwidth_bytes_sec > 0 || stats_interval_sec)
-		write_estimation_bytes = st.st_size * comp_size;
+
+	/* estimate is too big for sparse file, but good enough for % done */
+	if (bandwidth_bytes_sec > 0 || stats_interval_sec) {
+		for (i = 0; i < comp_size; i++) {
+			write_estimation_bytes +=
+				min_t(uint64_t, comp_array[i].lrc_end,
+				      stbuf.st_size) - comp_array[i].lrc_start;
+		}
+	}
 
 	/* limit transfer size to what can be sent in one second */
 	if (bandwidth_bytes_sec && bandwidth_bytes_sec < buflen)
@@ -3276,6 +3823,7 @@ int llapi_mirror_resync_many_params(int fd, struct llapi_layout *layout,
 	rc = posix_memalign(&buf, page_size, buflen);
 	if (rc)
 		return -rc;
+	(void)mlock(buf, buflen);
 
 	clock_gettime(CLOCK_MONOTONIC, &start_time);
 	now = last_bw_print = start_time;
@@ -3293,10 +3841,9 @@ int llapi_mirror_resync_many_params(int fd, struct llapi_layout *layout,
 				rc = llapi_mirror_find(layout, pos, end,
 							&mirror_end);
 				if (rc < 0) {
-					free(buf);
 					llapi_error(LLAPI_MSG_ERROR, rc,
 						    "cannot find source mirror");
-					return rc;
+					goto out_free;
 				}
 				src = rc;
 				/* restrict mirror end by resync end */
@@ -3401,8 +3948,6 @@ do_read:
 		to_write = ((bytes_read - 1) | (page_size - 1)) + 1;
 
 		for (i = 0; i < comp_size; i++) {
-			unsigned long long write_target;
-			struct timespec diff;
 			ssize_t written;
 			off_t pos2 = pos;
 			size_t to_write2 = to_write;
@@ -3437,57 +3982,26 @@ do_read:
 			assert(written == to_write2);
 			total_bytes_written += written;
 
-			if (bandwidth_bytes_sec == 0)
+			if (!bandwidth_bytes_sec && !stats_interval_sec)
 				continue;
 
 			clock_gettime(CLOCK_MONOTONIC, &now);
-			diff = timespec_sub(&start_time, &now);
-			write_target = ((bandwidth_bytes_sec * diff.tv_sec) +
-				((bandwidth_bytes_sec *
-				diff.tv_nsec)/NSEC_PER_SEC));
+			llapi_bandwidth_throttle(&now, &start_time,
+						 bandwidth_bytes_sec,
+						 total_bytes_written);
 
-			if (write_target < total_bytes_written) {
-				unsigned long long excess;
-				struct timespec delay = { 0, 0 };
-
-				excess = total_bytes_written - write_target;
-
-				if (excess == 0)
-					continue;
-
-				delay.tv_sec = excess / bandwidth_bytes_sec;
-				delay.tv_nsec = (excess % bandwidth_bytes_sec) *
-					NSEC_PER_SEC / bandwidth_bytes_sec;
-
-				do {
-					rc = clock_nanosleep(CLOCK_MONOTONIC, 0,
-							     &delay, &delay);
-				} while (rc < 0 && errno == EINTR);
-
-				if (rc < 0) {
-					llapi_error(LLAPI_MSG_ERROR, rc,
-						"errors: delay for bandwidth control failed: %s\n",
-						strerror(-rc));
-					rc = 0;
-				}
-			}
-
-			if (stats_interval_sec) {
-				clock_gettime(CLOCK_MONOTONIC, &now);
-				if ((total_bytes_written != end - start) &&
-				     (now.tv_sec >= last_bw_print.tv_sec +
-						 stats_interval_sec)) {
-					stats_log(&now, &start_time,
-						  total_bytes_read,
-						  total_bytes_written,
-						  write_estimation_bytes);
-					last_bw_print = now;
-				}
-			}
+			if (stats_interval_sec &&
+			    total_bytes_written != write_estimation_bytes)
+				llapi_stats_log(&now, &start_time,
+					  &last_bw_print, stats_interval_sec,
+					  total_bytes_read, total_bytes_written,
+					  total_bytes_written,
+					  write_estimation_bytes);
 		}
 		pos += bytes_read;
 	}
-
+out_free:
+	(void)munlock(buf, buflen);
 	free(buf);
 
 	if (rc < 0) {
@@ -3500,9 +4014,10 @@ do_read:
 	/* Output at least one log, regardless of stats_interval */
 	if (stats_interval_sec) {
 		clock_gettime(CLOCK_MONOTONIC, &now);
-		stats_log(&now, &start_time, total_bytes_read,
-			  total_bytes_written,
-			  write_estimation_bytes);
+		llapi_stats_log(&now, &start_time,
+				&last_bw_print, stats_interval_sec,
+				total_bytes_read, total_bytes_written,
+				write_estimation_bytes, write_estimation_bytes);
 	}
 
 	/**
@@ -3517,7 +4032,7 @@ do_read:
 		if (pos < comp->lrc_start || pos >= comp->lrc_end)
 			continue;
 
-		if (pos < st.st_size) {
+		if (pos < stbuf.st_size) {
 			rc = llapi_mirror_punch(fd, comp->lrc_mirror_id, pos,
 						comp->lrc_end - pos);
 		} else {
@@ -3565,6 +4080,15 @@ enum llapi_layout_comp_sanity_error {
 	LSE_ALIGN_END,
 	LSE_ALIGN_EXT,
 	LSE_FOREIGN_EXTENSION,
+	LSE_MIRROR_COUNT_INVALID,
+	LSE_MIRROR_COUNT_MISMATCH,
+	LSE_EC_PARAM,
+	LSE_EC_MATCH_DATA,
+	LSE_EC_DUP,
+	LSE_EC_OVERLAP,
+	LSE_EC_MIXED_MIRROR,
+	LSE_EC_DATA_COMP_UNSET_LINK_ID,
+	LSE_EC_UNPROTECTED_DATA,
 	LSE_LAST,
 };
 
@@ -3603,6 +4127,24 @@ const char *const llapi_layout_strerror[] =
 		"The extension size must be aligned by the stripe size",
 	[LSE_FOREIGN_EXTENSION] =
 		"FOREIGN components can't be extension space",
+	[LSE_MIRROR_COUNT_INVALID] =
+		"Mirror count is invalid",
+	[LSE_MIRROR_COUNT_MISMATCH] =
+		"Mirror count doesn't match component structure",
+	[LSE_EC_PARAM] =
+		"EC component should have valid parameters",
+	[LSE_EC_MATCH_DATA] =
+		"EC component should have matching data component",
+	[LSE_EC_DUP] =
+		"Parity component should not protect multiple data components",
+	[LSE_EC_OVERLAP] =
+		"EC components should not overlap in the same mirror",
+	[LSE_EC_MIXED_MIRROR] =
+		"Mirror contains both PARITY and non-PARITY components",
+	[LSE_EC_DATA_COMP_UNSET_LINK_ID] =
+		"Data component should link to parity component",
+	[LSE_EC_UNPROTECTED_DATA] =
+		"All data components in the mirror must be protected by parity",
 };
 
 struct llapi_layout_sanity_args {
@@ -3611,11 +4153,11 @@ struct llapi_layout_sanity_args {
 	bool lsa_ondisk;
 	int lsa_rc;
 	char *fsname;
+	uint16_t lsa_mirror_count;
+	/* Track parity state for mixed mirror detection */
+	bool lsa_in_parity;
+	uint64_t lsa_last_parity_end;
 };
-
-/* The component flags can be set by users at creation/modification time. */
-#define LCME_USER_COMP_FLAGS	(LCME_FL_PREF_RW | LCME_FL_NOSYNC | \
-				 LCME_FL_EXTENSION)
 
 /* Inline function to verify the pool name */
 static inline int verify_pool_name(char *fsname, struct llapi_layout *layout)
@@ -3637,7 +4179,7 @@ static inline int verify_pool_name(char *fsname, struct llapi_layout *layout)
 	return 0;
 }
 
-/**
+/*
  * When modified, adjust llapi_stripe_param_verify() if needed as well.
  */
 static int llapi_layout_sanity_cb(struct llapi_layout *layout,
@@ -3670,9 +4212,14 @@ static int llapi_layout_sanity_cb(struct llapi_layout *layout,
 	else
 		next = NULL;
 
-	/* Start of zero implies a new mirror */
+	/*
+	 * Start of zero implies a new mirror.
+	 * With parity-first allowed, any component at e_start == 0 marks
+	 * the start of a new mirror, regardless of PARITY flag.
+	 */
 	if (comp->llc_extent.e_start == 0) {
 		first_comp = true;
+		args->lsa_mirror_count++;
 		/* Most checks apply only within one mirror, this is an
 		 * exception. */
 		if (prev && prev->llc_extent.e_end != LUSTRE_EOF) {
@@ -3680,6 +4227,7 @@ static int llapi_layout_sanity_cb(struct llapi_layout *layout,
 			goto out_err;
 		}
 
+		/* Reset prev at mirror boundary */
 		prev = NULL;
 	}
 
@@ -3707,13 +4255,16 @@ static int llapi_layout_sanity_cb(struct llapi_layout *layout,
 			args->lsa_rc = LSE_FLAGS;
 	} else if (!args->lsa_incomplete) {
 		if (args->lsa_flr) {
-			if (comp->llc_flags & ~LCME_USER_COMP_FLAGS)
+			if (comp->llc_flags &
+			    ~(LCME_USER_COMP_FLAGS | LCME_FL_IS_LINK_ID))
 				args->lsa_rc = LSE_FLAGS;
 		} else {
 			if (comp->llc_flags &
 			    ~(LCME_FL_EXTENSION | LCME_FL_PREF_RW |
-			      LCME_FL_NOCOMPR))
+			      LCME_FL_NOCOMPR | LCME_FL_PARITY |
+			      LCME_FL_IS_LINK_ID)) {
 				args->lsa_rc = LSE_FLAGS;
+			}
 		}
 	}
 	if (args->lsa_rc)
@@ -3821,6 +4372,176 @@ static int llapi_layout_sanity_cb(struct llapi_layout *layout,
 		goto out_err;
 	}
 
+	/* Any component should not have LCME_FL_IS_LINK_ID flag and
+	 * llc_ondisk flag set since the former flag is transient.
+	 */
+	if (comp->llc_ondisk && (comp->llc_flags & LCME_FL_IS_LINK_ID)) {
+		args->lsa_rc = LSE_FLAGS;
+		goto out_err;
+	}
+
+	/* EC parity component specific validation */
+	if (comp->llc_flags & LCME_FL_PARITY) {
+		struct llapi_layout_comp *data_comp = NULL;
+		struct llapi_layout_comp *search_comp;
+		bool is_link_id = comp->llc_flags & LCME_FL_IS_LINK_ID;
+
+		/*
+		 * Skip EC validation for components that are already on disk.
+		 * They were validated when created, and we may not have all
+		 * the necessary information (like stripe counts) when just
+		 * modifying component flags.
+		 */
+		if (comp->llc_ondisk)
+			goto skip_ec_validation;
+
+		list_for_each_entry(search_comp, &layout->llot_comp_list,
+				    llc_list) {
+			__u16 search_comp_mirror_link_id =
+				is_link_id ? search_comp->llc_mirror_link_id :
+					     search_comp->llc_mirror_id;
+			__u16 comp_mirror_link_id =
+				is_link_id ? comp->llc_mirror_link_id :
+					     comp->llc_mirror_id;
+
+			/* Skip parity components */
+			if (search_comp->llc_flags & LCME_FL_PARITY)
+				continue;
+
+			/* Comp should link to data comp to protect */
+			if (comp->llc_mirror_link_id !=
+			    search_comp_mirror_link_id)
+				continue;
+
+			/* Check if extents match */
+			if (search_comp->llc_extent.e_start !=
+				    comp->llc_extent.e_start ||
+			    search_comp->llc_extent.e_end !=
+				    comp->llc_extent.e_end)
+				continue;
+
+			/* Data comp and parity comp should have same flag */
+			if ((search_comp->llc_flags & LCME_FL_IS_LINK_ID) !=
+			    (comp->llc_flags & LCME_FL_IS_LINK_ID)) {
+				args->lsa_rc = LSE_EC_PARAM;
+				goto out_err;
+			}
+
+			/* Data comp should link to parity component */
+			if (search_comp->llc_mirror_link_id !=
+			    comp_mirror_link_id) {
+				args->lsa_rc = LSE_EC_DATA_COMP_UNSET_LINK_ID;
+				goto out_err;
+			}
+
+			/* Parity comp should not have multiple data comps */
+			if (data_comp) {
+				args->lsa_rc = LSE_EC_DUP;
+				goto out_err;
+			}
+			data_comp = search_comp;
+		}
+
+		if (!data_comp) {
+			args->lsa_rc = LSE_EC_MATCH_DATA;
+			goto out_err;
+		}
+
+		/* EC parameter validation */
+		if (layout_ec_verify_stripes(data_comp->llc_stripe_count,
+					     comp->llc_dstripe_count,
+					     comp->llc_cstripe_count)) {
+			args->lsa_rc = LSE_EC_PARAM;
+			goto out_err;
+		}
+
+		/*
+		 * EC/parity components must have the same stripe size as
+		 * their matching data components.
+		 */
+		if (comp->llc_stripe_size != data_comp->llc_stripe_size) {
+			args->lsa_rc = LSE_EC_PARAM;
+			goto out_err;
+		}
+
+		/*
+		 * Check that the protected data mirror is complete, i.e., the
+		 * extents covers [0, EOF], and all its data components are
+		 * protected by parity.
+		 */
+		uint64_t min_data_start = LUSTRE_EOF;
+		uint64_t max_data_end = 0;
+		uint16_t data_mirror_id = data_comp->llc_mirror_id;
+
+		list_for_each_entry(search_comp, &layout->llot_comp_list,
+				    llc_list) {
+			if (search_comp->llc_flags & LCME_FL_PARITY)
+				continue;
+			if (search_comp->llc_mirror_id != data_mirror_id)
+				continue;
+
+			/* Check extent coverage is complete */
+			if (search_comp->llc_extent.e_start < min_data_start)
+				min_data_start =
+					search_comp->llc_extent.e_start;
+			if (search_comp->llc_extent.e_end > max_data_end)
+				max_data_end = search_comp->llc_extent.e_end;
+
+			/* Every data component in the mirror must be protected
+			 * by a parity component
+			 */
+			if (search_comp->llc_mirror_link_id ==
+			    LLAPI_MIRROR_LINK_NONE) {
+				args->lsa_rc = LSE_EC_UNPROTECTED_DATA;
+				goto out_err;
+			}
+		}
+
+		/* Data mirror must be complete: extents cover [0, EOF] */
+		if (min_data_start != 0 || max_data_end != LUSTRE_EOF) {
+			args->lsa_rc = LSE_EC_PARAM;
+			goto out_err;
+		}
+
+skip_ec_validation:
+		/* Continue with other validation checks */
+		;
+	}
+
+	/*
+	 * Detect mixed parity mirrors: once we see a parity component,
+	 * all subsequent components in that mirror must be parity until
+	 * we hit a new mirror boundary (e_start == 0).
+	 */
+	if (comp->llc_flags & LCME_FL_PARITY) {
+		/* Entering or continuing parity mode */
+		if (!args->lsa_in_parity) {
+			/* First parity component in this mirror */
+			if (comp->llc_extent.e_start != 0) {
+				/* Parity can only start at mirror boundary */
+				args->lsa_rc = LSE_EC_MIXED_MIRROR;
+				goto out_err;
+			}
+			args->lsa_in_parity = true;
+		}
+		args->lsa_last_parity_end = comp->llc_extent.e_end;
+	} else {
+		/* Non-parity component */
+		if (args->lsa_in_parity) {
+			/*
+			 * Switching from parity to non-parity within a
+			 * mirror is not allowed. Non-parity after parity
+			 * must start a new mirror (e_start == 0).
+			 */
+			if (comp->llc_extent.e_start != 0) {
+				args->lsa_rc = LSE_EC_MIXED_MIRROR;
+				goto out_err;
+			}
+			/* New mirror started, exit parity mode */
+			args->lsa_in_parity = false;
+		}
+	}
+
 	return LLAPI_LAYOUT_ITER_CONT;
 
 out_err:
@@ -3831,16 +4552,23 @@ out_err:
 /* Print explanation of layout error */
 void llapi_layout_sanity_perror(int error)
 {
-	if (error >= LSE_LAST || error < 0) {
-		fprintf(stdout, "Invalid layout, unrecognized error: %d\n",
-			error);
-	} else {
-		fprintf(stdout, "Invalid layout: %s\n",
-			llapi_layout_strerror[error]);
-	}
+	if (error >= LSE_LAST || error < 0)
+		llapi_err_noerrno(LLAPI_MSG_ERROR,
+				  "Invalid layout, unrecognized error: %d\n",
+				  error);
+	else
+		llapi_err_noerrno(LLAPI_MSG_ERROR, "Invalid layout: %s\n",
+				  llapi_layout_strerror[error]);
 }
 
-/* Walk a layout and enforce sanity checks that apply to > 1 component
+/**
+ * llapi_layout_sanity() - Enforce sanity checks
+ * @layout: component layout list.
+ * @incomplete: if layout is complete or not - some checks can only be done on
+ * complete layouts.
+ * @flr: set when this is called from FLR mirror create
+ *
+ * Walk a layout and enforce sanity checks that apply to > 1 component
  *
  * The core idea here is that of sanity checking individual tokens vs semantic
  * checking.
@@ -3854,35 +4582,33 @@ void llapi_layout_sanity_perror(int error)
  * valid when adjacent to one another", or "can we set these flags on adjacent
  * components"?
  *
- * \param[in] layout            component layout list.
- * \param[in] incomplete        if layout is complete or not - some checks can
- *                              only be done on complete layouts.
- * \param[in] flr		set when this is called from FLR mirror create
- *
- * \retval                      0, success, positive: various errors, see
- *                              llapi_layout_sanity_perror, -1, failure
+ * Return:
+ * * %0 on success
+ * * %negative on failure (see llapi_layout_sanity_perror)
  */
 
-int llapi_layout_sanity(struct llapi_layout *layout,
-			bool incomplete, bool flr)
+int llapi_layout_sanity(struct llapi_layout *layout, bool incomplete, bool flr)
 {
 	return llapi_layout_v2_sanity(layout, incomplete, flr, NULL);
 }
 
-/* This function has been introduced to do pool name checking
+/**
+ * llapi_layout_v2_sanity() - Do pool name checking
+ * @layout: component layout list.
+ * @incomplete: if layout is complete or not - some checks can
+ *              only be done on complete layouts.
+ * @flr: set when this is called from FLR mirror create
+ * @fsname: filesystem name is used to check pool name, if
+ *          NULL no pool name check is performed
+ *
+ * This function has been introduced to do pool name checking
  * on top of llapi_layout_sanity, the file name passed in this
  * function is used later to verify if pool exist. The older version
  * of the sanity function is passing NULL for the filename
- * Input arguments ---
- * \param[in] layout            component layout list.
- * \param[in] incomplete        if layout is complete or not - some checks can
- *                              only be done on complete layouts.
- * \param[in] flr		set when this is called from FLR mirror create
- * \param[in] fsname		filesystem name is used to check pool name, if
- *				NULL no pool name check is performed
  *
- * \retval                      0, success, positive: various errors, see
- *                              llapi_layout_sanity_perror, -1, failure
+ * Return:
+ * * %0 on success
+ * * %negative on failure (see llapi_layout_sanity_perror)
  */
 
 int llapi_layout_v2_sanity(struct llapi_layout *layout,
@@ -3904,9 +4630,12 @@ int llapi_layout_v2_sanity(struct llapi_layout *layout,
 	args.lsa_flr = flr;
 	args.lsa_incomplete = incomplete;
 	args.fsname = fsname;
+	args.lsa_mirror_count = 0; /* tracks actual mirror count for each cb */
+	args.lsa_in_parity = false;
+	args.lsa_last_parity_end = 0;
 
 	/* When we modify an existing layout, this tells us if it's FLR */
-	if (mirror_id_of(curr->llc_id) > 0)
+	if (curr->llc_mirror_id > 0)
 		args.lsa_flr = true;
 
 	errno = 0;
@@ -3918,6 +4647,14 @@ int llapi_layout_v2_sanity(struct llapi_layout *layout,
 
 	if (rc != LLAPI_LAYOUT_ITER_CONT)
 		rc = args.lsa_rc;
+
+	/* Verify mirror count is valid and matches component structure */
+	if (rc == 0 && layout->llot_is_composite) {
+		if (!llapi_layout_mirror_count_is_valid(args.lsa_mirror_count))
+			rc = LSE_MIRROR_COUNT_INVALID;
+		else if (args.lsa_mirror_count != layout->llot_mirror_count)
+			rc = LSE_MIRROR_COUNT_MISMATCH;
+	}
 
 	layout->llot_cur_comp = curr;
 

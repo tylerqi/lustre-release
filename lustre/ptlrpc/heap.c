@@ -1,37 +1,16 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
+// SPDX-License-Identifier: GPL-2.0
 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License version 2 for more details.  A copy is
- * included in the COPYING file that accompanied this code.
-
- * GPL HEADER END
- */
 /*
  * Copyright (c) 2011 Intel Corporation
  */
+
 /*
- * libcfs/libcfs/heap.c
- *
- * Author: Eric Barton	<eeb@whamcloud.com>
- *	   Liang Zhen	<liang@whamcloud.com>
- */
-/** \addtogroup heap
- *
- * @{
+ * Author: Eric Barton <eeb@whamcloud.com>
+ * Author: Liang Zhen <liang@whamcloud.com>
  */
 
 #define DEBUG_SUBSYSTEM S_LNET
 
-#include <libcfs/libcfs.h>
 #include <lustre_net.h>
 #include "heap.h"
 
@@ -56,13 +35,15 @@ do {									\
 #define CBH_FREE(ptr)	LIBCFS_FREE(ptr, CBH_NOB)
 
 /**
+ * binheap_grow() - Grows the capacity of a binary heap
+ * @h: The binary heap
+ *
  * Grows the capacity of a binary heap so that it can handle a larger number of
- * \e struct binheap_node objects.
+ * struct binheap_node objects.
  *
- * \param[in] h The binary heap
- *
- * \retval 0	   Successfully grew the heap
- * \retval -ENOMEM OOM error
+ * Return:
+ * * %0 Successfully grew the heap
+ * * %-ENOMEM OOM error
  */
 static int
 binheap_grow(struct binheap *h)
@@ -149,17 +130,17 @@ binheap_grow(struct binheap *h)
 }
 
 /**
- * Creates and initializes a binary heap instance.
+ * binheap_create() - Creates and initializes a binary heap instance.
+ * @ops: The operations to be used
+ * @flags: The heap flags
+ * @count: The initial heap capacity in # of elements
+ * @arg: An optional private argument
+ * @cptab: The CPT table this heap instance will operate over
+ * @cptid: The CPT id of @cptab this heap instance will operate over
  *
- * \param[in] ops   The operations to be used
- * \param[in] flags The heap flags
- * \parm[in]  count The initial heap capacity in # of elements
- * \param[in] arg   An optional private argument
- * \param[in] cptab The CPT table this heap instance will operate over
- * \param[in] cptid The CPT id of \a cptab this heap instance will operate over
- *
- * \retval valid-pointer A newly-created and initialized binary heap object
- * \retval NULL		 error
+ * Return:
+ * * %valid-pointer A newly-created and initialized binary heap object
+ * * %NULL on error
  */
 struct binheap *
 binheap_create(struct binheap_ops *ops, unsigned int flags,
@@ -202,12 +183,11 @@ binheap_create(struct binheap_ops *ops, unsigned int flags,
 EXPORT_SYMBOL(binheap_create);
 
 /**
- * Releases all resources associated with a binary heap instance.
+ * binheap_destroy() - Releases all resources associated with @h
+ * @h: The binary heap object
  *
  * Deallocates memory for all indirection levels and the binary heap object
  * itself.
- *
- * \param[in] h The binary heap object
  */
 void
 binheap_destroy(struct binheap *h)
@@ -253,13 +233,12 @@ binheap_destroy(struct binheap *h)
 EXPORT_SYMBOL(binheap_destroy);
 
 /**
- * Obtains a double pointer to a heap element, given its index into the binary
- * tree.
+ * binheap_pointer() - Obtains a double pointer to a heap element, given its
+ * index into the binary tree.
+ * @h: The binary heap instance
+ * @idx: The requested node's index
  *
- * \param[in] h	  The binary heap instance
- * \param[in] idx The requested node's index
- *
- * \retval valid-pointer A double pointer to a heap pointer entry
+ * Return valid-pointer A double pointer to a heap pointer entry
  */
 static struct binheap_node **
 binheap_pointer(struct binheap *h, unsigned int idx)
@@ -278,13 +257,13 @@ binheap_pointer(struct binheap *h, unsigned int idx)
 }
 
 /**
- * Obtains a pointer to a heap element, given its index into the binary tree.
+ * binheap_find() - Obtains a pointer to a heap element, given its index into
+ * the binary tree.
+ * @h: The binary heap
+ * @idx: The requested node's index
  *
- * \param[in] h	  The binary heap
- * \param[in] idx The requested node's index
- *
- * \retval valid-pointer The requested heap node
- * \retval NULL		 Supplied index is out of bounds
+ * Return valid-pointer (The requested heap node) or NULL (Supplied index is out
+ * of bounds)
  */
 struct binheap_node *
 binheap_find(struct binheap *h, unsigned int idx)
@@ -297,13 +276,13 @@ binheap_find(struct binheap *h, unsigned int idx)
 EXPORT_SYMBOL(binheap_find);
 
 /**
- * Moves a node upwards, towards the root of the binary tree.
+ * binheap_bubble() - Moves a node upwards, towards the root of the binary tree.
+ * @h: The heap
+ * @e: The node
  *
- * \param[in] h The heap
- * \param[in] e The node
- *
- * \retval 1 The position of \a e in the tree was changed at least once
- * \retval 0 The position of \a e in the tree was not changed
+ * Return:
+ * * %1 The position of @e in the tree was changed at least once
+ * * %0 The position of @e in the tree was not changed
  */
 static int
 binheap_bubble(struct binheap *h, struct binheap_node *e)
@@ -340,13 +319,13 @@ binheap_bubble(struct binheap *h, struct binheap_node *e)
 }
 
 /**
- * Moves a node downwards, towards the last level of the binary tree.
+ * binheap_sink() - Moves a node downwards, towards last level of binary tree.
+ * @h: The heap
+ * @e: The node
  *
- * \param[in] h The heap
- * \param[in] e The node
- *
- * \retval 1 The position of \a e in the tree was changed at least once
- * \retval 0 The position of \a e in the tree was not changed
+ * Return:
+ * * %1 The position of @e in the tree was changed at least once
+ * * %0 The position of @e in the tree was not changed
  */
 static int
 binheap_sink(struct binheap *h, struct binheap_node *e)
@@ -405,13 +384,13 @@ binheap_sink(struct binheap *h, struct binheap_node *e)
 }
 
 /**
- * Sort-inserts a node into the binary heap.
+ * binheap_insert() - Sort-inserts a node into the binary heap.
+ * @h: The heap
+ * @e: The node
  *
- * \param[in] h The heap
- * \param[in] e The node
- *
- * \retval 0	Element inserted successfully
- * \retval != 0 error
+ * Return:
+ * * %0 on success (Element inserted successfully)
+ * * %!=0 on error
  */
 int
 binheap_insert(struct binheap *h, struct binheap_node *e)
@@ -444,10 +423,9 @@ binheap_insert(struct binheap *h, struct binheap_node *e)
 EXPORT_SYMBOL(binheap_insert);
 
 /**
- * Removes a node from the binary heap.
- *
- * \param[in] h The heap
- * \param[in] e The node
+ * binheap_remove() - Removes a node from the binary heap.
+ * @h: The heap
+ * @e: The node
  */
 void
 binheap_remove(struct binheap *h, struct binheap_node *e)
@@ -480,12 +458,12 @@ binheap_remove(struct binheap *h, struct binheap_node *e)
 EXPORT_SYMBOL(binheap_remove);
 
 /**
- * Relocate a node in the binary heap.
- * Should be called whenever a node's values
- * which affects its ranking are changed.
+ * binheap_relocate() - Relocate a node in the binary heap.
+ * @h: The heap
+ * @e: The node
  *
- * \param[in] h The heap
- * \param[in] e The node
+ * Relocate a node in the binary heap. Should be called whenever a node's values
+ * which affects its ranking are changed.
  */
 void
 binheap_relocate(struct binheap *h, struct binheap_node *e)

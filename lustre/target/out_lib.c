@@ -190,7 +190,7 @@ int out_create_pack(const struct lu_env *env, struct object_update *update,
 	if (rc != 0)
 		RETURN(rc);
 
-	obdo = object_update_param_get(update, 0, NULL);
+	obdo = object_update_param_get(update, 0, NULL, NULL, NULL);
 	if (IS_ERR(obdo))
 		RETURN(PTR_ERR(obdo));
 
@@ -200,7 +200,7 @@ int out_create_pack(const struct lu_env *env, struct object_update *update,
 	if (parent_fid != NULL) {
 		struct lu_fid *tmp;
 
-		tmp = object_update_param_get(update, 1, NULL);
+		tmp = object_update_param_get(update, 1, NULL, NULL, NULL);
 		if (IS_ERR(tmp))
 			RETURN(PTR_ERR(tmp));
 
@@ -241,7 +241,7 @@ int out_attr_set_pack(const struct lu_env *env, struct object_update *update,
 	if (rc != 0)
 		RETURN(rc);
 
-	obdo = object_update_param_get(update, 0, NULL);
+	obdo = object_update_param_get(update, 0, NULL, NULL, NULL);
 	if (IS_ERR(obdo))
 		RETURN(PTR_ERR(obdo));
 
@@ -840,7 +840,7 @@ int out_xattr_set_add_exec(const struct lu_env *env, struct dt_object *dt_obj,
 	struct tx_arg	*arg;
 	int		rc;
 
-	rc = dt_declare_xattr_set(env, dt_obj, buf, name, flags, th);
+	rc = dt_declare_xattr_set(env, dt_obj, NULL, buf, name, flags, th);
 	if (rc != 0)
 		return rc;
 
@@ -1045,7 +1045,8 @@ static int out_obj_index_insert(const struct lu_env *env,
 
 	CDEBUG(D_INFO, "%s: index insert "DFID" name: %s fid "DFID", type %u\n",
 	       dt_obd_name(th->th_dev), PFID(lu_object_fid(&dt_obj->do_lu)),
-	       (char *)key, PFID(((struct dt_insert_rec *)rec)->rec_fid),
+	       encode_fn((char *)key),
+	       PFID(((struct dt_insert_rec *)rec)->rec_fid),
 	       ((struct dt_insert_rec *)rec)->rec_type);
 
 	if (!dt_try_as_dir(env, dt_obj, true))

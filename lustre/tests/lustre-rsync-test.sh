@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Run select tests by setting ONLY, or as arguments to the script.
 # Skip specific tests by setting EXCEPT.
@@ -17,9 +17,9 @@ init_test_env "$@"
 init_logging
 
 ALWAYS_EXCEPT="$LRSYNC_EXCEPT "
-# bug number for skipped test: LU-4256
-ALWAYS_EXCEPT+="               2b"
-# UPDATE THE COMMENT ABOVE WITH BUG NUMBERS WHEN CHANGING ALWAYS_EXCEPT!
+always_except LU-4256	2b
+[[ $(uname -r) = *"debug" ]] &&
+	always_except LU-16489	2c
 
 build_test_filter
 
@@ -44,8 +44,8 @@ export LRSYNC="$LRSYNC -v -c no -d 2"
 
 # Number of seconds to run dbench
 DBENCH_TIME=${DBENCH_TIME:-60}
-TGT=$TMP/target
-TGT2=$TMP/target2
+TGT=$(dirname $DIR)/target
+TGT2=${TGT}2
 MDT0=$($LCTL get_param -n mdc.*.mds_server_uuid |
 	awk '{ gsub(/_UUID/,""); print $1 }' | head -n1)
 
@@ -277,16 +277,14 @@ test_2a() {
 
 	# Run dbench
 	bash rundbench -C -D $DIR/$tdir 2 -t $DBENCH_TIME ||
-		error "dbench failed"
+		error "dbench failed to complete $DBENCH_TIME seconds"
 
-	local LRSYNC_LOG=$(generate_logname "lrsync_log")
+	local log=$(generate_logname "lrsync_log")
 	# Replicate the changes to $TGT
-	$LRSYNC -s $DIR -t $TGT -t $TGT2 -m $MDT0 -u $CL_USER -l $LREPL_LOG \
-		-D $LRSYNC_LOG
+	$LRSYNC -s $DIR -t $TGT -m $MDT0 -u $CL_USER -l $LREPL_LOG -D $log
 
 	# Use diff to compare the source and the destination
 	check_diff $DIR/$tdir $TGT/$tdir
-	check_diff $DIR/$tdir $TGT2/$tdir
 
 	fini_changelog
 	cleanup_src_tgt
@@ -311,10 +309,9 @@ test_2b() {
 	echo Stopping dbench
 	stop_procs $child_pid
 
-	local LRSYNC_LOG=$(generate_logname "lrsync_log")
+	local log=$(generate_logname "lrsync_log")
 	echo Starting replication
-	$LRSYNC -s $DIR -t $TGT -t $TGT2 -m $MDT0 -u $CL_USER -l $LREPL_LOG \
-		-D $LRSYNC_LOG
+	$LRSYNC -s $DIR -t $TGT -m $MDT0 -u $CL_USER -l $LREPL_LOG -D $log
 	check_diff $DIR/$tdir $TGT/$tdir
 
 	echo Resuming dbench
@@ -325,7 +322,7 @@ test_2b() {
 	stop_procs $child_pid
 
 	echo Starting replication
-	$LRSYNC -l $LREPL_LOG -D $LRSYNC_LOG
+	$LRSYNC -l $LREPL_LOG -D $log
 	check_diff $DIR/$tdir $TGT/$tdir
 
 	echo "Wait for dbench to finish"
@@ -334,10 +331,9 @@ test_2b() {
 
 	# Replicate the changes to $TGT
 	echo Starting replication
-	$LRSYNC -l $LREPL_LOG -D $LRSYNC_LOG
+	$LRSYNC -l $LREPL_LOG -D $log
 
 	check_diff $DIR/$tdir $TGT/$tdir
-	check_diff $DIR/$tdir $TGT2/$tdir
 
 	fini_changelog
 	cleanup_src_tgt

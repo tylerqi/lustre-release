@@ -11,6 +11,8 @@
 #define DEBUG_SUBSYSTEM S_LNET
 
 #include <linux/miscdevice.h>
+#include <linux/libcfs/libcfs.h>
+
 #include <lnet/lib-lnet.h>
 #include <lnet/lnet_crypto.h>
 #include <uapi/linux/lnet/lnet-dlc.h>
@@ -160,7 +162,7 @@ lnet_dyn_unconfigure_ni(struct libcfs_ioctl_hdr *hdr)
 	lnet_nid4_to_nid(conf->lic_nid, &nid);
 	mutex_lock(&lnet_config_mutex);
 	if (the_lnet.ln_niinit_self)
-		rc = lnet_dyn_del_ni(&nid);
+		rc = lnet_dyn_del_ni(&nid, true);
 	else
 		rc = -EINVAL;
 	mutex_unlock(&lnet_config_mutex);
@@ -288,7 +290,7 @@ static int lnet_ioctl_data_adjust(struct libcfs_ioctl_data *data)
 
 	if (data->ioc_inllen2 != 0)
 		data->ioc_inlbuf2 = (&data->ioc_bulk[0] +
-				     round_up(data->ioc_inllen1, 8));
+				     ALIGN(data->ioc_inllen1, 8));
 
 	RETURN(0);
 }
@@ -339,6 +341,34 @@ free:
 	LIBCFS_FREE(*hdr_pp, hdr.ioc_len);
 	RETURN(err);
 }
+
+#if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 18, 53, 0)
+/* remove deprecated libcfs ioctl handling, since /dev/lnet has
+ * moved to lnet and there is no way to call these ioctls until
+ * after the lnet module is loaded.  They are replaced by writing
+ * to "debug_marker", handled by libcfs_debug_marker() below.
+ */
+static int libcfs_ioctl(unsigned int cmd, struct libcfs_ioctl_data *data)
+{
+	switch (cmd) {
+	case IOC_LIBCFS_CLEAR_DEBUG:
+		libcfs_debug_clear_buffer();
+		break;
+	case IOC_LIBCFS_MARK_DEBUG:
+		if (data == NULL ||
+		    data->ioc_inlbuf1 == NULL ||
+		    data->ioc_inlbuf1[data->ioc_inllen1 - 1] != '\0')
+			return -EINVAL;
+
+		libcfs_debug_mark_buffer(data->ioc_inlbuf1);
+		break;
+
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+#endif
 
 static long
 lnet_psdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
@@ -481,5 +511,5 @@ MODULE_DESCRIPTION("Lustre Networking layer");
 MODULE_VERSION(LNET_VERSION);
 MODULE_LICENSE("GPL");
 
-module_init(lnet_init);
+late_initcall(lnet_init);
 module_exit(lnet_exit);

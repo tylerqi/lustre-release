@@ -24,8 +24,8 @@
 #ifndef LUSTRE_OSC_H
 #define LUSTRE_OSC_H
 
-#include <libcfs/libcfs.h>
 #include <obd.h>
+#include <cfs_hash.h>
 #include <cl_object.h>
 #include <lustre_crypto.h>
 
@@ -67,7 +67,6 @@ struct osc_async_page {
 	struct brw_page		oap_brw_page;
 } __attribute__((packed));
 
-#define oap_page	oap_brw_page.bp_page
 #define oap_count	oap_brw_page.bp_count
 #define oap_brw_flags	oap_brw_page.bp_flag
 
@@ -234,11 +233,7 @@ struct osc_object_operations {
 struct osc_object {
 	struct cl_object	oo_cl;
 	struct lov_oinfo	*oo_oinfo;
-	/**
-	 * True if locking against this stripe got -EUSERS.
-	 */
-	int			oo_contended;
-	ktime_t			oo_contention_time;
+
 #ifdef CONFIG_LUSTRE_DEBUG_EXPENSIVE_CHECK
 	/**
 	 * IO context used for invariant checks in osc_lock_has_pages().
@@ -264,6 +259,7 @@ struct osc_object {
 	 * Manage write(dirty) extents.
 	 */
 	struct list_head	oo_hp_exts;	/* list of hp extents */
+	struct list_head	oo_hp_read_exts;/* list for hp read extents */
 	struct list_head	oo_urgent_exts;	/* list of writeback extents */
 	struct list_head	oo_full_exts;
 	struct list_head	oo_dio_exts;
@@ -314,11 +310,6 @@ static inline void osc_object_lock(struct osc_object *obj)
 	spin_lock(&obj->oo_lock);
 }
 
-static inline int osc_object_trylock(struct osc_object *obj)
-{
-	return spin_trylock(&obj->oo_lock);
-}
-
 static inline void osc_object_unlock(struct osc_object *obj)
 {
 	spin_unlock(&obj->oo_lock);
@@ -326,18 +317,6 @@ static inline void osc_object_unlock(struct osc_object *obj)
 
 #define assert_osc_object_is_locked(obj)	\
 	assert_spin_locked(&obj->oo_lock)
-
-static inline void osc_object_set_contended(struct osc_object *obj)
-{
-	obj->oo_contention_time = ktime_get();
-	/* mb(); */
-	obj->oo_contended = 1;
-}
-
-static inline void osc_object_clear_contended(struct osc_object *obj)
-{
-	obj->oo_contended = 0;
-}
 
 /*
  * Lock "micro-states" for osc layer.
@@ -375,7 +354,7 @@ enum osc_lock_state {
  *
  * - When reply is received from the server (osc_enqueue_interpret())
  *      - ldlm_cli_enqueue_fini()
- *          - LDLM_LOCK_PUT(): releases caller reference acquired by
+ *          - ldlm_lock_put(): releases caller reference acquired by
  *            ldlm_lock_new().
  *          - if (rc != 0)
  *                ldlm_lock_decref(): error case: matches ldlm_cli_enqueue().
@@ -383,7 +362,7 @@ enum osc_lock_state {
  *
  * - When lock is being cancelled (ldlm_lock_cancel())
  *      - ldlm_lock_destroy()
- *          - LDLM_LOCK_PUT(): releases hash-table reference acquired by
+ *          - ldlm_lock_put(): releases hash-table reference acquired by
  *            ldlm_lock_new().
  *
  * osc_lock is detached from ldlm_lock by osc_lock_detach() that is called
@@ -525,6 +504,7 @@ struct osc_brw_async_args {
 	int			 aa_nio_count;
 	u32			 aa_page_count;
 	s32			 aa_resends;
+	ktime_t			 aa_start_time;
 	struct brw_page		**aa_ppga;
 	struct client_obd	*aa_cli;
 	struct list_head	 aa_oaps;
@@ -545,6 +525,8 @@ extern struct lu_context_key osc_session_key;
 #define OSC_FLAGS (ASYNC_URGENT|ASYNC_READY)
 
 /* osc_page.c */
+int osc_dio_pages_init(const struct lu_env *env, struct cl_object *obj,
+		       struct cl_dio_pages *cdp, pgoff_t index);
 int osc_page_init(const struct lu_env *env, struct cl_object *obj,
 		  struct cl_page *page, pgoff_t ind);
 void osc_index2policy(union ldlm_policy_data *policy,
@@ -552,9 +534,8 @@ void osc_index2policy(union ldlm_policy_data *policy,
 void osc_lru_add_batch(struct client_obd *cli, struct list_head *list);
 void osc_page_submit(const struct lu_env *env, struct osc_page *opg,
 		     enum cl_req_type crt, int brw_flags);
-int lru_queue_work(const struct lu_env *env, void *data);
 long osc_lru_shrink(const struct lu_env *env, struct client_obd *cli,
-		    long target, bool force);
+		    long target, bool force, long *scanned);
 
 /* osc_cache.c */
 int osc_set_async_flags(struct osc_object *obj, struct osc_page *opg,
@@ -569,8 +550,10 @@ int osc_page_cache_add(const struct lu_env *env, struct osc_object *osc,
 		       cl_commit_cbt cb);
 int osc_teardown_async_page(const struct lu_env *env, struct osc_object *obj,
 			    struct osc_page *ops);
-int osc_flush_async_page(const struct lu_env *env, struct cl_io *io,
-			 struct osc_page *ops);
+int osc_queue_dio_pages(const struct lu_env *env, struct cl_io *io,
+			struct osc_object *obj, struct cl_dio_pages *cdp,
+			struct list_head *list,
+			int from_page, int to_page, int brw_flags);
 int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
 			 struct osc_object *obj, struct list_head *list,
 			 int brw_flags);
@@ -578,11 +561,12 @@ int osc_cache_truncate_start(const struct lu_env *env, struct osc_object *obj,
 			     __u64 size, struct osc_extent **extp);
 void osc_cache_truncate_end(const struct lu_env *env, struct osc_extent *ext);
 int osc_cache_writeback_range(const struct lu_env *env, struct osc_object *obj,
-			      pgoff_t start, pgoff_t end, int hp, int discard);
+			      pgoff_t start, pgoff_t end, int hp, int discard,
+			      enum cl_io_priority prio);
 int osc_cache_wait_range(const struct lu_env *env, struct osc_object *obj,
 			 pgoff_t start, pgoff_t end);
-int osc_io_unplug0(const struct lu_env *env, struct client_obd *cli,
-		   struct osc_object *osc, int async);
+int __osc_io_unplug(const struct lu_env *env, struct client_obd *cli,
+		    struct osc_object *osc, int async);
 static inline void osc_wake_cache_waiters(struct client_obd *cli)
 {
 	wake_up(&cli->cl_cache_waiters);
@@ -592,14 +576,14 @@ static inline int osc_io_unplug_async(const struct lu_env *env,
 				      struct client_obd *cli,
 				      struct osc_object *osc)
 {
-	return osc_io_unplug0(env, cli, osc, 1);
+	return __osc_io_unplug(env, cli, osc, 1);
 }
 
 static inline void osc_io_unplug(const struct lu_env *env,
 				 struct client_obd *cli,
 				 struct osc_object *osc)
 {
-	(void)osc_io_unplug0(env, cli, osc, 0);
+	(void)__osc_io_unplug(env, cli, osc, 0);
 }
 
 typedef bool (*osc_page_gang_cbt)(const struct lu_env *, struct cl_io *,
@@ -609,14 +593,6 @@ bool osc_page_gang_lookup(const struct lu_env *env, struct cl_io *io,
 			  osc_page_gang_cbt cb, void *cbdata);
 bool osc_discard_cb(const struct lu_env *env, struct cl_io *io,
 		    void **pvec, int count, void *cbdata);
-
-/* osc_dev.c */
-int osc_device_init(const struct lu_env *env, struct lu_device *d,
-		    const char *name, struct lu_device *next);
-struct lu_device *osc_device_fini(const struct lu_env *env,
-				  struct lu_device *d);
-struct lu_device *osc_device_free(const struct lu_env *env,
-				  struct lu_device *d);
 
 /* osc_object.c */
 int osc_object_init(const struct lu_env *env, struct lu_object *obj,
@@ -629,7 +605,7 @@ int osc_object_print(const struct lu_env *env, void *cookie,
 int osc_attr_get(const struct lu_env *env, struct cl_object *obj,
 		 struct cl_attr *attr);
 int osc_attr_update(const struct lu_env *env, struct cl_object *obj,
-		    const struct cl_attr *attr, unsigned int valid);
+		    const struct cl_attr *attr, enum cl_attr_valid valid);
 int osc_object_glimpse(const struct lu_env *env, const struct cl_object *obj,
 		       struct ost_lvb *lvb);
 int osc_object_invalidate(const struct lu_env *env, struct osc_object *osc);
@@ -662,12 +638,16 @@ void osc_schedule_grant_work(void);
 int osc_io_submit(const struct lu_env *env, struct cl_io *io,
 		  const struct cl_io_slice *ios, enum cl_req_type crt,
 		  struct cl_2queue *queue);
+int osc_dio_submit(const struct lu_env *env, struct cl_io *io,
+		  const struct cl_io_slice *ios, enum cl_req_type crt,
+		  struct cl_dio_pages *cdp);
 int osc_io_commit_async(const struct lu_env *env,
 			const struct cl_io_slice *ios,
 			struct cl_page_list *qin, int from, int to,
-			cl_commit_cbt cb);
+			cl_commit_cbt cb, enum cl_io_priority prio);
 void osc_io_extent_release(const struct lu_env *env,
-			   const struct cl_io_slice *ios);
+			   const struct cl_io_slice *ios,
+			   enum cl_io_priority prio);
 int osc_io_iter_init(const struct lu_env *env, const struct cl_io_slice *ios);
 void osc_io_iter_fini(const struct lu_env *env,
 		      const struct cl_io_slice *ios);
@@ -751,6 +731,11 @@ static inline struct obd_export *osc_export(const struct osc_object *obj)
 static inline struct client_obd *osc_cli(const struct osc_object *obj)
 {
 	return &osc_export(obj)->exp_obd->u.cli;
+}
+
+static inline char *cli_name(struct client_obd *cli)
+{
+	return cli->cl_import->imp_obd->obd_name;
 }
 
 static inline struct osc_object *cl2osc(const struct cl_object *obj)

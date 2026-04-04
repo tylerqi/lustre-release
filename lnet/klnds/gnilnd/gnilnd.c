@@ -14,7 +14,46 @@
 #include "gnilnd.h"
 
 static int
-kgnilnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
+kgnilnd_tun_defaults(struct lnet_lnd_tunables *lnd_tunables,
+		     struct lnet_ioctl_config_lnd_cmn_tunables *cmn)
+{
+	struct lnet_ioctl_config_gnilnd_tunables *tunables;
+
+	/* sync to latest module settings */
+	tunables = &lnd_tunables->lnd_tun_u.lnd_gni;
+	tunables->lnd_version = CURRENT_LND_VERSION;
+	tunables->lnd_timeout = kgnilnd_timeout();
+
+	if (cmn->lct_peer_timeout == -1)
+		cmn->lct_peer_timeout = *kgnilnd_tunables.kgn_peer_timeout;
+
+	if (cmn->lct_max_tx_credits == -1)
+		cmn->lct_max_tx_credits = *kgnilnd_tunables.kgn_credits;
+
+	if (cmn->lct_peer_tx_credits == -1)
+		cmn->lct_peer_tx_credits = *kgnilnd_tunables.kgn_peer_credits;
+
+	if (cmn->lct_peer_tx_credits > cmn->lct_max_tx_credits)
+		cmn->lct_peer_tx_credits = cmn->lct_max_tx_credits;
+
+	/* gnilnd doesn't set lct_peer_rtr_credits */
+
+	return 0;
+}
+
+static const struct ln_key_list kgnilnd_tunables_keys = {
+	.lkl_maxattr			= LNET_NET_GNILND_TUNABLES_ATTR_MAX,
+	.lkl_list			= {
+		[LNET_NET_GNILND_TUNABLES_ATTR_LND_TIMEOUT]	= {
+			.lkp_value	= "timeout",
+			.lkp_data_type	= NLA_S32,
+		},
+	},
+};
+
+static int
+kgnilnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data,
+	       bool export_backup)
 {
 	struct lnet_ni *ni = data;
 
@@ -24,45 +63,34 @@ kgnilnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
 	if (cmd != LNET_CMD_NETS || type != LNET_NET_LOCAL_NI_ATTR_LND_TUNABLES)
 		return -EOPNOTSUPP;
 
-	nla_put_u32(msg, LNET_NET_GNILND_TUNABLES_ATTR_LND_TIMEOUT,
-		    kgnilnd_timeout());
+	if (!export_backup)
+		nla_put_u32(msg, LNET_NET_GNILND_TUNABLES_ATTR_LND_TIMEOUT,
+			    kgnilnd_timeout());
 	return 0;
 }
 
 static int
 kgnilnd_nl_set(int cmd, struct nlattr *attr, int type, void *data)
 {
-	struct lnet_ni *ni = data;
-
 	if (cmd != LNET_CMD_NETS)
 		return -EOPNOTSUPP;
-
-	if (!attr)
-		return 0;
-
-	if (nla_type(attr) != LN_SCALAR_ATTR_INT_VALUE)
-		return -EINVAL;
-
-	if (type == LNET_NET_GNILND_TUNABLES_ATTR_LND_TIMEOUT) {
-		s64 timeout = nla_get_s64(attr);
-
-		ni->ni_lnd_tunables.lnd_tun_u.lnd_gni.lnd_timeout = timeout;
-	}
 
 	return 0;
 }
 
 /* Primary entry points from LNET.  There are no guarantees against reentrance. */
 const struct lnet_lnd the_kgnilnd = {
-	.lnd_type       = GNILND,
-	.lnd_startup    = kgnilnd_startup,
-	.lnd_shutdown   = kgnilnd_shutdown,
-	.lnd_ctl        = kgnilnd_ctl,
-	.lnd_send       = kgnilnd_send,
-	.lnd_recv       = kgnilnd_recv,
-	.lnd_eager_recv = kgnilnd_eager_recv,
-	.lnd_nl_get	= kgnilnd_nl_get,
-	.lnd_nl_set	= kgnilnd_nl_set,
+	.lnd_type		= GNILND,
+	.lnd_startup		= kgnilnd_startup,
+	.lnd_shutdown		= kgnilnd_shutdown,
+	.lnd_ctl		= kgnilnd_ctl,
+	.lnd_send		= kgnilnd_send,
+	.lnd_recv		= kgnilnd_recv,
+	.lnd_eager_recv		= kgnilnd_eager_recv,
+	.lnd_tun_defaults	= kgnilnd_tun_defaults,
+	.lnd_nl_get		= kgnilnd_nl_get,
+	.lnd_nl_set		= kgnilnd_nl_set,
+	.lnd_get_timeout	= kgnilnd_timeout,
 };
 
 kgn_data_t      kgnilnd_data;
@@ -2496,7 +2524,7 @@ kgnilnd_base_shutdown(void)
 		schedule_timeout_uninterruptible(cfs_time_seconds(1));
 	}
 
-       /* Flag threads to terminate */
+	/* Flag threads to terminate */
 	kgnilnd_data.kgn_shutdown = 1;
 
 	for (i = 0; i < kgnilnd_data.kgn_ndevs; i++) {
@@ -2847,5 +2875,5 @@ MODULE_DESCRIPTION("Gemini LNet Network Driver");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(kgnilnd_init);
+late_initcall_sync(kgnilnd_init);
 module_exit(kgnilnd_exit);

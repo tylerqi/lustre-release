@@ -40,12 +40,12 @@
 static const char dot[] = ".";
 static const char dotdot[] = "..";
 
-/**
+/*
  * Implementation of dt_index_operations::dio_lookup
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_index_operations::dio_lookup() in the API description for details.
+ * see dt_index_operations::dio_lookup() in the API description for details.
  */
 static int lod_lookup(const struct lu_env *env, struct dt_object *dt,
 		      struct dt_rec *rec, const struct dt_key *key)
@@ -54,12 +54,12 @@ static int lod_lookup(const struct lu_env *env, struct dt_object *dt,
 	return next->do_index_ops->dio_lookup(env, next, rec, key);
 }
 
-/**
+/*
  * Implementation of dt_index_operations::dio_declare_insert.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_index_operations::dio_declare_insert() in the API description
+ * see dt_index_operations::dio_declare_insert() in the API description
  * for details.
  */
 static int lod_declare_insert(const struct lu_env *env, struct dt_object *dt,
@@ -69,12 +69,12 @@ static int lod_declare_insert(const struct lu_env *env, struct dt_object *dt,
 	return lod_sub_declare_insert(env, dt_object_child(dt), rec, key, th);
 }
 
-/**
+/*
  * Implementation of dt_index_operations::dio_insert.
  *
  * Used with regular (non-striped) objects
  *
- * \see dt_index_operations::dio_insert() in the API description for details.
+ * see dt_index_operations::dio_insert() in the API description for details.
  */
 static int lod_insert(const struct lu_env *env, struct dt_object *dt,
 		      const struct dt_rec *rec, const struct dt_key *key,
@@ -83,12 +83,12 @@ static int lod_insert(const struct lu_env *env, struct dt_object *dt,
 	return lod_sub_insert(env, dt_object_child(dt), rec, key, th);
 }
 
-/**
+/*
  * Implementation of dt_index_operations::dio_declare_delete.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_index_operations::dio_declare_delete() in the API description
+ * see dt_index_operations::dio_declare_delete() in the API description
  * for details.
  */
 static int lod_declare_delete(const struct lu_env *env, struct dt_object *dt,
@@ -97,12 +97,12 @@ static int lod_declare_delete(const struct lu_env *env, struct dt_object *dt,
 	return lod_sub_declare_delete(env, dt_object_child(dt), key, th);
 }
 
-/**
+/*
  * Implementation of dt_index_operations::dio_delete.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_index_operations::dio_delete() in the API description for details.
+ * see dt_index_operations::dio_delete() in the API description for details.
  */
 static int lod_delete(const struct lu_env *env, struct dt_object *dt,
 		      const struct dt_key *key, struct thandle *th)
@@ -110,12 +110,12 @@ static int lod_delete(const struct lu_env *env, struct dt_object *dt,
 	return lod_sub_delete(env, dt_object_child(dt), key, th);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::init.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::init() in the API description for details.
+ * see dt_it_ops::init() in the API description for details.
  */
 static struct dt_it *lod_it_init(const struct lu_env *env,
 				 struct dt_object *dt, __u32 attr)
@@ -146,12 +146,12 @@ do {								\
 	LASSERT((it)->lit_it != NULL);				\
 } while (0)
 
-/**
+/*
  * Implementation of dt_index_operations::dio_it.fini.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_index_operations::dio_it.fini() in the API description for details.
+ * see dt_index_operations::dio_it.fini() in the API description for details.
  */
 static void lod_it_fini(const struct lu_env *env, struct dt_it *di)
 {
@@ -165,12 +165,12 @@ static void lod_it_fini(const struct lu_env *env, struct dt_it *di)
 	it->lit_it = NULL;
 }
 
-/**
+/*
  * Implementation of dt_it_ops::get.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::get() in the API description for details.
+ * see dt_it_ops::get() in the API description for details.
  */
 static int lod_it_get(const struct lu_env *env, struct dt_it *di,
 		      const struct dt_key *key)
@@ -181,12 +181,12 @@ static int lod_it_get(const struct lu_env *env, struct dt_it *di,
 	return it->lit_obj->do_index_ops->dio_it.get(env, it->lit_it, key);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::put.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::put() in the API description for details.
+ * see dt_it_ops::put() in the API description for details.
  */
 static void lod_it_put(const struct lu_env *env, struct dt_it *di)
 {
@@ -196,12 +196,12 @@ static void lod_it_put(const struct lu_env *env, struct dt_it *di)
 	return it->lit_obj->do_index_ops->dio_it.put(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::next.
  *
  * Used with regular (non-striped) objects
  *
- * \see dt_it_ops::next() in the API description for details.
+ * see dt_it_ops::next() in the API description for details.
  */
 static int lod_it_next(const struct lu_env *env, struct dt_it *di)
 {
@@ -211,12 +211,12 @@ static int lod_it_next(const struct lu_env *env, struct dt_it *di)
 	return it->lit_obj->do_index_ops->dio_it.next(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::key.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::key() in the API description for details.
+ * see dt_it_ops::key() in the API description for details.
  */
 static struct dt_key *lod_it_key(const struct lu_env *env,
 				 const struct dt_it *di)
@@ -227,12 +227,12 @@ static struct dt_key *lod_it_key(const struct lu_env *env,
 	return it->lit_obj->do_index_ops->dio_it.key(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::key_size.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::key_size() in the API description for details.
+ * see dt_it_ops::key_size() in the API description for details.
  */
 static int lod_it_key_size(const struct lu_env *env, const struct dt_it *di)
 {
@@ -242,12 +242,12 @@ static int lod_it_key_size(const struct lu_env *env, const struct dt_it *di)
 	return it->lit_obj->do_index_ops->dio_it.key_size(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::rec.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::rec() in the API description for details.
+ * see dt_it_ops::rec() in the API description for details.
  */
 static int lod_it_rec(const struct lu_env *env, const struct dt_it *di,
 		      struct dt_rec *rec, __u32 attr)
@@ -259,12 +259,12 @@ static int lod_it_rec(const struct lu_env *env, const struct dt_it *di,
 						     attr);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::rec_size.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::rec_size() in the API description for details.
+ * see dt_it_ops::rec_size() in the API description for details.
  */
 static int lod_it_rec_size(const struct lu_env *env, const struct dt_it *di,
 			   __u32 attr)
@@ -276,12 +276,12 @@ static int lod_it_rec_size(const struct lu_env *env, const struct dt_it *di,
 							  attr);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::store.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::store() in the API description for details.
+ * see dt_it_ops::store() in the API description for details.
  */
 static __u64 lod_it_store(const struct lu_env *env, const struct dt_it *di)
 {
@@ -291,12 +291,12 @@ static __u64 lod_it_store(const struct lu_env *env, const struct dt_it *di)
 	return it->lit_obj->do_index_ops->dio_it.store(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::load.
  *
  * Used with regular (non-striped) objects.
  *
- * \see dt_it_ops::load() in the API description for details.
+ * see dt_it_ops::load() in the API description for details.
  */
 static int lod_it_load(const struct lu_env *env, const struct dt_it *di,
 		       __u64 hash)
@@ -328,12 +328,12 @@ static const struct dt_index_operations lod_index_ops = {
 	}
 };
 
-/**
+/*
  * Implementation of dt_index_operations::dio_lookup
  *
  * Used with striped directories.
  *
- * \see dt_index_operations::dio_lookup() in the API description for details.
+ * see dt_index_operations::dio_lookup() in the API description for details.
  */
 static int lod_striped_lookup(const struct lu_env *env, struct dt_object *dt,
 		      struct dt_rec *rec, const struct dt_key *key)
@@ -372,13 +372,13 @@ static int lod_striped_lookup(const struct lu_env *env, struct dt_object *dt,
 	return next->do_index_ops->dio_lookup(env, next, rec, key);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::init.
  *
  * Used with striped objects. Internally just initializes the iterator
  * on the first stripe.
  *
- * \see dt_it_ops::init() in the API description for details.
+ * see dt_it_ops::init() in the API description for details.
  */
 static struct dt_it *lod_striped_it_init(const struct lu_env *env,
 					 struct dt_object *dt, __u32 attr)
@@ -429,12 +429,12 @@ do {									\
 	LASSERT((it)->lit_stripe_index < (lo)->ldo_dir_stripe_count);	\
 } while (0)
 
-/**
+/*
  * Implementation of dt_it_ops::fini.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::fini() in the API description for details.
+ * see dt_it_ops::fini() in the API description for details.
  */
 static void lod_striped_it_fini(const struct lu_env *env, struct dt_it *di)
 {
@@ -460,14 +460,14 @@ static void lod_striped_it_fini(const struct lu_env *env, struct dt_it *di)
 	it->lit_stripe_index = 0;
 }
 
-/**
+/*
  * Implementation of dt_it_ops::get.
  *
  * Right now it's not used widely, only to reset the iterator to the
  * initial position. It should be possible to implement a full version
  * which chooses a correct stripe to be able to position with any key.
  *
- * \see dt_it_ops::get() in the API description for details.
+ * see dt_it_ops::get() in the API description for details.
  */
 static int lod_striped_it_get(const struct lu_env *env, struct dt_it *di,
 			      const struct dt_key *key)
@@ -486,12 +486,12 @@ static int lod_striped_it_get(const struct lu_env *env, struct dt_it *di,
 	return next->do_index_ops->dio_it.get(env, it->lit_it, key);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::put.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::put() in the API description for details.
+ * see dt_it_ops::put() in the API description for details.
  */
 static void lod_striped_it_put(const struct lu_env *env, struct dt_it *di)
 {
@@ -515,13 +515,13 @@ static void lod_striped_it_put(const struct lu_env *env, struct dt_it *di)
 	return next->do_index_ops->dio_it.put(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::next.
  *
  * Used with striped objects. When the end of the current stripe is
  * reached, the method takes the next stripe's iterator.
  *
- * \see dt_it_ops::next() in the API description for details.
+ * see dt_it_ops::next() in the API description for details.
  */
 static int lod_striped_it_next(const struct lu_env *env, struct dt_it *di)
 {
@@ -611,12 +611,12 @@ again:
 	RETURN(1);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::key.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::key() in the API description for details.
+ * see dt_it_ops::key() in the API description for details.
  */
 static struct dt_key *lod_striped_it_key(const struct lu_env *env,
 					 const struct dt_it *di)
@@ -634,12 +634,12 @@ static struct dt_key *lod_striped_it_key(const struct lu_env *env,
 	return next->do_index_ops->dio_it.key(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::key_size.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::size() in the API description for details.
+ * see dt_it_ops::size() in the API description for details.
  */
 static int lod_striped_it_key_size(const struct lu_env *env,
 				   const struct dt_it *di)
@@ -657,12 +657,12 @@ static int lod_striped_it_key_size(const struct lu_env *env,
 	return next->do_index_ops->dio_it.key_size(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::rec.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::rec() in the API description for details.
+ * see dt_it_ops::rec() in the API description for details.
  */
 static int lod_striped_it_rec(const struct lu_env *env, const struct dt_it *di,
 			      struct dt_rec *rec, __u32 attr)
@@ -680,12 +680,12 @@ static int lod_striped_it_rec(const struct lu_env *env, const struct dt_it *di,
 	return next->do_index_ops->dio_it.rec(env, it->lit_it, rec, attr);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::rec_size.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::rec_size() in the API description for details.
+ * see dt_it_ops::rec_size() in the API description for details.
  */
 static int lod_striped_it_rec_size(const struct lu_env *env,
 				   const struct dt_it *di, __u32 attr)
@@ -703,12 +703,12 @@ static int lod_striped_it_rec_size(const struct lu_env *env,
 	return next->do_index_ops->dio_it.rec_size(env, it->lit_it, attr);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::store.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::store() in the API description for details.
+ * see dt_it_ops::store() in the API description for details.
  */
 static __u64 lod_striped_it_store(const struct lu_env *env,
 				  const struct dt_it *di)
@@ -726,12 +726,12 @@ static __u64 lod_striped_it_store(const struct lu_env *env,
 	return next->do_index_ops->dio_it.store(env, it->lit_it);
 }
 
-/**
+/*
  * Implementation of dt_it_ops::load.
  *
  * Used with striped objects.
  *
- * \see dt_it_ops::load() in the API description for details.
+ * see dt_it_ops::load() in the API description for details.
  */
 static int lod_striped_it_load(const struct lu_env *env,
 			       const struct dt_it *di, __u64 hash)
@@ -771,8 +771,12 @@ static const struct dt_index_operations lod_striped_index_ops = {
 };
 
 /**
- * Append the FID for each shard of the striped directory after the
- * given LMV EA header.
+ * lod_load_lmv_shards() - Append the FID for each shard of the striped
+ * directory after the given LMV EA header.
+ * @env: pointer to the thread context
+ * @lo: pointer to the master object of the striped directory
+ * @buf: pointer to the lu_buf which will hold the LMV EA
+ * @resize: whether re-allocate the buffer if it is not big enough
  *
  * To simplify striped directory and the consistency verification,
  * we only store the LMV EA header on disk, for both master object
@@ -787,14 +791,10 @@ static const struct dt_index_operations lod_striped_index_ops = {
  * There may be holes in the LMV EA if some shards' name entries
  * are corrupted or lost.
  *
- * \param[in] env	pointer to the thread context
- * \param[in] lo	pointer to the master object of the striped directory
- * \param[in] buf	pointer to the lu_buf which will hold the LMV EA
- * \param[in] resize	whether re-allocate the buffer if it is not big enough
- *
- * \retval		positive size of the LMV EA
- * \retval		0 for nothing to be loaded
- * \retval		negative error number on failure
+ * Return:
+ * * %positive size of the LMV EA
+ * * %0 for nothing to be loaded
+ * * %negative error number on failure
  */
 int lod_load_lmv_shards(const struct lu_env *env, struct lod_object *lo,
 			struct lu_buf *buf, bool resize)
@@ -964,10 +964,10 @@ next:
 	RETURN(rc > 0 ? lmv_mds_md_size(stripes, magic) : rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_index_try.
  *
- * \see dt_object_operations::do_index_try() in the API description for details.
+ * see dt_object_operations::do_index_try() in the API description for details.
  */
 static int lod_index_try(const struct lu_env *env, struct dt_object *dt,
 			 const struct dt_index_features *feat)
@@ -1009,10 +1009,10 @@ static int lod_index_try(const struct lu_env *env, struct dt_object *dt,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_read_lock.
  *
- * \see dt_object_operations::do_read_lock() in the API description for details.
+ * see dt_object_operations::do_read_lock() in the API description for details.
  */
 static void lod_read_lock(const struct lu_env *env, struct dt_object *dt,
 			  unsigned role)
@@ -1020,10 +1020,10 @@ static void lod_read_lock(const struct lu_env *env, struct dt_object *dt,
 	dt_read_lock(env, dt_object_child(dt), role);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_write_lock.
  *
- * \see dt_object_operations::do_write_lock() in the API description for
+ * see dt_object_operations::do_write_lock() in the API description for
  * details.
  */
 static void lod_write_lock(const struct lu_env *env, struct dt_object *dt,
@@ -1032,10 +1032,10 @@ static void lod_write_lock(const struct lu_env *env, struct dt_object *dt,
 	dt_write_lock(env, dt_object_child(dt), role);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_read_unlock.
  *
- * \see dt_object_operations::do_read_unlock() in the API description for
+ * see dt_object_operations::do_read_unlock() in the API description for
  * details.
  */
 static void lod_read_unlock(const struct lu_env *env, struct dt_object *dt)
@@ -1043,10 +1043,10 @@ static void lod_read_unlock(const struct lu_env *env, struct dt_object *dt)
 	dt_read_unlock(env, dt_object_child(dt));
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_write_unlock.
  *
- * \see dt_object_operations::do_write_unlock() in the API description for
+ * see dt_object_operations::do_write_unlock() in the API description for
  * details.
  */
 static void lod_write_unlock(const struct lu_env *env, struct dt_object *dt)
@@ -1054,10 +1054,10 @@ static void lod_write_unlock(const struct lu_env *env, struct dt_object *dt)
 	dt_write_unlock(env, dt_object_child(dt));
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_write_locked.
  *
- * \see dt_object_operations::do_write_locked() in the API description for
+ * see dt_object_operations::do_write_locked() in the API description for
  * details.
  */
 static int lod_write_locked(const struct lu_env *env, struct dt_object *dt)
@@ -1065,10 +1065,10 @@ static int lod_write_locked(const struct lu_env *env, struct dt_object *dt)
 	return dt_write_locked(env, dt_object_child(dt));
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_attr_get.
  *
- * \see dt_object_operations::do_attr_get() in the API description for details.
+ * see dt_object_operations::do_attr_get() in the API description for details.
  */
 static int lod_attr_get(const struct lu_env *env,
 			struct dt_object *dt,
@@ -1208,7 +1208,7 @@ lod_obj_stripe_attr_set_cb(const struct lu_env *env, struct lod_object *lo,
 	return lod_sub_attr_set(env, dt, data->locd_attr, th);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_attr_set.
  *
  * If the object is striped, then apply the changes to all the stripes.
@@ -1306,8 +1306,7 @@ static int lod_declare_attr_set(const struct lu_env *env,
 		struct lod_thread_info *info = lod_env_info(env);
 		struct lu_buf *buf = &info->lti_buf;
 
-		buf->lb_buf = info->lti_ea_store;
-		buf->lb_len = info->lti_ea_store_size;
+		*buf = info->lti_ea_buf;
 		rc = lod_sub_declare_xattr_set(env, next, buf, XATTR_NAME_LOV,
 					       LU_XATTR_REPLACE, th);
 	}
@@ -1315,7 +1314,7 @@ static int lod_declare_attr_set(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_attr_set.
  *
  * If the object is striped, then apply the changes to all or subset of
@@ -1414,9 +1413,8 @@ static int lod_attr_set(const struct lu_env *env,
 		if (rc <= 0)
 			RETURN(rc);
 
-		buf->lb_buf = info->lti_ea_store;
-		buf->lb_len = info->lti_ea_store_size;
-		lmm = info->lti_ea_store;
+		*buf = info->lti_ea_buf;
+		lmm = buf->lb_buf;
 		magic = le32_to_cpu(lmm->lmm_magic);
 		if (magic == LOV_MAGIC_COMP_V1 || magic == LOV_MAGIC_SEL) {
 			struct lov_comp_md_v1 *lcm = buf->lb_buf;
@@ -1449,8 +1447,7 @@ static int lod_attr_set(const struct lu_env *env,
 		if (rc <= 0)
 			RETURN(rc);
 
-		buf->lb_buf = info->lti_ea_store;
-		buf->lb_len = info->lti_ea_store_size;
+		*buf = info->lti_ea_buf;
 		lcm = buf->lb_buf;
 		if (le32_to_cpu(lcm->lcm_magic) != LOV_MAGIC_COMP_V1 &&
 		    le32_to_cpu(lcm->lcm_magic) != LOV_MAGIC_SEL)
@@ -1468,7 +1465,7 @@ static int lod_attr_set(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_xattr_get.
  *
  * If LOV EA is requested from the root object and it's not
@@ -1592,15 +1589,15 @@ static int lod_xattr_get(const struct lu_env *env, struct dt_object *dt,
 }
 
 /**
- * Verify LVM EA.
+ * lod_verify_md_striping() - Verify LVM EA.
+ * @lod: lod device
+ * @lum: a buffer storing LMV EA to verify
  *
  * Checks that the magic of the stripe is sane.
  *
- * \param[in] lod	lod device
- * \param[in] lum	a buffer storing LMV EA to verify
- *
- * \retval		0 if the EA is sane
- * \retval		negative otherwise
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_verify_md_striping(struct lod_device *lod,
 				  const struct lmv_user_md_v1 *lum)
@@ -1618,13 +1615,11 @@ static int lod_verify_md_striping(struct lod_device *lod,
 }
 
 /**
- * Initialize LMV EA for a slave.
+ * lod_prep_slave_lmv_md() - Initialize LMV EA for a slave.
+ * @master_lmv: a buffer containing master's EA
+ * @slave_lmv: a buffer where slave's EA will be stored [out]
  *
  * Initialize slave's LMV EA from the master's LMV EA.
- *
- * \param[in] master_lmv	a buffer containing master's EA
- * \param[out] slave_lmv	a buffer where slave's EA will be stored
- *
  */
 static void lod_prep_slave_lmv_md(struct lmv_mds_md_v1 *slave_lmv,
 				  const struct lmv_mds_md_v1 *master_lmv)
@@ -1634,17 +1629,17 @@ static void lod_prep_slave_lmv_md(struct lmv_mds_md_v1 *slave_lmv,
 }
 
 /**
- * Generate LMV EA.
+ * lod_prep_lmv_md() - Generate LMV EA.
+ * @env: execution environment
+ * @dt: object
+ * @lmv_buf: buffer storing generated LMV EA
  *
  * Generate LMV EA from the object passed as \a dt. The object must have
  * the stripes created and initialized.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[out] lmv_buf	buffer storing generated LMV EA
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_prep_lmv_md(const struct lu_env *env, struct dt_object *dt,
 			   struct lu_buf *lmv_buf)
@@ -1671,7 +1666,7 @@ static int lod_prep_lmv_md(const struct lu_env *env, struct dt_object *dt,
 		memset(info->lti_ea_store, 0, sizeof(*lmm1));
 	}
 
-	lmm1 = (struct lmv_mds_md_v1 *)info->lti_ea_store;
+	lmm1 = (struct lmv_mds_md_v1 *)info->lti_ea_buf.lb_buf;
 	memset(lmm1, 0, sizeof(*lmm1));
 	lmm1->lmv_magic = cpu_to_le32(LMV_MAGIC);
 	lmm1->lmv_stripe_count = cpu_to_le32(stripe_count);
@@ -1688,26 +1683,27 @@ static int lod_prep_lmv_md(const struct lu_env *env, struct dt_object *dt,
 		RETURN(rc);
 
 	lmm1->lmv_master_mdt_index = cpu_to_le32(mdtidx);
-	lmv_buf->lb_buf = info->lti_ea_store;
+	lmv_buf->lb_buf = info->lti_ea_buf.lb_buf;
 	lmv_buf->lb_len = sizeof(*lmm1);
 
 	RETURN(rc);
 }
 
 /**
- * Create in-core represenation for a striped directory.
+ * lod_parse_dir_striping() - Create in-core represenation for a striped
+ * directory.
+ * @env: execution environment
+ * @lo: lod object
+ * @buf: buffer containing LMV EA
  *
  * Parse the buffer containing LMV EA and instantiate LU objects
  * representing the stripe objects. The pointers to the objects are
  * stored in ldo_stripe field of \a lo. This function is used when
  * we need to access an already created object (i.e. load from a disk).
  *
- * \param[in] env	execution environment
- * \param[in] lo	lod object
- * \param[in] buf	buffer containing LMV EA
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 int lod_parse_dir_striping(const struct lu_env *env, struct lod_object *lo,
 			   const struct lu_buf *buf)
@@ -1793,7 +1789,12 @@ out:
 }
 
 /**
- * Declare create a striped directory.
+ * lod_dir_declare_create_stripes() - Declare create a striped directory.
+ * @env: execution environment
+ * @dt: object
+ * @attr: attributes to initialize the objects with
+ * @dof: type of objects to be created
+ * @th: transaction handle
  *
  * Declare creating a striped directory with a given stripe pattern on the
  * specified MDTs. A striped directory is represented as a regular directory
@@ -1802,14 +1803,9 @@ out:
  * identifies it as a striped directory. The function allocates FIDs
  * for all stripes.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] attr	attributes to initialize the objects with
- * \param[in] dof	type of objects to be created
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_dir_declare_create_stripes(const struct lu_env *env,
 					  struct dt_object *dt,
@@ -1952,10 +1948,16 @@ out:
 }
 
 /**
- * Allocate a striping on a predefined set of MDTs.
+ * lod_mdt_alloc_specific() - Allocate a striping on a predefined set of MDTs.
+ * @env: execution environment for this thread
+ * @lo: LOD object
+ * @stripes: striping created
+ * @mdt_indices: MDT indices of striping created
+ * @is_specific: true if the MDTs are provided by lum; false if only the
+ * starting MDT index is provided
  *
  * Allocates new striping using the MDT index range provided by the data from
- * the lum_obejcts contained in the lmv_user_md passed to this method if
+ * the lum_objects contained in the lmv_user_md passed to this method if
  * \a is_specific is true; or allocates new layout starting from MDT index in
  * lo->ldo_dir_stripe_offset. The exact order of MDTs is not important and
  * varies depending on MDT status. The number of stripes needed and stripe
@@ -1964,16 +1966,9 @@ out:
  * release the stripes allocated. All the internal structures are protected,
  * but no concurrent allocation is allowed on the same objects.
  *
- * \param[in] env		execution environment for this thread
- * \param[in] lo		LOD object
- * \param[out] stripes		striping created
- * \param[out] mdt_indices	MDT indices of striping created
- * \param[in] is_specific	true if the MDTs are provided by lum; false if
- *				only the starting MDT index is provided
- *
- * \retval positive	stripes allocated, including the first stripe allocated
- *			outside
- * \retval negative	errno on failure
+ * Return:
+ * * %positive stripes allocated, including the first stripe allocated outside
+ * * %negative errno on failure
  */
 static int lod_mdt_alloc_specific(const struct lu_env *env,
 				  struct lod_object *lo,
@@ -2268,14 +2263,13 @@ out:
 }
 
 /**
+ * lod_alloc_foreign_lov() - Alloc cached foreign LOV
+ * @lo: object
+ * @size: size of foreign LOV
  *
- * Alloc cached foreign LOV
- *
- * \param[in] lo        object
- * \param[in] size      size of foreign LOV
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 int lod_alloc_foreign_lov(struct lod_object *lo, size_t size)
 {
@@ -2288,10 +2282,8 @@ int lod_alloc_foreign_lov(struct lod_object *lo, size_t size)
 }
 
 /**
- *
- * Free cached foreign LOV
- *
- * \param[in] lo        object
+ * lod_free_foreign_lov() - Free cached foreign LOV
+ * @lo: object
  */
 void lod_free_foreign_lov(struct lod_object *lo)
 {
@@ -2303,14 +2295,13 @@ void lod_free_foreign_lov(struct lod_object *lo)
 }
 
 /**
+ * lod_alloc_foreign_lmv() - Alloc cached foreign LMV
+ * @lo: object
+ * @size: size of foreign LMV
  *
- * Alloc cached foreign LMV
- *
- * \param[in] lo        object
- * \param[in] size      size of foreign LMV
- *
- * \retval              0 on success
- * \retval              negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_alloc_foreign_lmv(struct lod_object *lo, size_t size)
 {
@@ -2348,10 +2339,8 @@ static int lod_prep_md_replayed_create(const struct lu_env *env,
 }
 
 /**
- *
- * Free cached foreign LMV
- *
- * \param[in] lo        object
+ * lod_free_foreign_lmv() - Free cached foreign LMV
+ * @lo: object
  */
 static void lod_free_foreign_lmv(struct lod_object *lo)
 {
@@ -2363,23 +2352,21 @@ static void lod_free_foreign_lmv(struct lod_object *lo)
 }
 
 /**
- * Declare create striped md object.
+ * lod_declare_xattr_set_lmv() - Declare create striped md object.
+ * @env: execution environment
+ * @dt: object
+ * @attr: attributes to initialize the objects with
+ * @lum_buf: a pattern specifying the number of stripes and MDT to start from
+ * @dof: type of objects to be created
+ * @th: transaction handle
  *
  * The function declares intention to create a striped directory. This is a
  * wrapper for lod_prep_md_striped_create(). The only additional functionality
- * is to verify pattern \a lum_buf is good. Check that function for the details.
+ * is to verify pattern @lum_buf is good. Check that function for the details.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] attr	attributes to initialize the objects with
- * \param[in] lum_buf	a pattern specifying the number of stripes and
- *			MDT to start from
- * \param[in] dof	type of objects to be created
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
- *
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_declare_xattr_set_lmv(const struct lu_env *env,
 				     struct dt_object *dt,
@@ -2430,17 +2417,17 @@ static int lod_declare_xattr_set_lmv(const struct lu_env *env,
 }
 
 /**
- * Set or replace striped directory layout, and LFSCK may set layout on a plain
- * directory, so don't check stripe count.
+ * lod_dir_layout_set() - Set or replace striped directory layout, and LFSCK
+ * may set layout on a plain directory, so don't check stripe count.
+ * @env: execution environment
+ * @dt: target object
+ * @lmv_buf: LMV buf which contains source stripe FIDs
+ * @fl: set or replace
+ * @th: transaction handle
  *
- * \param[in] env	execution environment
- * \param[in] dt	target object
- * \param[in] lmv_buf	LMV buf which contains source stripe FIDs
- * \param[in] fl	set or replace
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_dir_layout_set(const struct lu_env *env,
 			      struct dt_object *dt,
@@ -2499,6 +2486,7 @@ static int lod_dir_layout_set(const struct lu_env *env,
 		if (!dt_object_exists(lo->ldo_stripe[i]))
 			continue;
 
+		slave_lmv->lmv_master_mdt_index = cpu_to_le32(i);
 		rc = lod_sub_xattr_set(env, lo->ldo_stripe[i], &slave_buf,
 				       XATTR_NAME_LMV, fl, th);
 		if (rc)
@@ -2510,7 +2498,7 @@ static int lod_dir_layout_set(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_xattr_set.
  *
  * Used with regular (non-striped) objects. Basically it
@@ -2632,6 +2620,7 @@ lod_obj_stripe_replace_parent_fid_cb(const struct lu_env *env,
 	ff->ff_layout.ol_comp_id = comp->llc_id;
 	ff->ff_layout.ol_comp_start = comp->llc_extent.e_start;
 	ff->ff_layout.ol_comp_end = comp->llc_extent.e_end;
+	ff->ff_layout_version = lo->ldo_layout_gen;
 	filter_fid_cpu_to_le(ff, ff, sizeof(*ff));
 
 	if (data->locd_declare)
@@ -2645,19 +2634,20 @@ lod_obj_stripe_replace_parent_fid_cb(const struct lu_env *env,
 }
 
 /**
- * Reset parent FID on OST object
+ * lod_replace_parent_fid() - Reset parent FID on OST object
+ * @env: execution environment
+ * @dt: dt_object whose stripes's parent FID will be reset
+ * @buf: buffer holding parent FID
+ * @th: thandle
+ * @declare: if it is declare
  *
  * Replace parent FID with @dt object FID, which is only called during migration
  * to reset the parent FID after the MDT object is migrated to the new MDT, i.e.
  * the FID is changed.
  *
- * \param[in] env execution environment
- * \param[in] dt dt_object whose stripes's parent FID will be reset
- * \parem[in] th thandle
- * \param[in] declare if it is declare
- *
- * \retval	0 if reset succeeds
- * \retval	negative errno if reset fails
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_replace_parent_fid(const struct lu_env *env,
 				  struct dt_object *dt,
@@ -2776,17 +2766,19 @@ static int lod_comp_md_size(struct lod_object *lo, bool is_dir)
 }
 
 /**
+ * lod_declare_layout_add() - Declare component add
+ * @env: execution environment
+ * @dt: dt_object to add components on
+ * @buf: buffer contains components to be added
+ * @th: thandle
+ *
  * Declare component add. The xattr name is XATTR_LUSTRE_LOV.add, and
  * the xattr value is binary lov_comp_md_v1 which contains component(s)
  * to be added.
-  *
- * \param[in] env	execution environment
- * \param[in] dt	dt_object to add components on
- * \param[in] buf	buffer contains components to be added
- * \parem[in] th	thandle
  *
- * \retval	0 on success
- * \retval	negative errno on failure
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_declare_layout_add(const struct lu_env *env,
 				  struct dt_object *dt,
@@ -2848,10 +2840,20 @@ static int lod_declare_layout_add(const struct lu_env *env,
 		lod_comp->llc_extent.e_end = ext->e_end;
 		lod_comp->llc_stripe_offset = v1->lmm_stripe_offset;
 		lod_comp->llc_flags = comp_v1->lcm_entries[i].lcme_flags;
+		if (lod_comp->llc_flags & LCME_FL_PARITY) {
+			lod_comp->llc_dstripe_count =
+				comp_v1->lcm_entries[i].lcme_dstripe_count;
+			lod_comp->llc_cstripe_count =
+				comp_v1->lcm_entries[i].lcme_cstripe_count;
+		}
 
 		lod_comp->llc_stripe_size = v1->lmm_stripe_size;
 		lod_comp->llc_stripe_count = v1->lmm_stripe_count;
 		lod_comp->llc_pattern = v1->lmm_pattern;
+
+		/* set parity component pattern */
+		if (lod_comp->llc_flags & LCME_FL_PARITY)
+			lod_comp->llc_pattern |= LOV_PATTERN_PARITY;
 		/**
 		 * limit stripe count so that it's less than/equal to
 		 * extent_size / stripe_size.
@@ -2934,7 +2936,7 @@ error:
 /**
  * lod_last_non_stale_mirror() - Check if a mirror is the last non-stale mirror.
  * @mirror_id: Mirror id to be checked.
- * @lo:        LOD object.
+ * @lo: LOD object.
  *
  * This function checks if a mirror with specified @mirror_id is the last
  * non-stale mirror of a LOD object @lo.
@@ -2968,21 +2970,22 @@ bool lod_last_non_stale_mirror(__u16 mirror_id, struct lod_object *lo)
 }
 
 /**
+ * lod_declare_layout_set() - Declare component set
+ * @env: execution environment
+ * @dt: dt_object to be modified
+ * @op: operation string, like "set.flags"
+ * @buf: buffer contains components to be set
+ * @th: thandle
+ *
  * Declare component set. The xattr is name XATTR_LUSTRE_LOV.set.$field,
  * the '$field' can only be 'flags' now. The xattr value is binary
  * lov_comp_md_v1 which contains the component ID(s) and the value of
- * the field to be modified.
- * Please update allowed_lustre_lov macro if $field groks more values
- * in the future.
+ * the field to be modified. Please update allowed_lustre_lov macro if $field
+ * groks more values in the future.
  *
- * \param[in] env	execution environment
- * \param[in] dt	dt_object to be modified
- * \param[in] op	operation string, like "set.flags"
- * \param[in] buf	buffer contains components to be set
- * \parem[in] th	thandle
- *
- * \retval	0 on success
- * \retval	negative errno on failure
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_declare_layout_set(const struct lu_env *env,
 				  struct dt_object *dt,
@@ -3068,7 +3071,7 @@ static int lod_declare_layout_set(const struct lu_env *env,
 					lod_comp->llc_flags |= mirror_flag;
 					if (mirror_flag & LCME_FL_NOSYNC)
 						lod_comp->llc_timestamp =
-						       ktime_get_real_seconds();
+							ktime_get_real_seconds();
 				}
 			}
 			changed = true;
@@ -3091,16 +3094,17 @@ static int lod_declare_layout_set(const struct lu_env *env,
 }
 
 /**
- * Declare component deletion. The xattr name is XATTR_LUSTRE_LOV.del,
- * and the xattr value is a unique component ID or a special lcme_id.
+ * lod_declare_layout_del() - Declare component deletion. The xattr name is
+ * XATTR_LUSTRE_LOV.del, and the xattr value is a unique component ID or a
+ * special lcme_id.
+ * @env: execution environment
+ * @dt: dt_object to be operated on
+ * @buf: buffer contains component ID or lcme_id
+ * @th: thandle
  *
- * \param[in] env	execution environment
- * \param[in] dt	dt_object to be operated on
- * \param[in] buf	buffer contains component ID or lcme_id
- * \parem[in] th	thandle
- *
- * \retval	0 on success
- * \retval	negative errno on failure
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_declare_layout_del(const struct lu_env *env,
 				  struct dt_object *dt,
@@ -3234,20 +3238,21 @@ static int lod_declare_layout_del(const struct lu_env *env,
 }
 
 /**
- * Declare layout add/set/del operations issued by special xattr names:
+ * lod_declare_modify_layout() - Declare layout add/set/del
+ * @env: execution environment
+ * @dt: object
+ * @name: name of xattr
+ * @buf: lu_buf contains xattr value
+ * @th: transaction handle
  *
+ * operations issued by special xattr names:
  * XATTR_LUSTRE_LOV.add		add component(s) to existing file
  * XATTR_LUSTRE_LOV.del		delete component(s) from existing file
  * XATTR_LUSTRE_LOV.set.$field	set specified field of certain component(s)
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] name	name of xattr
- * \param[in] buf	lu_buf contains xattr value
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_declare_modify_layout(const struct lu_env *env,
 				     struct dt_object *dt,
@@ -3301,16 +3306,14 @@ unlock:
 }
 
 /**
- * Convert a plain file lov_mds_md to a composite layout.
+ * lod_layout_convert() - Convert a plain file lov_mds_md to a composite layout
+ * @buf: (lu_buf struct)buffer contains little endian plain file layout [in,out]
  *
- * \param[in,out] info	the thread info::lti_ea_store buffer contains little
- *			endian plain file layout
- *
- * \retval		0 on success, <0 on failure
+ * Returns 0 on success, <0 on failure
  */
-static int lod_layout_convert(struct lod_thread_info *info)
+static int lod_layout_convert(struct lu_buf *buf)
 {
-	struct lov_mds_md *lmm = info->lti_ea_store;
+	struct lov_mds_md *lmm = buf->lb_buf;
 	struct lov_mds_md *lmm_save;
 	struct lov_comp_md_v1 *lcm;
 	struct lov_comp_md_entry_v1 *lcme;
@@ -3330,13 +3333,11 @@ static int lod_layout_convert(struct lod_thread_info *info)
 
 	memcpy(lmm_save, lmm, blob_size);
 
-	if (info->lti_ea_store_size < size) {
-		rc = lod_ea_store_resize(info, size);
-		if (rc)
-			GOTO(out, rc);
-	}
+	lu_buf_check_and_alloc(buf, size_roundup_power2(size));
+	if (buf->lb_buf == NULL)
+		GOTO(out, rc = -ENOMEM);
 
-	lcm = info->lti_ea_store;
+	lcm = buf->lb_buf;
 	memset(lcm, 0, sizeof(*lcm) + sizeof(*lcme));
 	lcm->lcm_magic = cpu_to_le32(LOV_MAGIC_COMP_V1);
 	lcm->lcm_size = cpu_to_le32(size);
@@ -3346,6 +3347,7 @@ static int lod_layout_convert(struct lod_thread_info *info)
 	lcm->lcm_entry_count = cpu_to_le16(1);
 
 	lcme = &lcm->lcm_entries[0];
+	lcme->lcme_id = cpu_to_le32(1);
 	lcme->lcme_flags = cpu_to_le32(LCME_FL_INIT);
 	lcme->lcme_extent.e_start = 0;
 	lcme->lcme_extent.e_end = cpu_to_le64(OBD_OBJECT_EOF);
@@ -3361,7 +3363,7 @@ out:
 	return rc;
 }
 
-/**
+/*
  * Merge layouts to form a mirrored file.
  */
 static int lod_declare_layout_merge(const struct lu_env *env,
@@ -3370,7 +3372,6 @@ static int lod_declare_layout_merge(const struct lu_env *env,
 				    struct thandle *th)
 {
 	struct lod_thread_info *info = lod_env_info(env);
-	struct lu_attr *layout_attr = &info->lti_layout_attr;
 	struct lu_buf *buf = &info->lti_buf;
 	struct lod_object *lo = lod_dt_obj(dt);
 	struct lov_comp_md_v1 *lcm;
@@ -3409,11 +3410,11 @@ static int lod_declare_layout_merge(const struct lu_env *env,
 	if (rc <= 0)
 		RETURN(rc ? : -ENODATA);
 
-	cur_lcm = info->lti_ea_store;
+	cur_lcm = info->lti_ea_buf.lb_buf;
 	switch (le32_to_cpu(cur_lcm->lcm_magic)) {
 	case LOV_MAGIC_V1:
 	case LOV_MAGIC_V3:
-		rc = lod_layout_convert(info);
+		rc = lod_layout_convert(&info->lti_ea_buf);
 		break;
 	case LOV_MAGIC_COMP_V1:
 	case LOV_MAGIC_SEL:
@@ -3425,8 +3426,8 @@ static int lod_declare_layout_merge(const struct lu_env *env,
 	if (rc)
 		RETURN(rc);
 
-	/* info->lti_ea_store could be reallocated in lod_layout_convert() */
-	cur_lcm = info->lti_ea_store;
+	/* info->lti_ea_buf could be reallocated in lod_layout_convert() */
+	cur_lcm = info->lti_ea_buf.lb_buf;
 	cur_entry_count = le16_to_cpu(cur_lcm->lcm_entry_count);
 
 	/* 'lcm_mirror_count + 1' is the current # of mirrors the file has */
@@ -3508,7 +3509,9 @@ static int lod_declare_layout_merge(const struct lu_env *env,
 	lcm->lcm_entry_count = cpu_to_le16(cur_entry_count + merge_entry_count);
 	lcm->lcm_mirror_count = cpu_to_le16(mirror_count);
 	if ((le16_to_cpu(lcm->lcm_flags) & LCM_FL_FLR_MASK) == LCM_FL_NONE)
-		lcm->lcm_flags = cpu_to_le32(LCM_FL_RDONLY);
+		lcm->lcm_flags = cpu_to_le16((le16_to_cpu(lcm->lcm_flags) &
+					      ~LCM_FL_FLR_MASK) |
+					     LCM_FL_RDONLY);
 
 	rc = lod_striping_reload(env, lo, buf, 0);
 	if (rc)
@@ -3516,20 +3519,6 @@ static int lod_declare_layout_merge(const struct lu_env *env,
 
 	lod_obj_inc_layout_gen(lo);
 	lcm->lcm_layout_gen = cpu_to_le32(lo->ldo_layout_gen);
-
-	/* transfer layout version to OST objects. */
-	if (lo->ldo_mirror_count > 1) {
-		struct lod_obj_stripe_cb_data data = { {0} };
-
-		layout_attr->la_valid = LA_LAYOUT_VERSION;
-		layout_attr->la_layout_version = 0;
-		data.locd_attr = layout_attr;
-		data.locd_declare = true;
-		data.locd_stripe_cb = lod_obj_stripe_attr_set_cb;
-		rc = lod_obj_for_each_stripe(env, lo, th, &data);
-		if (rc)
-			GOTO(out, rc);
-	}
 
 	rc = lod_sub_declare_xattr_set(env, dt_object_child(dt), buf,
 				       XATTR_NAME_LOV, LU_XATTR_REPLACE, th);
@@ -3539,15 +3528,13 @@ out:
 	RETURN(rc);
 }
 
-/**
+/*
  * Split layouts, just set the LOVEA with the layout from mbuf.
  */
 static int lod_declare_layout_split(const struct lu_env *env,
 		struct dt_object *dt, const struct lu_buf *mbuf,
 		struct thandle *th)
 {
-	struct lod_thread_info *info = lod_env_info(env);
-	struct lu_attr *layout_attr = &info->lti_layout_attr;
 	struct lod_object *lo = lod_dt_obj(dt);
 	struct lov_comp_md_v1 *lcm = mbuf->lb_buf;
 	int rc;
@@ -3560,20 +3547,6 @@ static int lod_declare_layout_split(const struct lu_env *env,
 	lod_obj_inc_layout_gen(lo);
 	/* fix on-disk layout gen */
 	lcm->lcm_layout_gen = cpu_to_le32(lo->ldo_layout_gen);
-
-	/* transfer layout version to OST objects. */
-	if (lo->ldo_mirror_count > 1) {
-		struct lod_obj_stripe_cb_data data = { {0} };
-
-		layout_attr->la_valid = LA_LAYOUT_VERSION;
-		layout_attr->la_layout_version = 0;
-		data.locd_attr = layout_attr;
-		data.locd_declare = true;
-		data.locd_stripe_cb = lod_obj_stripe_attr_set_cb;
-		rc = lod_obj_for_each_stripe(env, lo, th, &data);
-		if (rc)
-			RETURN(rc);
-	}
 
 	rc = lod_sub_declare_xattr_set(env, dt_object_child(dt), mbuf,
 				       XATTR_NAME_LOV, LU_XATTR_REPLACE, th);
@@ -3722,7 +3695,7 @@ out:
 	RETURN(rc);
 }
 
-/**
+/*
  * Purge layouts, delete sub objects in the mirror stored in the vic_buf,
  * and set the LOVEA with the layout from mbuf.
  */
@@ -3770,7 +3743,7 @@ static int lod_layout_purge(const struct lu_env *env, struct dt_object *dt,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_xattr_set.
  *
  * \see dt_object_operations::do_declare_xattr_set() in the API description
@@ -3782,13 +3755,13 @@ static int lod_layout_purge(const struct lu_env *env, struct dt_object *dt,
  */
 static int lod_declare_xattr_set(const struct lu_env *env,
 				 struct dt_object *dt,
+				 const struct lu_attr *attr,
 				 const struct lu_buf *buf,
 				 const char *name, int fl,
 				 struct thandle *th)
 {
 	struct lod_thread_info *info = lod_env_info(env);
 	struct dt_object *next = dt_object_child(dt);
-	struct lu_attr	 *attr = &info->lti_attr;
 	struct lod_object *lo = lod_dt_obj(dt);
 	__u32		  mode;
 	int		  rc;
@@ -3800,6 +3773,8 @@ static int lod_declare_xattr_set(const struct lu_env *env,
 		    LU_XATTR_PURGE)) &&
 	    (strcmp(name, XATTR_NAME_LOV) == 0 ||
 	     strcmp(name, XATTR_LUSTRE_LOV) == 0)) {
+		struct lu_attr	 *lattr = &lod_env_info(env)->lti_attr;
+
 		/*
 		 * this is a request to create object's striping.
 		 *
@@ -3810,15 +3785,15 @@ static int lod_declare_xattr_set(const struct lu_env *env,
 		 * LU_XATTR_REPLACE is set to indicate a layout swap
 		 */
 		if (dt_object_exists(dt)) {
-			rc = dt_attr_get(env, next, attr);
+			rc = dt_attr_get(env, next, lattr);
 			if (rc)
 				RETURN(rc);
 		} else {
-			memset(attr, 0, sizeof(*attr));
-			attr->la_valid = LA_TYPE | LA_MODE;
-			attr->la_mode = S_IFREG;
+			memset(lattr, 0, sizeof(*lattr));
+			lattr->la_valid = LA_TYPE | LA_MODE;
+			lattr->la_mode = S_IFREG;
 		}
-		rc = lod_declare_striped_create(env, dt, attr, buf, th);
+		rc = lod_declare_striped_create(env, dt, lattr, buf, th);
 	} else if (fl & LU_XATTR_MERGE) {
 		LASSERT(strcmp(name, XATTR_NAME_LOV) == 0 ||
 			strcmp(name, XATTR_LUSTRE_LOV) == 0);
@@ -3859,19 +3834,19 @@ static int lod_declare_xattr_set(const struct lu_env *env,
 }
 
 /**
- * Apply xattr changes to the object.
+ * lod_xattr_set_internal() - Apply xattr changes to the object.
+ * @env: execution environment
+ * @dt: object
+ * @buf: buffer pointing to the new value of xattr
+ * @name: name of xattr
+ * @fl: flags
+ * @th: transaction handle
  *
  * Applies xattr changes to the object and the stripes if the latter exist.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] buf	buffer pointing to the new value of xattr
- * \param[in] name	name of xattr
- * \param[in] fl	flags
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_xattr_set_internal(const struct lu_env *env,
 				  struct dt_object *dt,
@@ -3913,17 +3888,17 @@ static int lod_xattr_set_internal(const struct lu_env *env,
 }
 
 /**
- * Delete an extended attribute.
+ * lod_xattr_del_internal() - Delete an extended attribute.
+ * @env: execution environment
+ * @dt: object
+ * @name: name of xattr
+ * @th: transaction handle
  *
  * Deletes specified xattr from the object and the stripes if the latter exist.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] name	name of xattr
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_xattr_del_internal(const struct lu_env *env,
 				  struct dt_object *dt,
@@ -3959,22 +3934,23 @@ static int lod_xattr_del_internal(const struct lu_env *env,
 }
 
 /**
- * Set default striping on a directory.
+ * lod_xattr_set_lov_on_dir() - Set default striping on a directory.
+ * @env: execution environment
+ * @dt: the striped object
+ * @buf: buffer with the striping
+ * @name: name of EA
+ * @fl: xattr flag (see OSD API description)
+ * @th: transaction handle
  *
  * Sets specified striping on a directory object unless it matches the default
  * striping (LOVEA_DELETE_VALUES() macro). In the latter case remove existing
  * EA. This striping will be used when regular file is being created in this
  * directory.
  *
- * \param[in] env	execution environment
- * \param[in] dt	the striped object
- * \param[in] buf	buffer with the striping
- * \param[in] name	name of EA
- * \param[in] fl	xattr flag (see OSD API description)
- * \param[in] th	transaction handle
  *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_xattr_set_lov_on_dir(const struct lu_env *env,
 				    struct dt_object *dt,
@@ -4057,15 +4033,14 @@ static int lod_get_default_lov_striping(const struct lu_env *env,
 				       struct dt_allocation_hint *ah);
 
 /**
- * Helper function to convert compound layout to compound layout with
- * pool
+ * embed_pool_to_comp_v1() - Helper function to convert compound layout to
+ * compound layout with pool
+ * @src: source layout
+ * @pool: pool to use in \a tgt
+ * @tgt: target layout [out]
  *
- * Copy lcm_entries array of \a src to \a tgt. Replace lov_user_md_v1
- * components of \a src with lov_user_md_v3 using \a pool.
- *
- * \param[in] src	source layout
- * \param[in] pool	pool to use in \a tgt
- * \param[out] tgt	target layout
+ * Copy lcm_entries array of @src to @tgt. Replace lov_user_md_v1
+ * components of @src with lov_user_md_v3 using @pool.
  */
 static void embed_pool_to_comp_v1(const struct lov_comp_md_v1 *src,
 				  const char *pool,
@@ -4101,7 +4076,13 @@ static void embed_pool_to_comp_v1(const struct lov_comp_md_v1 *src,
 }
 
 /**
- * Set default striping on a directory.
+ * lod_xattr_set_default_lov_on_dir() - Set default striping on a directory.
+ * @env: execution environment
+ * @dt: the striped object
+ * @buf: buffer with the striping
+ * @name: name of EA
+ * @fl: xattr flag (see OSD API description)
+ * @th: transaction handle
  *
  * Sets specified striping on a directory object unless it matches the default
  * striping (LOVEA_DELETE_VALUES() macro). In the latter case remove existing
@@ -4110,15 +4091,9 @@ static void embed_pool_to_comp_v1(const struct lov_comp_md_v1 *src,
  * If current default striping includes a pool but specifed striping
  * does not - retain the pool if it exists.
  *
- * \param[in] env	execution environment
- * \param[in] dt	the striped object
- * \param[in] buf	buffer with the striping
- * \param[in] name	name of EA
- * \param[in] fl	xattr flag (see OSD API description)
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_xattr_set_default_lov_on_dir(const struct lu_env *env,
 					    struct dt_object *dt,
@@ -4154,7 +4129,7 @@ static int lod_xattr_set_default_lov_on_dir(const struct lu_env *env,
 	if (v1->lmm_magic == LOV_USER_MAGIC_V1 && pool[0] != '\0' &&
 	    !is_del) {
 		struct lod_thread_info *info = lod_env_info(env);
-		struct lov_user_md_v3 *v3  = info->lti_ea_store;
+		struct lov_user_md_v3 *v3  = info->lti_ea_buf.lb_buf;
 
 		memset(v3, 0, sizeof(*v3));
 		v3->lmm_magic = cpu_to_le32(LOV_USER_MAGIC_V3);
@@ -4212,7 +4187,7 @@ static int lod_xattr_set_default_lov_on_dir(const struct lu_env *env,
 				rc = lod_ea_store_resize(info, size);
 
 			if (rc == 0) {
-				comp_v1p = info->lti_ea_store;
+				comp_v1p = info->lti_ea_buf.lb_buf;
 				*comp_v1p = *comp_v1;
 				comp_v1p->lcm_size = cpu_to_le32(size);
 				embed_pool_to_comp_v1(comp_v1, pool, comp_v1p);
@@ -4238,22 +4213,22 @@ static int lod_xattr_set_default_lov_on_dir(const struct lu_env *env,
 }
 
 /**
- * Set default striping on a directory object.
+ * lod_xattr_set_default_lmv_on_dir() - Set default striping on directory object
+ * @env: execution environment
+ * @dt: the striped object
+ * @buf: buffer with the striping
+ * @name: name of EA
+ * @fl: xattr flag (see OSD API description)
+ * @th: transaction handle
  *
  * Sets specified striping on a directory object unless it matches the default
  * striping (LOVEA_DELETE_VALUES() macro). In the latter case remove existing
  * EA. This striping will be used when a new directory is being created in the
  * directory.
  *
- * \param[in] env	execution environment
- * \param[in] dt	the striped object
- * \param[in] buf	buffer with the striping
- * \param[in] name	name of EA
- * \param[in] fl	xattr flag (see OSD API description)
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_xattr_set_default_lmv_on_dir(const struct lu_env *env,
 					    struct dt_object *dt,
@@ -4291,7 +4266,13 @@ static int lod_xattr_set_default_lmv_on_dir(const struct lu_env *env,
 }
 
 /**
- * Turn directory into a striped directory.
+ * lod_xattr_set_lmv() - Turn directory into a striped directory.
+ * @env: execution environment
+ * @dt: the striped object
+ * @buf: buf lmv_user_md for create, or lmv_mds_md for replay
+ * @name: not used currently
+ * @fl: xattr flag (see OSD API description)
+ * @th: transaction handle
  *
  * During replay the client sends the striping created before MDT
  * failure, then the layer above LOD sends this defined striping
@@ -4299,15 +4280,9 @@ static int lod_xattr_set_default_lmv_on_dir(const struct lu_env *env,
  * of the stripes. Notice the original information for the striping
  * (#stripes, FIDs, etc) was transferred in declare path.
  *
- * \param[in] env	execution environment
- * \param[in] dt	the striped object
- * \param[in] buf	buf lmv_user_md for create, or lmv_mds_md for replay
- * \param[in] name	not used currently
- * \param[in] fl	xattr flag (see OSD API description)
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_xattr_set_lmv(const struct lu_env *env, struct dt_object *dt,
 			     const struct lu_buf *buf, const char *name,
@@ -4325,8 +4300,8 @@ static int lod_xattr_set_lmv(const struct lu_env *env, struct dt_object *dt,
 	struct dt_insert_rec *rec = &info->lti_dt_rec;
 	int i;
 	int rc;
-
 	ENTRY;
+
 	/* lum is used to know whether it's replay */
 	LASSERT(lum);
 	if (!S_ISDIR(dt->do_lu.lo_header->loh_attr))
@@ -4479,6 +4454,12 @@ static int lod_xattr_set_lmv(const struct lu_env *env, struct dt_object *dt,
 		rc = lod_sub_insert(env, dt_object_child(dt),
 				    (const struct dt_rec *)rec,
 				    (const struct dt_key *)stripe_name, th);
+		if (rc == -EEXIST) {
+			CDEBUG(D_INFO, DFID": can't insert stripe %i "DFID"\n",
+			     PFID(lod_object_fid(lo)), i,
+			     PFID(lu_object_fid(&dt->do_lu)));
+			continue;
+		}
 		if (rc != 0)
 			GOTO(out, rc);
 
@@ -4497,7 +4478,15 @@ out:
 }
 
 /**
- * Helper function to declare/execute creation of a striped directory
+ * lod_dir_striping_create_internal() - Helper function to declare/execute
+ * creation of a striped directory
+ * @env: execution environment
+ * @dt: object
+ * @attr: attributes the stripes will be created with
+ * @lmu: lmv_user_md if MDT indices are specified
+ * @dof: format of stripes (see OSD API description)
+ * @th: transaction handle
+ * @declare: where to call "declare" or "execute" methods
  *
  * Called in declare/create object path, prepare striping for a directory
  * and prepare defaults data striping for the objects to be created in
@@ -4508,16 +4497,9 @@ out:
  * arguments for the both phases are the same and this is the reason for
  * this function to exist.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] attr	attributes the stripes will be created with
- * \param[in] lmu	lmv_user_md if MDT indices are specified
- * \param[in] dof	format of stripes (see OSD API description)
- * \param[in] th	transaction handle
- * \param[in] declare	where to call "declare" or "execute" methods
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_dir_striping_create_internal(const struct lu_env *env,
 					    struct dt_object *dt,
@@ -4542,14 +4524,14 @@ static int lod_dir_striping_create_internal(const struct lu_env *env,
 				 lo->ldo_dir_stripe_offset)) {
 		if (!lmu->lb_buf) {
 			/* mkdir by default LMV */
-			struct lmv_user_md_v1 *v1 = info->lti_ea_store;
+			struct lmv_user_md_v1 *v1 = info->lti_ea_buf.lb_buf;
 			int stripe_count = lo->ldo_dir_stripe_count;
 
 			if (info->lti_ea_store_size < sizeof(*v1)) {
 				rc = lod_ea_store_resize(info, sizeof(*v1));
 				if (rc != 0)
 					RETURN(rc);
-				v1 = info->lti_ea_store;
+				v1 = info->lti_ea_buf.lb_buf;
 			}
 
 			memset(v1, 0, sizeof(*v1));
@@ -4598,13 +4580,13 @@ static int lod_dir_striping_create_internal(const struct lu_env *env,
 				 lds->lds_dir_def_stripe_offset) &&
 	      le32_to_cpu(lds->lds_dir_def_hash_type) !=
 	      LMV_HASH_TYPE_UNKNOWN)) {
-		struct lmv_user_md_v1 *v1 = info->lti_ea_store;
+		struct lmv_user_md_v1 *v1 = info->lti_ea_buf.lb_buf;
 
 		if (info->lti_ea_store_size < sizeof(*v1)) {
 			rc = lod_ea_store_resize(info, sizeof(*v1));
 			if (rc != 0)
 				RETURN(rc);
-			v1 = info->lti_ea_store;
+			v1 = info->lti_ea_buf.lb_buf;
 		}
 
 		memset(v1, 0, sizeof(*v1));
@@ -4646,7 +4628,7 @@ static int lod_dir_striping_create_internal(const struct lu_env *env,
 			if (rc != 0)
 				RETURN(rc);
 		}
-		lmm = info->lti_ea_store;
+		lmm = info->lti_ea_buf.lb_buf;
 
 		rc = lod_generate_lovea(env, lo, lmm, &lmm_size, true);
 		if (rc != 0)
@@ -4697,7 +4679,10 @@ static int lod_dir_striping_create(const struct lu_env *env,
 }
 
 /**
- * Make LOV EA for striped object.
+ * lod_generate_and_set_lovea() - Make LOV EA for striped object.
+ * @env: execution environment for this thread
+ * @lo: LOD object
+ * @th: transaction handle
  *
  * Generate striping information and store it in the LOV EA of the given
  * object. The caller must ensure nobody else is calling the function
@@ -4705,12 +4690,9 @@ static int lod_dir_striping_create(const struct lu_env *env,
  * FLDB service must be running as well; it's used to map FID to the target,
  * which is stored in LOV EA.
  *
- * \param[in] env		execution environment for this thread
- * \param[in] lo		LOD object
- * \param[in] th		transaction handle
- *
- * \retval			0 if LOV EA is stored successfully
- * \retval			negative error number on failure
+ * Return:
+ * * %0 if LOV EA is stored successfully
+ * * %negative error number on failure
  */
 static int lod_generate_and_set_lovea(const struct lu_env *env,
 				      struct lod_object *lo,
@@ -4736,7 +4718,7 @@ static int lod_generate_and_set_lovea(const struct lu_env *env,
 		if (rc)
 			RETURN(rc);
 	}
-	lmm = info->lti_ea_store;
+	lmm = info->lti_ea_buf.lb_buf;
 
 	rc = lod_generate_lovea(env, lo, lmm, &lmm_size, false);
 	if (rc)
@@ -4753,7 +4735,10 @@ static __u32 lod_gen_component_id(struct lod_object *lo,
 				  int mirror_id, int comp_idx);
 
 /**
- * Repeat an existing component
+ * lod_layout_repeat_comp() - Repeat an existing component
+ * @env: execution environment for this thread
+ * @lo: object to update the layout of
+ * @index: index of component to copy
  *
  * Creates a new layout by replicating an existing component.  Uses striping
  * policy from previous component as a template for the striping for the new
@@ -4765,12 +4750,9 @@ static __u32 lod_gen_component_id(struct lod_object *lo,
  * NB: Reallocates layout components array (lo->ldo_comp_entries), invalidating
  * any pre-existing pointers to components.  Handle with care.
  *
- * \param[in] env	execution environment for this thread
- * \param[in,out] lo	object to update the layout of
- * \param[in] index	index of component to copy
- *
- * \retval	0 on success
- * \retval	negative errno on error
+ * Return:
+ * * %0 on success
+ * * %negative errno on error
  */
 static int lod_layout_repeat_comp(const struct lu_env *env,
 				  struct lod_object *lo, int index)
@@ -4818,6 +4800,7 @@ static int lod_layout_repeat_comp(const struct lu_env *env,
 	/* This makes the repeated component zero-length, placed at the end of
 	 * the preceding component */
 	new_comp->llc_extent.e_start = new_comp->llc_extent.e_end;
+	new_comp->llc_mirror_link_id = lod_comp->llc_mirror_link_id;
 	new_comp->llc_timestamp = lod_comp->llc_timestamp;
 	new_comp->llc_pool = NULL;
 
@@ -4880,7 +4863,10 @@ static int lod_layout_data_init(struct lod_thread_info *info, __u32 comp_cnt)
 }
 
 /**
- * Prepare new layout minus deleted components
+ * lod_layout_del_prep_layout() - Prepare new layout minus deleted components
+ * @env: execution environment for this thread
+ * @lo: object to update the layout of
+ * @th: transaction handle for this operation
  *
  * Removes components marked for deletion (LCME_ID_INVAL) by copying to a new
  * layout and skipping those components.  Removes stripe objects if any exist.
@@ -4891,12 +4877,9 @@ static int lod_layout_data_init(struct lod_thread_info *info, __u32 comp_cnt)
  *
  * Caller is responsible for updating mirror end (ldo_mirror[].lme_end).
  *
- * \param[in] env       execution environment for this thread
- * \param[in,out] lo    object to update the layout of
- * \param[in] th        transaction handle for this operation
- *
- * \retval      # of components deleted
- * \retval      negative errno on error
+ * Return:
+ * * %positive# of components deleted
+ * * %negative errno on error
  */
 static int lod_layout_del_prep_layout(const struct lu_env *env,
 				      struct lod_object *lo,
@@ -5002,18 +4985,18 @@ out:
 }
 
 /**
- * Delete layout component(s)
+ * lod_layout_del() - Delete layout component(s)
+ * @env: execution environment for this thread
+ * @dt: object
+ * @th: transaction handle
  *
  * This function sets up the layout data in the env and does the setattrs
  * required to write out the new layout.  The layout itself is modified in
  * lod_layout_del_prep_layout.
  *
- * \param[in] env	execution environment for this thread
- * \param[in] dt	object
- * \param[in] th	transaction handle
- *
- * \retval	0 on success
- * \retval	negative error number on failure
+ * Return:
+ * * %0 on success
+ * * %negative error number on failure
  */
 static int lod_layout_del(const struct lu_env *env, struct dt_object *dt,
 			  struct thandle *th)
@@ -5063,7 +5046,14 @@ out:
 
 
 /**
- * Implementation of dt_object_operations::do_xattr_set.
+ * lod_xattr_set() - Implementation of dt_object_operations::do_xattr_set
+ * @env: execution environment for this thread
+ * @dt: object to lock for reading
+ * @buf: unused, may be removed in the future
+ * @name: name of the extended attribute
+ * @fl:	LU_XATTR_CREATE - fail if EA exists
+ *      LU_XATTR_REPLACE - fail if EA doesn't exist
+ * @th: transaction handle
  *
  * Sets specified extended attribute on the object. Three types of EAs are
  * special:
@@ -5078,7 +5068,11 @@ out:
  * LOV EA storing all the stripes directly or LMV EA storing just a small header
  * with striping configuration.
  *
- * \see dt_object_operations::do_xattr_set() in the API description for details.
+ * see dt_object_operations::do_xattr_set() in the API description for details.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int lod_xattr_set(const struct lu_env *env,
 			 struct dt_object *dt, const struct lu_buf *buf,
@@ -5086,9 +5080,7 @@ static int lod_xattr_set(const struct lu_env *env,
 {
 	struct lod_thread_info *info = lod_env_info(env);
 	struct dt_object *next = dt_object_child(dt);
-	struct lu_attr *layout_attr = &info->lti_layout_attr;
 	struct lod_object *lo = lod_dt_obj(dt);
-	struct lod_obj_stripe_cb_data data = { {0} };
 	int rc = 0;
 
 	ENTRY;
@@ -5152,21 +5144,6 @@ static int lod_xattr_set(const struct lu_env *env,
 			rc = lod_striping_reload(env, lo, buf, LVF_ALL_STALE);
 			if (rc)
 				RETURN(rc);
-
-			if (lo->ldo_mirror_count > 1 &&
-			    layout_attr->la_valid & LA_LAYOUT_VERSION) {
-				/* mirror split */
-				layout_attr->la_layout_version =
-						lo->ldo_layout_gen;
-				data.locd_attr = layout_attr;
-				data.locd_declare = false;
-				data.locd_stripe_cb =
-						lod_obj_stripe_attr_set_cb;
-				rc = lod_obj_for_each_stripe(env, lo, th,
-							     &data);
-				if (rc)
-					RETURN(rc);
-			}
 		} else if (fl & LU_XATTR_PURGE) {
 			rc = lod_layout_purge(env, dt, buf, th);
 		} else if (dt_object_remote(dt)) {
@@ -5200,21 +5177,6 @@ static int lod_xattr_set(const struct lu_env *env,
 			rc = lod_striped_create(env, dt, NULL, NULL, th);
 			if (rc)
 				RETURN(rc);
-
-			if (fl & LU_XATTR_MERGE && lo->ldo_mirror_count > 1 &&
-			    layout_attr->la_valid & LA_LAYOUT_VERSION) {
-				/* mirror merge exec phase */
-				layout_attr->la_layout_version =
-						lo->ldo_layout_gen;
-				data.locd_attr = layout_attr;
-				data.locd_declare = false;
-				data.locd_stripe_cb =
-						lod_obj_stripe_attr_set_cb;
-				rc = lod_obj_for_each_stripe(env, lo, th,
-							     &data);
-				if (rc)
-					RETURN(rc);
-			}
 		}
 		RETURN(rc);
 	} else if (strcmp(name, XATTR_NAME_FID) == 0) {
@@ -5229,10 +5191,10 @@ static int lod_xattr_set(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_xattr_del.
  *
- * \see dt_object_operations::do_declare_xattr_del() in the API description
+ * see dt_object_operations::do_declare_xattr_del() in the API description
  * for details.
  */
 static int lod_declare_xattr_del(const struct lu_env *env,
@@ -5283,13 +5245,13 @@ static int lod_declare_xattr_del(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_xattr_del.
  *
  * If EA storing a regular striping is being deleted, then release
  * all the references to the stripe objects in core.
  *
- * \see dt_object_operations::do_xattr_del() in the API description for details.
+ * see dt_object_operations::do_xattr_del() in the API description for details.
  */
 static int lod_xattr_del(const struct lu_env *env, struct dt_object *dt,
 			 const char *name, struct thandle *th)
@@ -5306,10 +5268,10 @@ static int lod_xattr_del(const struct lu_env *env, struct dt_object *dt,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_xattr_list.
  *
- * \see dt_object_operations::do_xattr_list() in the API description
+ * see dt_object_operations::do_xattr_list() in the API description
  * for details.
  */
 static int lod_xattr_list(const struct lu_env *env,
@@ -5324,13 +5286,13 @@ static inline int lod_object_will_be_striped(int is_reg, const struct lu_fid *fi
 }
 
 /**
- * Copy OST list from layout provided by user.
+ * lod_comp_copy_ost_lists() - Copy OST list from layout provided by user.
+ * @lod_comp: layout_component to be filled
+ * @v3: LOV EA V3 user data
  *
- * \param[in] lod_comp		layout_component to be filled
- * \param[in] v3		LOV EA V3 user data
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 int lod_comp_copy_ost_lists(struct lod_layout_component *lod_comp,
 			    struct lov_user_md_v3 *v3)
@@ -5371,14 +5333,15 @@ skip:
 
 
 /**
- * Get default striping.
+ * lod_get_default_lov_striping() - Get default striping.
+ * @env: execution environment
+ * @lo: object
+ * @lds: default striping
+ * @dah: pointer to a struct that gives allocation hints
  *
- * \param[in] env		execution environment
- * \param[in] lo		object
- * \param[out] lds		default striping
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_get_default_lov_striping(const struct lu_env *env,
 					struct lod_object *lo,
@@ -5411,7 +5374,7 @@ static int lod_get_default_lov_striping(const struct lu_env *env,
 	if (rc < (typeof(rc))sizeof(struct lov_user_md))
 		RETURN(0);
 
-	magic = *(__u32 *)info->lti_ea_store;
+	magic = *(__u32 *)info->lti_ea_buf.lb_buf;
 	if (magic == __swab32(LOV_USER_MAGIC_V1)) {
 		lustre_swab_lov_user_md_v1(info->lti_ea_store);
 	} else if (magic == __swab32(LOV_USER_MAGIC_V3)) {
@@ -5423,18 +5386,18 @@ static int lod_get_default_lov_striping(const struct lu_env *env,
 						v3->lmm_stripe_count);
 	} else if (magic == __swab32(LOV_USER_MAGIC_COMP_V1) ||
 		   magic == __swab32(LOV_USER_MAGIC_SEL)) {
-		lustre_swab_lov_comp_md_v1(info->lti_ea_store);
+		lustre_swab_lov_comp_md_v1(info->lti_ea_buf.lb_buf);
 	}
 
 	switch (magic) {
 	case LOV_MAGIC_V1:
 	case LOV_MAGIC_V3:
 	case LOV_USER_MAGIC_SPECIFIC:
-		v1 = info->lti_ea_store;
+		v1 = info->lti_ea_buf.lb_buf;
 		break;
 	case LOV_MAGIC_COMP_V1:
 	case LOV_MAGIC_SEL:
-		lcm = info->lti_ea_store;
+		lcm = info->lti_ea_buf.lb_buf;
 		entry_count = lcm->lcm_entry_count;
 		if (entry_count == 0)
 			RETURN(-EINVAL);
@@ -5485,15 +5448,23 @@ static int lod_get_default_lov_striping(const struct lu_env *env,
 				llc->llc_flags = lcm->lcm_entries[i].lcme_flags &
 					LCME_TEMPLATE_FLAGS;
 			}
+			if (llc->llc_flags & LCME_FL_PARITY) {
+				llc->llc_dstripe_count =
+					lcm->lcm_entries[i].lcme_dstripe_count;
+				llc->llc_cstripe_count =
+					lcm->lcm_entries[i].lcme_cstripe_count;
+			}
 		}
 
-		CDEBUG(D_LAYOUT, DFID" magic = %#08x, pattern = %#x, stripe_count = %hd, stripe_size = %u, stripe_offset = %hd, append_pool = '%s', append_stripe_count = %d\n",
+		CDEBUG(D_LAYOUT,
+		       DFID" magic = %#08x, pattern = %#x, stripe_count = %hd, stripe_size = %u, stripe_offset = %hd, append_pool = '%s', append_stripe_count = %d, dstripe_count = %u, cstripe_count = %u\n",
 		       PFID(lu_object_fid(&lo->ldo_obj.do_lu)), v1->lmm_magic,
 		       v1->lmm_pattern, (__s16)v1->lmm_stripe_count,
 		       v1->lmm_stripe_size, (__s16)v1->lmm_stripe_offset,
-		       append_pool ?: "", append_stripe_count);
+		       append_pool ?: "", append_stripe_count,
+		       llc->llc_dstripe_count, llc->llc_cstripe_count);
 
-		if (!lov_pattern_supported(v1->lmm_pattern) &&
+		if (!lov_pattern_available(v1->lmm_pattern) &&
 		    !(v1->lmm_pattern & LOV_PATTERN_F_RELEASED)) {
 			lod_free_def_comp_entries(lds);
 			RETURN(-EINVAL);
@@ -5506,6 +5477,10 @@ static int lod_get_default_lov_striping(const struct lu_env *env,
 
 		if (append_stripe_count != 0 || append_pool != NULL)
 			llc->llc_pattern = LOV_PATTERN_RAID0;
+
+		/* set parity component pattern */
+		if (want_composite && (llc->llc_flags & LCME_FL_PARITY))
+			llc->llc_pattern |= LOV_PATTERN_PARITY;
 
 		if (append_stripe_count != 0)
 			llc->llc_stripe_count = append_stripe_count;
@@ -5553,14 +5528,14 @@ static inline void lod_lum2lds(struct lod_default_striping *lds,
 }
 
 /**
- * Get default directory striping.
+ * lod_get_default_lmv_striping() - Get default directory striping.
+ * @env: execution environment
+ * @lo: object
+ * @lds: default striping
  *
- * \param[in] env		execution environment
- * \param[in] lo		object
- * \param[out] lds		default striping
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_get_default_lmv_striping(const struct lu_env *env,
 					struct lod_object *lo,
@@ -5578,7 +5553,7 @@ static int lod_get_default_lmv_striping(const struct lu_env *env,
 	if (rc >= (int)sizeof(*lmu)) {
 		struct lod_thread_info *info = lod_env_info(env);
 
-		lmu = info->lti_ea_store;
+		lmu = info->lti_ea_buf.lb_buf;
 		lod_lum2lds(lds, lmu);
 	}
 
@@ -5586,16 +5561,17 @@ static int lod_get_default_lmv_striping(const struct lu_env *env,
 }
 
 /**
- * Get default striping in the object.
+ * lod_get_default_striping() - Get default striping in the object.
+ * @env: execution environment
+ * @lo: object
+ * @ah: pointer to a struct that gives allocation hints
+ * @lds: default striping
  *
  * Get object default striping and default directory striping.
  *
- * \param[in] env		execution environment
- * \param[in] lo		object
- * \param[out] lds		default striping
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_get_default_striping(const struct lu_env *env,
 				    struct lod_object *lo,
@@ -5628,14 +5604,13 @@ static int lod_get_default_striping(const struct lu_env *env,
 }
 
 /**
- * Apply default striping on object.
+ * lod_striping_from_default() - Apply default striping on object.
+ * @lo: new object
+ * @lds: default striping
+ * @mode: new object's mode
  *
  * If object striping pattern is not set, set to the one in default striping.
  * The default striping is from parent or fs.
- *
- * \param[in] lo		new object
- * \param[in] lds		default striping
- * \param[in] mode		new object's mode
  */
 static void lod_striping_from_default(struct lod_object *lo,
 				      const struct lod_default_striping *lds,
@@ -5710,7 +5685,7 @@ static void lod_striping_from_default(struct lod_object *lo,
 		if (lo->ldo_dir_stripe_count == 0)
 			lo->ldo_dir_stripe_count =
 				lds->lds_dir_def_stripe_count;
-		if (lo->ldo_dir_stripe_offset == -1)
+		if (lo->ldo_dir_stripe_offset == LMV_OFFSET_DEFAULT)
 			lo->ldo_dir_stripe_offset =
 				lds->lds_dir_def_stripe_offset;
 		if (lo->ldo_dir_hash_type == LMV_HASH_TYPE_UNKNOWN)
@@ -5751,7 +5726,7 @@ static inline bool lod_need_inherit_more(struct lod_object *lo, bool from_root,
 	return false;
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_ah_init.
  *
  * This method is used to make a decision on the striping configuration for the
@@ -5760,7 +5735,7 @@ static inline bool lod_need_inherit_more(struct lod_object *lo, bool from_root,
  * stripe size/offset, pool name, hash_type, etc.) is stored in the object
  * itself and will be used by the methods like ->doo_declare_create().
  *
- * \see dt_object_operations::do_ah_init() in the API description for details.
+ * see dt_object_operations::do_ah_init() in the API description for details.
  */
 static void lod_ah_init(const struct lu_env *env,
 			struct dt_allocation_hint *ah,
@@ -5805,7 +5780,8 @@ static void lod_ah_init(const struct lu_env *env,
 
 	if (S_ISDIR(child_mode)) {
 		const struct lmv_user_md_v1 *lum1 = ah->dah_eadata;
-		int max_stripe_count;
+		int max_stripe_count = 0;
+		int mdt_count = d->lod_remote_mdt_count + 1;
 
 		/* other default values are 0 */
 		lc->ldo_dir_stripe_offset = LMV_OFFSET_DEFAULT;
@@ -5907,17 +5883,25 @@ static void lod_ah_init(const struct lu_env *env,
 			}
 		}
 
-		/* shrink the stripe count to max_mdt_stripecount if it is -1
-		 * and max_mdt_stripecount is not 0
+		/*
+		 * 1. overstriped case(< 0), adjust stripe count given
+		 * overstriped factor by mdt_countmdt_count;
+		 *   1.1 use lod_max_mdt_stripecount as max_stripe_count;
+		 * 2. overstriped case(> 0), multiply max_stripe_count by
+		 * max_stripes_per_mdt;
 		 */
-		if (lc->ldo_dir_stripe_count == (__u16)(-1) &&
-		    d->lod_max_mdt_stripecount)
-			lc->ldo_dir_stripe_count = d->lod_max_mdt_stripecount;
-
-		max_stripe_count = d->lod_remote_mdt_count + 1;
-		if (lc->ldo_dir_hash_type & LMV_HASH_FLAG_OVERSTRIPED)
+		max_stripe_count = mdt_count;
+		if ((__s16)lc->ldo_dir_stripe_count >=
+				LMV_OVERSTRIPE_COUNT_MAX &&
+		    (__s16)lc->ldo_dir_stripe_count <=
+				LMV_OVERSTRIPE_COUNT_MIN) {
+			lc->ldo_dir_stripe_count = mdt_count *
+				-(__s16)lc->ldo_dir_stripe_count;
+			max_stripe_count = d->lod_max_mdt_stripecount ?:
+				mdt_count * d->lod_max_stripes_per_mdt;
+		} else if (lc->ldo_dir_hash_type & LMV_HASH_FLAG_OVERSTRIPED) {
 			max_stripe_count *= d->lod_max_stripes_per_mdt;
-
+		}
 		/* shrink the stripe_count to max stripe count */
 		if (lc->ldo_dir_stripe_count > max_stripe_count &&
 		    !CFS_FAIL_CHECK(OBD_FAIL_LARGE_STRIPE)) {
@@ -6056,7 +6040,7 @@ out:
 }
 
 /**
- * Size initialization on late striping.
+ * lod_declare_init_size() - Size initialization on late striping.
  *
  * Propagate the size of a truncated object to a deferred striping.
  * This function handles a special case when truncate was done on a
@@ -6064,12 +6048,13 @@ out:
  * we can't lose that size, so we have to propagate it to the stripes
  * being created.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] th	transaction handle
+ * @env: execution environment
+ * @dt: object
+ * @th: transaction handle
  *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_declare_init_size(const struct lu_env *env,
 				 struct dt_object *dt, struct thandle *th)
@@ -6138,23 +6123,24 @@ static int lod_declare_init_size(const struct lu_env *env,
 }
 
 /**
- * Declare creation of striped object.
+ * lod_declare_striped_create() - Declare creation of striped object.
  *
  * The function declares creation stripes for a regular object. The function
  * also declares whether the stripes will be created with non-zero size if
- * previously size was set non-zero on the master object. If object \a dt is
- * not local, then only fully defined striping can be applied in \a lovea.
- * Otherwise \a lovea can be in the form of pattern, see lod_qos_parse_config()
+ * previously size was set non-zero on the master object. If object @dt is
+ * not local, then only fully defined striping can be applied in @lovea.
+ * Otherwise @lovea can be in the form of pattern, see lod_qos_parse_config()
  * for the details.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] attr	attributes the stripes will be created with
- * \param[in] lovea	a buffer containing striping description
- * \param[in] th	transaction handle
+ * @env: execution environment
+ * @dt: object
+ * @attr: attributes the stripes will be created with
+ * @lovea: a buffer containing striping description
+ * @th: transaction handle
  *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 int lod_declare_striped_create(const struct lu_env *env, struct dt_object *dt,
 			       struct lu_attr *attr,
@@ -6212,48 +6198,6 @@ out:
 }
 
 /*
- * Whether subdirectories under \a dt should be created on MDTs by space QoS
- *
- * If LMV_HASH_FLAG_SPACE is set on directory default layout, its subdirectories
- * should be created on MDT by space QoS.
- *
- * \param[in] env	execution environment
- * \param[in] dev	lu device
- * \param[in] dt	object
- *
- * \retval		1 if directory should create subdir by space usage
- * \retval		0 if not
- * \retval		-ev if failed
- */
-static inline int dt_object_qos_mkdir(const struct lu_env *env,
-				      struct lu_device *dev,
-				      struct dt_object *dt)
-{
-	struct lod_thread_info *info = lod_env_info(env);
-	struct lu_object *obj;
-	struct lod_object *lo;
-	struct lmv_user_md *lmu;
-	int rc;
-
-	obj = lu_object_find_slice(env, dev, lu_object_fid(&dt->do_lu), NULL);
-	if (IS_ERR(obj))
-		return PTR_ERR(obj);
-
-	lo = lu2lod_obj(obj);
-
-	rc = lod_get_default_lmv_ea(env, lo);
-	dt_object_put(env, dt);
-	if (rc <= 0)
-		return rc;
-
-	if (rc < (int)sizeof(*lmu))
-		return -EINVAL;
-
-	lmu = info->lti_ea_store;
-	return le32_to_cpu(lmu->lum_stripe_offset) == LMV_OFFSET_DEFAULT;
-}
-
-/**
  * Implementation of dt_object_operations::do_declare_create.
  *
  * The method declares creation of a new object. If the object will be striped,
@@ -6261,7 +6205,7 @@ static inline int dt_object_qos_mkdir(const struct lu_env *env,
  * creation of the stripes and declare initialization of the striping
  * information to be stored in the master object.
  *
- * \see dt_object_operations::do_declare_create() in the API description
+ * see dt_object_operations::do_declare_create() in the API description
  * for details.
  */
 static int lod_declare_create(const struct lu_env *env, struct dt_object *dt,
@@ -6357,13 +6301,14 @@ out:
 }
 
 /**
- * Generate component ID for new created component.
+ * lod_gen_component_id() - Generate component ID for new created component.
+ * @lo: LOD object
+ * @mirror_id: New generated component will have this @mirror_id
+ * @comp_idx: index of ldo_comp_entries
  *
- * \param[in] lo		LOD object
- * \param[in] comp_idx		index of ldo_comp_entries
- *
- * \retval			component ID on success
- * \retval			LCME_ID_INVAL on failure
+ * Return:
+ * * %component ID on success
+ * * %LCME_ID_INVAL on failure
  */
 static __u32 lod_gen_component_id(struct lod_object *lo,
 				  int mirror_id, int comp_idx)
@@ -6404,7 +6349,68 @@ again:
 }
 
 /**
- * Creation of a striped regular object.
+ * lod_bind_data_parity() - Bind a parity component to its data component
+ * @lo: LOD object
+ * @parity_index: index of the parity component
+ *
+ * This function binds a parity component to its corresponding data component
+ * with their mirror ids. The binding is indicated by LCME_FL_IS_LINK_ID flag
+ * set by the llapi. This binding is resolved here and replaced by the mirror id
+ * set by the lod.
+ *
+ * Return:
+ * * %0 on success or if already bound
+ * * %-EINVAL if no matching data component found
+ */
+static int lod_bind_data_parity(struct lod_object *lo, int parity_index)
+{
+	struct lod_layout_component *comp;
+	struct lod_layout_component *comp_parity =
+		&lo->ldo_comp_entries[parity_index];
+	int i;
+
+	ENTRY;
+
+	/* If LCME_FL_IS_LINK_ID is not set, component is already bound */
+	if (!(comp_parity->llc_flags & LCME_FL_IS_LINK_ID))
+		RETURN(0);
+
+	/* Search for data component with matching link id */
+	for (i = 0; i < lo->ldo_comp_cnt; i++) {
+		comp = &lo->ldo_comp_entries[i];
+
+		/* Skip parity comps and data comps without link id */
+		if ((comp->llc_flags & LCME_FL_PARITY) ||
+		    !(comp->llc_flags & LCME_FL_IS_LINK_ID))
+			continue;
+
+		if (comp->llc_mirror_link_id != comp_parity->llc_mirror_link_id)
+			continue;
+
+		/* Link id matches - extents must also match */
+		if (!lu_extent_is_equal(&comp->llc_extent,
+					&comp_parity->llc_extent))
+			RETURN(-EINVAL);
+
+		/* Bind comps with their mirror ids, replace llapi link id */
+		comp_parity->llc_mirror_link_id = mirror_id_of(comp->llc_id);
+		comp->llc_mirror_link_id = mirror_id_of(comp_parity->llc_id);
+		comp_parity->llc_flags &= ~LCME_FL_IS_LINK_ID;
+		comp->llc_flags &= ~LCME_FL_IS_LINK_ID;
+
+		RETURN(0);
+	}
+
+	RETURN(-EINVAL);
+}
+
+/**
+ * lod_striped_create() - Creation of a striped regular object.
+ * @env: execution environment
+ * @dt: object
+ * @attr: attributes the stripes will be created with
+ * @dof: format of stripes (see OSD API description)
+ * @th: transaction handle
  *
  * The function is called to create the stripe objects for a regular
  * striped file. This can happen at the initial object creation or
@@ -6413,14 +6419,9 @@ again:
  * prepared in the form of the list of objects (ldo_stripe field).
  * This is done during declare phase.
  *
- * \param[in] env	execution environment
- * \param[in] dt	object
- * \param[in] attr	attributes the stripes will be created with
- * \param[in] dof	format of stripes (see OSD API description)
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 int lod_striped_create(const struct lu_env *env, struct dt_object *dt,
 		       struct lu_attr *attr, struct dt_object_format *dof,
@@ -6463,6 +6464,15 @@ int lod_striped_create(const struct lu_env *env, struct dt_object *dt,
 								mirror_id, i);
 			if (lod_comp->llc_id == LCME_ID_INVAL)
 				GOTO(out, rc = -ERANGE);
+
+			/* if this is a parity component, we'd setup the
+			 * llc_mirror_link_id for both data and parity comps
+			 */
+			if (lod_comp->llc_flags & LCME_FL_PARITY) {
+				rc = lod_bind_data_parity(lo, i);
+				if (rc)
+					GOTO(out, rc);
+			}
 		}
 
 		if (lod_comp_inited(lod_comp))
@@ -6531,14 +6541,14 @@ static inline bool lod_obj_is_dom(struct dt_object *dt)
 		LOV_PATTERN_MDT);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_create.
  *
  * If any of preceeding methods (like ->do_declare_create(),
  * ->do_ah_init(), etc) chose to create a striped object,
  * then this method will create the master and the stripes.
  *
- * \see dt_object_operations::do_create() in the API description for details.
+ * see dt_object_operations::do_create() in the API description for details.
  */
 static int lod_create(const struct lu_env *env, struct dt_object *dt,
 		      struct lu_attr *attr, struct dt_allocation_hint *hint,
@@ -6578,7 +6588,7 @@ lod_obj_stripe_destroy_cb(const struct lu_env *env, struct lod_object *lo,
 	return 0;
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_destroy.
  *
  * If the object is a striped directory, then the function declares reference
@@ -6586,7 +6596,7 @@ lod_obj_stripe_destroy_cb(const struct lu_env *env, struct lod_object *lo,
  * destroy of all the stripes. In all the cases, it declares an intention to
  * destroy the object itself.
  *
- * \see dt_object_operations::do_declare_destroy() in the API description
+ * see dt_object_operations::do_declare_destroy() in the API description
  * for details.
  */
 static int lod_declare_destroy(const struct lu_env *env, struct dt_object *dt,
@@ -6679,14 +6689,14 @@ static int lod_declare_destroy(const struct lu_env *env, struct dt_object *dt,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_destroy.
  *
  * If the object is a striped directory, then the function removes references
  * from the master object (this is an index) to the stripes and destroys all
  * the stripes. In all the cases, the function destroys the object itself.
  *
- * \see dt_object_operations::do_destroy() in the API description for details.
+ * see dt_object_operations::do_destroy() in the API description for details.
  */
 static int lod_destroy(const struct lu_env *env, struct dt_object *dt,
 		       struct thandle *th)
@@ -6776,10 +6786,10 @@ static int lod_destroy(const struct lu_env *env, struct dt_object *dt,
 	RETURN(rc);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_ref_add.
  *
- * \see dt_object_operations::do_declare_ref_add() in the API description
+ * see dt_object_operations::do_declare_ref_add() in the API description
  * for details.
  */
 static int lod_declare_ref_add(const struct lu_env *env,
@@ -6788,10 +6798,10 @@ static int lod_declare_ref_add(const struct lu_env *env,
 	return lod_sub_declare_ref_add(env, dt_object_child(dt), th);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_ref_add.
  *
- * \see dt_object_operations::do_ref_add() in the API description for details.
+ * see dt_object_operations::do_ref_add() in the API description for details.
  */
 static int lod_ref_add(const struct lu_env *env,
 		       struct dt_object *dt, struct thandle *th)
@@ -6799,10 +6809,10 @@ static int lod_ref_add(const struct lu_env *env,
 	return lod_sub_ref_add(env, dt_object_child(dt), th);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_declare_ref_del.
  *
- * \see dt_object_operations::do_declare_ref_del() in the API description
+ * see dt_object_operations::do_declare_ref_del() in the API description
  * for details.
  */
 static int lod_declare_ref_del(const struct lu_env *env,
@@ -6811,10 +6821,10 @@ static int lod_declare_ref_del(const struct lu_env *env,
 	return lod_sub_declare_ref_del(env, dt_object_child(dt), th);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_ref_del
  *
- * \see dt_object_operations::do_ref_del() in the API description for details.
+ * see dt_object_operations::do_ref_del() in the API description for details.
  */
 static int lod_ref_del(const struct lu_env *env,
 		       struct dt_object *dt, struct thandle *th)
@@ -6822,10 +6832,10 @@ static int lod_ref_del(const struct lu_env *env,
 	return lod_sub_ref_del(env, dt_object_child(dt), th);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_object_sync.
  *
- * \see dt_object_operations::do_object_sync() in the API description
+ * see dt_object_operations::do_object_sync() in the API description
  * for details.
  */
 static int lod_object_sync(const struct lu_env *env, struct dt_object *dt,
@@ -6834,12 +6844,12 @@ static int lod_object_sync(const struct lu_env *env, struct dt_object *dt,
 	return dt_object_sync(env, dt_object_child(dt), start, end);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_object_unlock.
  *
  * Used to release LDLM lock(s).
  *
- * \see dt_object_operations::do_object_unlock() in the API description
+ * see dt_object_operations::do_object_unlock() in the API description
  * for details.
  */
 static int lod_object_unlock(const struct lu_env *env, struct dt_object *dt,
@@ -6881,12 +6891,12 @@ static int lod_object_unlock(const struct lu_env *env, struct dt_object *dt,
 	RETURN(0);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_object_lock.
  *
  * Used to get LDLM lock on the non-striped and striped objects.
  *
- * \see dt_object_operations::do_object_lock() in the API description
+ * see dt_object_operations::do_object_lock() in the API description
  * for details.
  */
 static int lod_object_lock(const struct lu_env *env,
@@ -6917,7 +6927,7 @@ static int lod_object_lock(const struct lu_env *env,
 		RETURN(rc);
 
 	/* No stripes */
-	if (lo->ldo_dir_stripe_count <= 1)
+	if (lo->ldo_dir_stripe_count == 0)
 		RETURN(0);
 
 	slave_locks_size = offsetof(typeof(*slave_locks),
@@ -6974,10 +6984,10 @@ static int lod_object_lock(const struct lu_env *env,
 	RETURN(0);
 }
 
-/**
+/*
  * Implementation of dt_object_operations::do_invalidate.
  *
- * \see dt_object_operations::do_invalidate() in the API description for details
+ * see dt_object_operations::do_invalidate() in the API description for details
  */
 static int lod_invalidate(const struct lu_env *env, struct dt_object *dt)
 {
@@ -7013,7 +7023,15 @@ static int lod_declare_instantiate_components(const struct lu_env *env,
 }
 
 /**
- * Check OSTs for an existing component for further extension
+ * lod_sel_osts_allowed() - Check OSTs for an existing component for further
+ * extension
+ * @env: execution environment for this thread
+ * @lo: object we're checking
+ * @index: index of this component
+ * @reserve: space to be reserved for each OST.
+ * @extent: layout extent for requested operation
+ * @comp_extent: extension component extent
+ * @write: if this is write operation
  *
  * Checks if OSTs are still healthy and not out of space.  Gets free space
  * on OSTs (relative to allocation watermark rmb_low) and compares to
@@ -7021,16 +7039,9 @@ static int lod_declare_instantiate_components(const struct lu_env *env,
  *
  * Decides whether or not to extend a component on its current OSTs.
  *
- * \param[in] env		execution environment for this thread
- * \param[in] lo		object we're checking
- * \param[in] index		index of this component
- * \param[in] extension_size	extension size for this component
- * \param[in] extent		layout extent for requested operation
- * \param[in] comp_extent	extension component extent
- * \param[in] write		if this is write operation
- *
- * \retval	true - OK to extend on current OSTs
- * \retval	false - do not extend on current OSTs
+ * Return:
+ * * %true - OK to extend on current OSTs
+ * * %false - do not extend on current OSTs
  */
 static bool lod_sel_osts_allowed(const struct lu_env *env,
 				 struct lod_object *lo,
@@ -7126,19 +7137,19 @@ static bool lod_sel_osts_allowed(const struct lu_env *env,
 }
 
 /**
- * Adjust extents after component removal
+ * lod_sel_adjust_extents() - Adjust extents after component removal
+ * @env: execution environment for this thread
+ * @lo: object
+ * @max_comp: layout component
+ * @index: index of this component
  *
  * When we remove an extension component, we move the start of the next
  * component to match the start of the extension component, so no space is left
  * without layout.
  *
- * \param[in] env	execution environment for this thread
- * \param[in] lo	object
- * \param[in] max_comp	layout component
- * \param[in] index	index of this component
- *
- * \retval		0 on success
- * \retval		negative errno on error
+ * Return:
+ * * %0 on success
+ * * %negative errno on error
  */
 static void lod_sel_adjust_extents(const struct lu_env *env,
 				   struct lod_object *lo,
@@ -7223,6 +7234,9 @@ static __u64 lod_extension_new_end(__u64 extension_size, __u64 extent_end,
 }
 
 /**
+ * lod_sel_stripe_reserved() - Calculate reservation (per-OST extension_size)
+ * @lod_comp: lod component we are checking
+ *
  * Calculate the exact reservation (per-OST extension_size) on the OSTs being
  * instantiated. It needs to be calculated in advance and taken into account at
  * the instantiation time, because otherwise lod_statfs_and_check() may consider
@@ -7230,9 +7244,7 @@ static __u64 lod_extension_new_end(__u64 extension_size, __u64 extent_end,
  * OST may turn out to be low-on-space, thus inappropriate OST may be used and
  * ENOSPC occurs.
  *
- * \param[in] lod_comp		lod component we are checking
- *
- * \retval	size to reserved on each OST of lod_comp's stripe.
+ * Returns size to reserved on each OST of lod_comp's stripe.
  */
 static __u64 lod_sel_stripe_reserved(struct lod_layout_component *lod_comp)
 {
@@ -7246,14 +7258,26 @@ static __u64 lod_sel_stripe_reserved(struct lod_layout_component *lod_comp)
  * times, this is the data for the next call. Fields could be changed to
  * component indexes when needed, (e.g. if there is no need to instantiate
  * all the previous components up to the current position) to tell the caller
- * where to start over from. */
+ * where to start over from.
+ */
 struct sel_data {
 	int sd_force;
 	int sd_repeat;
 };
 
 /**
- * Process extent updates for a particular layout component
+ * lod_sel_handler() - Process extent updates for a particular layout component
+ * @env: execution environment for this thread
+ * @lo: object to update the layout of
+ * @extent: layout extent for requested operation, update layout to fit this
+ * operation
+ * @th: transaction handle for this operation
+ * @max_comp: the highest comp for the portion of the layout we are operating
+ * on (For FLR, the chosen replica).  Updated because we may remove components.
+ * @index: index of the extension space component we're working on
+ * @write: if this is write op
+ * @sd: if the extension is to be forced; set here to force it on the arshad
+ * 2nd call for the same extension component
  *
  * Handle layout updates for a particular extension space component touched by
  * a layout update operation.  Core function of self-extending PFL feature.
@@ -7292,24 +7316,9 @@ struct sel_data {
  * component is exhausted (all of its range has been given to real components),
  * so we remove it and restart processing.
  *
- * \param[in] env		execution environment for this thread
- * \param[in,out] lo		object to update the layout of
- * \param[in] extent		layout extent for requested operation, update
- *				layout to fit this operation
- * \param[in] th		transaction handle for this operation
- * \param[in,out] max_comp	the highest comp for the portion of the layout
- *				we are operating on (For FLR, the chosen
- *				replica).  Updated because we may remove
- *				components.
- * \param[in] index		index of the extension space component we're
- *				working on
- * \param[in] write		if this is write op
- * \param[in,out] force		if the extension is to be forced; set here
-				to force it on the 2nd call for the same
-				extension component
- *
- * \retval	0 on success
- * \retval	negative errno on error
+ * Return:
+ * * %0 on success
+ * * %negative errno on error
  */
 static int lod_sel_handler(const struct lu_env *env,
 			  struct lod_object *lo,
@@ -7465,7 +7474,14 @@ static int lod_sel_handler(const struct lu_env *env,
 }
 
 /**
- * Declare layout extent updates
+ * lod_declare_update_extents() - Declare layout extent updates
+ * @env: execution environment for this thread
+ * @lo: object to update the layout of
+ * @extent: layout extent for requested operation, update layout to
+ * fit this operation
+ * @th: transaction handle for this operation
+ * @pick: identifies chosen mirror for FLR layouts
+ * @write: if this is write op
  *
  * Handles extensions.  Identifies extension components touched by current
  * operation and passes them to processing function.
@@ -7473,16 +7489,10 @@ static int lod_sel_handler(const struct lu_env *env,
  * Restarts with updated layouts from the processing function until the current
  * operation no longer touches an extension space component.
  *
- * \param[in] env	execution environment for this thread
- * \param[in,out] lo	object to update the layout of
- * \param[in] extent	layout extent for requested operation, update layout to
- *			fit this operation
- * \param[in] th	transaction handle for this operation
- * \param[in] pick	identifies chosen mirror for FLR layouts
- * \param[in] write	if this is write op
- *
- * \retval	1 on layout changed, 0 on no change
- * \retval	negative errno on error
+ * Return:
+ * * %1 on layout changed
+ * * %0 on no change
+ * * %negative errno on error
  */
 static int lod_declare_update_extents(const struct lu_env *env,
 		struct lod_object *lo, struct lu_extent *extent,
@@ -7565,17 +7575,17 @@ static bool lod_is_instantiation_needed(struct lod_layout_component *comp)
 }
 
 /**
- * Declare layout update for a non-FLR layout.
+ * lod_declare_update_plain() - Declare layout update for a non-FLR layout.
+ * @env: execution environment for this thread
+ * @lo: object to update the layout of
+ * @layout: layout intent for requested operation, "update" is a process of
+ * reacting to this
+ * @buf: buffer containing lov ea (see comment on usage inline)
+ * @th: transaction handle for this operation
  *
- * \param[in] env	execution environment for this thread
- * \param[in,out] lo	object to update the layout of
- * \param[in] layout	layout intent for requested operation, "update" is
- *			a process of reacting to this
- * \param[in] buf	buffer containing lov ea (see comment on usage inline)
- * \param[in] th	transaction handle for this operation
- *
- * \retval	0 on success
- * \retval	negative errno on error
+ * Return:
+ * * %0 on success
+ * * %negative errno on error
  */
 static int lod_declare_update_plain(const struct lu_env *env,
 		struct lod_object *lo, struct layout_intent *layout,
@@ -7719,7 +7729,7 @@ static inline int lod_comp_index(struct lod_object *lo,
 	return lod_comp - lo->ldo_comp_entries;
 }
 
-/**
+/*
  * Stale other mirrors by writing extent.
  */
 static int lod_stale_components(const struct lu_env *env, struct lod_object *lo,
@@ -7785,15 +7795,16 @@ restart:
 }
 
 /**
- * check an OST's availability
- * \param[in] env	execution environment
- * \param[in] lo	lod object
- * \param[in] dt	dt object
- * \param[in] index	mirror index
+ * lod_check_ost_avail() - check an OST's availability
+ * @env: execution environment
+ * @lo: lod object
+ * @dt: dt object
+ * @index: mirror index
  *
- * \retval	negative if failed
- * \retval	1 if \a dt is available
- * \retval	0 if \a dt is not available
+ * Return:
+ * * %negative if failed
+ * * %1 if @dt is available
+ * * %0 if @dt is not available
  */
 static inline int lod_check_ost_avail(const struct lu_env *env,
 				      struct lod_object *lo,
@@ -7824,10 +7835,14 @@ static inline int lod_check_ost_avail(const struct lu_env *env,
 }
 
 /**
- * Pick primary mirror for write
- * \param[in] env	execution environment
- * \param[in] lo	object
- * \param[in] extent	write range
+ * lod_primary_pick() - Pick primary mirror for write
+ * @env: execution environment
+ * @lo: object
+ * @extent: write range
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int lod_primary_pick(const struct lu_env *env, struct lod_object *lo,
 			    struct lu_extent *extent)
@@ -7958,7 +7973,7 @@ static int lod_prepare_resync_mirror(const struct lu_env *env,
 	return 0;
 }
 
-/**
+/*
  * figure out the components should be instantiated for resync.
  */
 static int lod_prepare_resync(const struct lu_env *env, struct lod_object *lo,
@@ -8013,6 +8028,72 @@ static int lod_layout_pccro_check(const struct lu_env *env,
 		return rc;
 
 	return lo->ldo_flr_state & LCM_FL_PCC_RDONLY ? -EALREADY : 0;
+}
+
+/* Check if the dir layout conforms the requested one */
+static int lod_dir_layout_check(const struct lu_env *env,
+				struct dt_object *dt,
+				struct md_layout_change *mlc)
+{
+	struct lmv_user_md_v1 *lum = mlc->mlc_buf.lb_buf;
+	size_t lum_len = mlc->mlc_buf.lb_len;
+	struct lod_object *lo = lod_dt_obj(dt);
+	struct lod_device *ld = lu2lod_dev(dt->do_lu.lo_dev);
+	int lum_stripe_count, lum_num_objs;
+	int rc;
+	int i;
+	ENTRY;
+
+	rc = lod_striping_load(env, lo);
+	if (rc)
+		RETURN(rc);
+
+	lum_stripe_count = le32_to_cpu(lum->lum_stripe_count);
+	lum_num_objs = lmv_foreign_to_md_stripes(lum_len);
+
+	if (lmv_hash_is_migrating(lo->ldo_dir_hash_type))
+		lum_stripe_count = lo->ldo_dir_migrate_offset;
+
+	if (lum_num_objs > lum_stripe_count)
+		RETURN(-EINVAL);
+
+	for (i = 0; i < lum_num_objs; i++) {
+		struct lmv_user_mds_data *stripe_desc = lum->lum_objects + i;
+		struct dt_object *stripe_obj = lo->ldo_stripe[i];
+		__u32 lum_mds_idx, dt_mds_idx;
+		int type;
+
+		lum_mds_idx = le32_to_cpu(stripe_desc->lum_mds);
+		rc = lod_fld_lookup(env, ld, lu_object_fid(&stripe_obj->do_lu),
+				    &dt_mds_idx, &type);
+		if (rc < 0)
+			RETURN(rc);
+
+		if (lum_mds_idx == LMV_OFFSET_DEFAULT)
+			continue;
+		if (lum_mds_idx != dt_mds_idx) {
+			if (!lmv_hash_is_migrating(lo->ldo_dir_hash_type))
+				RETURN(0);
+			CERROR("%s: attempt to resume migration, stripe #%d mismatch: %u != %u, rc = %d\n",
+			       dt->do_lu.lo_dev->ld_obd->obd_name, i,
+			       lum_mds_idx, dt_mds_idx, -EPERM);
+			RETURN(-EPERM);
+		}
+	}
+
+	/* all compatibility check passed */
+	RETURN(-EALREADY);
+}
+
+static int lod_layout_check(const struct lu_env *env,
+			    struct dt_object *dt,
+			    struct md_layout_change *mlc)
+{
+	if (S_ISDIR(dt->do_lu.lo_header->loh_attr))
+		return lod_dir_layout_check(env, dt, mlc);
+
+	LASSERT(S_ISREG(dt->do_lu.lo_header->loh_attr));
+	return lod_layout_pccro_check(env, dt, mlc);
 }
 
 static struct lod_layout_component *
@@ -8608,6 +8689,58 @@ static int lod_declare_update_sync_pending(const struct lu_env *env,
 		}
 	}
 
+	/* Set resync timestamps on EC-linked components */
+	for (i = 0; i < lo->ldo_comp_cnt; i++) {
+		struct lod_layout_component *lod_comp;
+
+		lod_comp = &lo->ldo_comp_entries[i];
+
+		if (lod_comp->llc_mirror_link_id == 0)
+			continue;
+
+		if (lod_comp->llc_flags & LCME_FL_PARITY) {
+			struct lod_layout_component *data_comp;
+			int j;
+
+			/* Find linked data component */
+			for (j = 0; j < lo->ldo_comp_cnt; j++) {
+				data_comp = &lo->ldo_comp_entries[j];
+				if (data_comp->llc_flags & LCME_FL_PARITY)
+					continue;
+				if (mirror_id_of(data_comp->llc_id) !=
+				    lod_comp->llc_mirror_link_id)
+					continue;
+				if (!lu_extent_is_equal(
+					&data_comp->llc_extent,
+					&lod_comp->llc_extent))
+					continue;
+				break;
+			}
+			/*
+			 * NOSYNC data comp: inherit its timestamp
+			 * (reflects when the data was written).
+			 * Otherwise use current wall clock time.
+			 */
+			if (j < lo->ldo_comp_cnt &&
+			    (data_comp->llc_flags & LCME_FL_NOSYNC) &&
+			    data_comp->llc_timestamp != 0)
+				lod_comp->llc_timestamp =
+					data_comp->llc_timestamp;
+			else
+				lod_comp->llc_timestamp =
+					ktime_get_real_seconds();
+		} else {
+			/*
+			 * Data component linked to parity:
+			 * preserve existing NOSYNC timestamp,
+			 * otherwise set current time.
+			 */
+			if (lod_comp->llc_flags & LCME_FL_NOSYNC)
+				continue;
+			lod_comp->llc_timestamp = ktime_get_real_seconds();
+		}
+	}
+
 	/* valid check */
 	for (i = 0; i < mlc->mlc_resync_count; i++) {
 		if (mlc->mlc_resync_ids[i] == LCME_ID_INVAL)
@@ -8657,17 +8790,17 @@ typedef int (*mlc_handler)(const struct lu_env *env, struct dt_object *dt,
 			   struct thandle *th);
 
 /**
- * Attach stripes after target's for migrating directory. NB, we
- * only need to declare this, the actual work is done inside
+ * lod_dir_declare_layout_attach() - Attach stripes after target's for migrating
+ * directory. NB, we only need to declare this, the actual work is done inside
  * lod_xattr_set_lmv().
+ * @env: execution environment
+ * @dt: target object
+ * @mlc: layout change data
+ * @th: transaction handle
  *
- * \param[in] env	execution environment
- * \param[in] dt	target object
- * \param[in] mlc	layout change data
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_dir_declare_layout_attach(const struct lu_env *env,
 					 struct dt_object *dt,
@@ -8988,15 +9121,15 @@ static int lod_dir_declare_layout_shrink(const struct lu_env *env,
 }
 
 /**
- * Allocate stripes for split directory.
+ * lod_dir_declare_layout_split() - Allocate stripes for split directory.
+ * @env: execution environment
+ * @dt: target object
+ * @mlc: layout change data
+ * @th: transaction handle
  *
- * \param[in] env	execution environment
- * \param[in] dt	target object
- * \param[in] mlc	layout change data
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_dir_declare_layout_split(const struct lu_env *env,
 					struct dt_object *dt,
@@ -9020,7 +9153,7 @@ static int lod_dir_declare_layout_split(const struct lu_env *env,
 	LASSERT(le32_to_cpu(lum->lum_magic) == LMV_USER_MAGIC);
 	LASSERT(le32_to_cpu(lum->lum_stripe_offset) == LMV_OFFSET_DEFAULT);
 
-	saved_count = lo->ldo_dir_stripes_allocated;
+	saved_count = lo->ldo_dir_stripe_count;
 	stripe_count = le32_to_cpu(lum->lum_stripe_count);
 
 	/* if the split target is overstriped, we need to put that flag in the
@@ -9050,7 +9183,7 @@ static int lod_dir_declare_layout_split(const struct lu_env *env,
 	if (!stripes)
 		RETURN(-ENOMEM);
 
-	for (i = 0; i < lo->ldo_dir_stripes_allocated; i++)
+	for (i = 0; i < saved_count; i++)
 		stripes[i] = lo->ldo_stripe[i];
 
 	lod_qos_statfs_update(env, lod, &lod->lod_mdt_descs);
@@ -9089,21 +9222,23 @@ static int lod_dir_declare_layout_split(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/*
- * detach all stripes from dir master object, NB, stripes are not destroyed, but
+/**
+ * lod_dir_layout_detach() - detach all stripes from dir master object
+ * @env: execution environment
+ * @dt: target object
+ * @mlc: layout change data
+ * @th: transaction handle
+ *
+ * Detach all stripes from dir master object, NB, stripes are not destroyed, but
  * deleted from it's parent namespace, this function is called in two places:
  * 1. mdd_migrate_mdt() detach stripes from source, and attach them to
  *    target.
  * 2. mdd_dir_layout_update() detach stripe before turning 1-stripe directory to
  *    a plain directory.
  *
- * \param[in] env	execution environment
- * \param[in] dt	target object
- * \param[in] mlc	layout change data
- * \param[in] th	transaction handle
- *
- * \retval		0 on success
- * \retval		negative if failed
+ * Return:
+ * * %0 on success
+ * * %negative if failed
  */
 static int lod_dir_layout_detach(const struct lu_env *env,
 				 struct dt_object *dt,
@@ -9206,13 +9341,7 @@ static int lod_dir_layout_shrink(const struct lu_env *env,
 			continue;
 
 		if (i < final_stripe_count) {
-			rc = lod_fld_lookup(env, lod,
-					    lu_object_fid(&dto->do_lu),
-					    &mdtidx, &type);
-			if (rc)
-				RETURN(rc);
-
-			lmv->lmv_master_mdt_index = cpu_to_le32(mdtidx);
+			lmv->lmv_master_mdt_index = cpu_to_le32(i);
 			rc = lod_sub_xattr_set(env, dto, lmv_buf,
 					       XATTR_NAME_LMV,
 					       LU_XATTR_REPLACE, th);
@@ -9348,7 +9477,17 @@ out:
 }
 
 /**
- * Instantiate layout component objects which covers the intent write offset.
+ * lod_layout_change() - Client is trying to write to un-instantiated
+ *                      layout component.
+ * @env: execution environment for this thread
+ * @dt: object
+ * @mlc: data structure to describe the changes to the DT object's layout
+ * @th: transactional handle (for atomic changes)
+ *
+ * Instantiate layout component objects which covers the intent write
+ * offset.
+ *
+ * Return: 0 on success, negative on error
  */
 static int lod_layout_change(const struct lu_env *env, struct dt_object *dt,
 			     struct md_layout_change *mlc, struct thandle *th)
@@ -9417,13 +9556,13 @@ const struct dt_object_operations lod_obj_ops = {
 	.do_invalidate		= lod_invalidate,
 	.do_declare_layout_change = lod_declare_layout_change,
 	.do_layout_change	= lod_layout_change,
-	.do_layout_pccro_check	= lod_layout_pccro_check,
+	.do_layout_check	= lod_layout_check,
 };
 
-/**
+/*
  * Implementation of dt_body_operations::dbo_read.
  *
- * \see dt_body_operations::dbo_read() in the API description for details.
+ * see dt_body_operations::dbo_read() in the API description for details.
  */
 static ssize_t lod_read(const struct lu_env *env, struct dt_object *dt,
 			struct lu_buf *buf, loff_t *pos)
@@ -9435,10 +9574,10 @@ static ssize_t lod_read(const struct lu_env *env, struct dt_object *dt,
 	return next->do_body_ops->dbo_read(env, next, buf, pos);
 }
 
-/**
+/*
  * Implementation of dt_body_operations::dbo_declare_write.
  *
- * \see dt_body_operations::dbo_declare_write() in the API description
+ * see dt_body_operations::dbo_declare_write() in the API description
  * for details.
  */
 static ssize_t lod_declare_write(const struct lu_env *env,
@@ -9449,10 +9588,10 @@ static ssize_t lod_declare_write(const struct lu_env *env,
 	return lod_sub_declare_write(env, dt_object_child(dt), buf, pos, th);
 }
 
-/**
+/*
  * Implementation of dt_body_operations::dbo_write.
  *
- * \see dt_body_operations::dbo_write() in the API description for details.
+ * see dt_body_operations::dbo_write() in the API description for details.
  */
 static ssize_t lod_write(const struct lu_env *env, struct dt_object *dt,
 			 const struct lu_buf *buf, loff_t *pos,
@@ -9497,15 +9636,21 @@ static const struct dt_body_operations lod_body_ops = {
 };
 
 /**
- * Implementation of lu_object_operations::loo_object_init.
+ * lod_object_init() - Implementation of lu_object_operations::loo_object_init.
+ * @env: execution environment
+ * @lo: pointer to lu_object (based on FID)
+ * @conf: @lo configuration
  *
  * The function determines the type and the index of the target device using
  * sequence of the object's FID. Then passes control down to the
- * corresponding device:
- *  OSD for the local objects, OSP for remote
+ * corresponding device: OSD for the local objects, OSP for remote
  *
- * \see lu_object_operations::loo_object_init() in the API description
+ * see lu_object_operations::loo_object_init() in the API description
  * for details.
+ *
+ * Return:
+ * * %0 on Success
+ * * %negative on Error
  */
 static int lod_object_init(const struct lu_env *env, struct lu_object *lo,
 			   const struct lu_object_conf *conf)
@@ -9565,14 +9710,12 @@ static int lod_object_init(const struct lu_env *env, struct lu_object *lo,
 }
 
 /**
- *
- * Release resources associated with striping.
+ * lod_striping_free_nolock() - Release resources associated with striping.
+ * @env: execution environment
+ * @lo: object (file/folder)
  *
  * If the object is striped (regular or directory), then release
  * the stripe objects references and free the ldo_stripe array.
- *
- * \param[in] env	execution environment
- * \param[in] lo	object
  */
 void lod_striping_free_nolock(const struct lu_env *env, struct lod_object *lo)
 {
@@ -9640,10 +9783,10 @@ void lod_striping_free(const struct lu_env *env, struct lod_object *lo)
 	mutex_unlock(&lo->ldo_layout_mutex);
 }
 
-/**
+/*
  * Implementation of lu_object_operations::loo_object_free.
  *
- * \see lu_object_operations::loo_object_free() in the API description
+ * see lu_object_operations::loo_object_free() in the API description
  * for details.
  */
 static void lod_object_free(const struct lu_env *env, struct lu_object *o)
@@ -9657,10 +9800,10 @@ static void lod_object_free(const struct lu_env *env, struct lu_object *o)
 	OBD_SLAB_FREE_PTR(lo, lod_object_kmem);
 }
 
-/**
+/*
  * Implementation of lu_object_operations::loo_object_release.
  *
- * \see lu_object_operations::loo_object_release() in the API description
+ * see lu_object_operations::loo_object_release() in the API description
  * for details.
  */
 static void lod_object_release(const struct lu_env *env, struct lu_object *o)
@@ -9669,10 +9812,10 @@ static void lod_object_release(const struct lu_env *env, struct lu_object *o)
 	 * creation failed before? */
 }
 
-/**
+/*
  * Implementation of lu_object_operations::loo_object_print.
  *
- * \see lu_object_operations::loo_object_print() in the API description
+ * see lu_object_operations::loo_object_print() in the API description
  * for details.
  */
 static int lod_object_print(const struct lu_env *env, void *cookie,

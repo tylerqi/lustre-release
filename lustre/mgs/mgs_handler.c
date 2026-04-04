@@ -330,13 +330,16 @@ static int mgs_target_reg(struct tgt_session_info *tsi)
 {
 	struct obd_device *obd = tsi->tsi_exp->exp_obd;
 	struct mgs_device *mgs = exp2mgs_dev(tsi->tsi_exp);
-	struct mgs_target_info *mti, *rep_mti;
+	struct mgs_target_info *mti, *reply_mti, *request_mti;
+	struct mgs_target_nidlist *mtn = NULL;
+	struct ptlrpc_bulk_desc *desc = NULL;
 	struct fs_db *b_fsdb = NULL; /* barrier fsdb */
 	struct fs_db *c_fsdb = NULL; /* config fsdb */
 	char barrier_name[20];
-	size_t mti_len = 0;
+	size_t mti_buflen, mti_alloc = 0;
 	int opc;
 	int rc = 0;
+	bool nidlist;
 
 	ENTRY;
 	rc = lu_env_refill((struct lu_env *)tsi->tsi_env);
@@ -345,16 +348,87 @@ static int mgs_target_reg(struct tgt_session_info *tsi)
 
 	tgt_counter_incr(tsi->tsi_exp, LPROC_MGS_TARGET_REG);
 
-	mti = req_capsule_client_get(tsi->tsi_pill, &RMF_MGS_TARGET_INFO);
-	if (mti == NULL) {
-		DEBUG_REQ(D_HA, tgt_ses_req(tsi), "no mgs_send_param");
-		RETURN(err_serious(-EFAULT));
+	nidlist = exp_connect_flags(tsi->tsi_exp) & OBD_CONNECT_MGS_NIDLIST;
+
+	request_mti = req_capsule_client_get(tsi->tsi_pill,
+					     &RMF_MGS_TARGET_INFO);
+	if (!request_mti) {
+		DEBUG_REQ(D_HA, tgt_ses_req(tsi), "no mgs_target_info");
+		RETURN(err_serious(-EPROTO));
+	}
+	mti_buflen = req_capsule_get_size(tsi->tsi_pill, &RMF_MGS_TARGET_INFO,
+					  RCL_CLIENT);
+
+	/* Compatibility code for older targets, process mti as is */
+	if (!nidlist || !target_supports_large_nid(request_mti)) {
+		int limit;
+
+		mti = request_mti;
+		/* sanity check for mti_nid_count */
+		if (mti_buflen > sizeof(*mti))
+			limit = (mti_buflen - sizeof(*mti)) / MTN_NIDSTR_SIZE;
+		else
+			limit = MTI_NIDS_MAX;
+
+		if (mti->mti_nid_count > limit) {
+			CWARN("%s: bad NID count in mti: %d, req limit: %d\n",
+			      mti->mti_svname, mti->mti_nid_count, limit);
+			mti->mti_nid_count = limit;
+		}
+		goto process;
 	}
 
+	req_capsule_extend(tsi->tsi_pill, &RQF_MGS_TARGET_REG_NIDLIST);
+	if (!req_capsule_field_present(tsi->tsi_pill, &RMF_MGS_TARGET_NIDLIST,
+				       RCL_CLIENT)) {
+		DEBUG_REQ(D_HA, tgt_ses_req(tsi), "no mgs_target_nidlist");
+		RETURN(err_serious(-EPROTO));
+	}
+
+	/* new protocol with nidlist */
+	mtn = req_capsule_client_get(tsi->tsi_pill, &RMF_MGS_TARGET_NIDLIST);
+	mti_alloc = sizeof(*mti) + NIDLIST_SIZE(mtn->mtn_nids);
+	OBD_ALLOC_LARGE(mti, mti_alloc);
+	if (!mti)
+		RETURN(err_serious(-ENOMEM));
+
+	if (mtn->mtn_flags & NIDLIST_IN_BULK) {
+		int pages;
+		size_t nidlist_size = NIDLIST_SIZE(mtn->mtn_nids);
+
+		pages = DIV_ROUND_UP((sizeof(*mti) & ~PAGE_MASK) +
+				     nidlist_size, PAGE_SIZE);
+		desc = ptlrpc_prep_bulk_exp(tsi->tsi_pill->rc_req,
+					    pages, PTLRPC_BULK_OPS_COUNT,
+					    PTLRPC_BULK_GET_SINK,
+					    MGS_BULK_PORTAL,
+					    &ptlrpc_bulk_kiov_nopin_ops);
+		if (!desc)
+			GOTO(out_mti_free, rc = err_serious(-ENOMEM));
+
+		desc->bd_frag_ops->add_iov_frag(desc, mti->mti_nidlist,
+						nidlist_size);
+		tsi->tsi_pill->rc_req->rq_bulk_write = 1;
+		rc = sptlrpc_svc_prep_bulk(tsi->tsi_pill->rc_req, desc);
+		if (rc != 0)
+			GOTO(out_free, rc = err_serious(rc));
+
+		rc = target_bulk_io(tsi->tsi_pill->rc_req->rq_export, desc);
+		if (rc < 0)
+			GOTO(out_free, rc = err_serious(rc));
+	} else {
+		memcpy(mti->mti_nidlist, mtn->mtn_inline_list,
+		       NIDLIST_SIZE(mtn->mtn_nids));
+	}
+	*mti = *request_mti;
+	mti->mti_nid_count = mtn->mtn_nids;
+	mti->mti_flags |= LDD_F_LARGE_NID;
+
+process:
+	/* at this point all NIDs are in mti */
 	down_read(&mgs->mgs_barrier_rwsem);
 
-	if (OCD_HAS_FLAG(&tgt_ses_req(tsi)->rq_export->exp_connect_data,
-			 IMP_RECOV))
+	if (OCD_HAS_FLAG(&tsi->tsi_exp->exp_connect_data, IMP_RECOV))
 		opc = mti->mti_flags & LDD_F_OPC_MASK;
 	else
 		opc = LDD_F_OPC_REG;
@@ -527,29 +601,35 @@ out_norevoke:
 	if (rc)
 		mti->mti_flags |= LDD_F_ERROR;
 
-	/* send back the whole mti in the reply */
-	if (target_supports_large_nid(mti)) {
-		size_t len = offsetof(struct mgs_target_info, mti_nidlist);
+	/* Compatibility code:
+	 * if large mti was received, send back the same buffer size as that
+	 * MGC expects, so avoid buffer size mismatch errors on MGC side
+	 */
+	if (mti_buflen > sizeof(*mti)) {
 		int err;
 
-		mti_len = mti->mti_nid_count * LNET_NIDSTR_SIZE;
 		err = req_capsule_server_grow(tsi->tsi_pill,
-					      &RMF_MGS_TARGET_INFO,
-					      len + mti_len);
+					      &RMF_MGS_TARGET_INFO, mti_buflen);
 		if (err < 0)
-			RETURN(err);
+			GOTO(out_fsdb, rc = err_serious(err));
 	}
-	rep_mti = req_capsule_server_get(tsi->tsi_pill, &RMF_MGS_TARGET_INFO);
-	*rep_mti = *mti;
-	if (target_supports_large_nid(mti))
-		memcpy(rep_mti->mti_nidlist, mti->mti_nidlist, mti_len);
+	reply_mti = req_capsule_server_get(tsi->tsi_pill, &RMF_MGS_TARGET_INFO);
+	*reply_mti = *mti;
 
 	/* Flush logs to disk */
 	dt_sync(tsi->tsi_env, mgs->mgs_bottom);
+
+out_fsdb:
 	if (b_fsdb)
 		mgs_put_fsdb(mgs, b_fsdb);
 	if (c_fsdb)
 		mgs_put_fsdb(mgs, c_fsdb);
+out_free:
+	ptlrpc_free_bulk(desc);
+out_mti_free:
+	if (mti_alloc)
+		OBD_FREE_LARGE(mti, mti_alloc);
+
 	RETURN(rc);
 }
 
@@ -737,10 +817,160 @@ static int mgs_extract_fs_pool(char *arg, char *fsname, char *poolname)
 	RETURN(0);
 }
 
+/**
+ * __llog_fileset_cleanup_apply() - Forge the lustre_cfg to disable
+ * nodemap.NM_NAME.fileset on all server targets by invoking "mgs_set_param()"
+ *
+ * @env: thread context
+ * @mgs: mgs device
+ * @nodemap_name: name of the nodemap to cleanup
+ *
+ * Return:
+ * * %0 on success
+ * * %-negative error code on failure
+ */
+static int __llog_fileset_cleanup_apply(const struct lu_env *env,
+					struct mgs_device *mgs,
+					const char *nodemap_name)
+{
+	struct lustre_cfg_bufs *bufs = NULL;
+	struct lustre_cfg *lcfg = NULL;
+	char *lcfg_param = NULL;
+	const char *lcfg_format;
+	size_t lcfg_param_size;
+	int rc = 0;
+
+	if (!nodemap_name || nodemap_name[0] == '\0')
+		RETURN(-EINVAL);
+
+	lcfg_format = "nodemap.%s.fileset=";
+	lcfg_param_size = snprintf(NULL, 0, lcfg_format, nodemap_name) + 1;
+
+	OBD_ALLOC(lcfg_param, lcfg_param_size);
+	if (!lcfg_param)
+		RETURN(-ENOMEM);
+
+	snprintf(lcfg_param, lcfg_param_size, lcfg_format, nodemap_name);
+
+	OBD_ALLOC_PTR(bufs);
+	if (!bufs)
+		GOTO(out_cleanup, rc = -ENOMEM);
+
+	/* lcfg for all targets */
+	lustre_cfg_bufs_reset(bufs, LUSTRE_CFG_ALL_TARGETS);
+	lustre_cfg_bufs_set_string(bufs, 1, lcfg_param);
+
+	OBD_ALLOC(lcfg, lustre_cfg_len(bufs->lcfg_bufcount, bufs->lcfg_buflen));
+	if (!lcfg)
+		GOTO(out_cleanup, rc = -ENOMEM);
+
+	lustre_cfg_init(lcfg, LCFG_SET_PARAM, bufs);
+
+	rc = mgs_set_param(env, mgs, lcfg);
+	if (rc == -ENOENT)
+		rc = 0;
+
+out_cleanup:
+	if (lcfg)
+		OBD_FREE(lcfg, lustre_cfg_len(lcfg->lcfg_bufcount,
+					      lcfg->lcfg_buflens));
+	/* lustre_cfg maintains its own buffers */
+	OBD_FREE_PTR(bufs);
+	OBD_FREE(lcfg_param, lcfg_param_size);
+
+	return rc;
+}
+
+/**
+ * mgs_llog_fileset_cleanup() - Cleanup the fileset entry from the params
+ * llog on all server targets
+ *
+ * @env: thread context
+ * @mgs: mgs device
+ * @data: ioctl data containing the nodemap name
+ *
+ * This function is necessary to provide backward compatibility with old
+ * clients versions that still use the params llog to set the fileset. If
+ * the new ioctl based nodemap fileset functions are used, the llog entry
+ * would not be removed, and could re-appear for a new similar named nodemap.
+ *
+ * Return:
+ * * %0 on success
+ * * %-negative error code on failure
+ */
+static int mgs_llog_fileset_cleanup(const struct lu_env *env,
+				    struct mgs_device *mgs,
+				    struct obd_ioctl_data *data)
+{
+	struct lustre_cfg *lcfg_in;
+	char *nodemap_name;
+	int rc;
+
+	if (data->ioc_plen1 > PAGE_SIZE)
+		GOTO(out, rc = -E2BIG);
+
+	OBD_ALLOC(lcfg_in, data->ioc_plen1);
+	if (!lcfg_in)
+		GOTO(out, rc = -ENOMEM);
+
+	if (copy_from_user(lcfg_in, data->ioc_pbuf1, data->ioc_plen1))
+		GOTO(out_cleanup, rc = -EFAULT);
+	if (lustre_cfg_sanity_check(lcfg_in, data->ioc_plen1))
+		GOTO(out_cleanup, rc = -EINVAL);
+
+	if (lcfg_in->lcfg_bufcount < 2)
+		GOTO(out_cleanup, rc = -EINVAL);
+
+	nodemap_name = lustre_cfg_string(lcfg_in, 1);
+	rc = __llog_fileset_cleanup_apply(env, mgs, nodemap_name);
+	if (rc)
+		CWARN("%s: failed to cleanup llog fileset for nodemap %s: %d\n",
+		      mgs->mgs_obd->obd_name, nodemap_name, rc);
+
+out_cleanup:
+	OBD_FREE(lcfg_in, data->ioc_plen1);
+out:
+	return rc;
+}
+
+/**
+ * mgs_has_local_targets() - check if MGS is co-located with an MDT or OST
+ *
+ * Check if there are any MDT or OST targets on the MGS node. This is done by
+ * checking whether the device types are registered.
+ *
+ * Return: true if MDT or OST type exists, false otherwise
+ */
+static bool mgs_has_local_targets(void)
+{
+	struct obd_type *mdt_type;
+	struct obd_type *ost_type;
+	bool has_targets = false;
+
+	mdt_type = class_search_type(LUSTRE_MDT_NAME);
+	if (mdt_type) {
+		kobject_put(&mdt_type->typ_kobj);
+		has_targets = true;
+	}
+
+	if (!has_targets) {
+		ost_type = class_search_type(LUSTRE_OST_NAME);
+		if (ost_type) {
+			kobject_put(&ost_type->typ_kobj);
+			has_targets = true;
+		}
+	}
+
+	return has_targets;
+}
+
 static int mgs_iocontrol_nodemap(const struct lu_env *env,
 				 struct mgs_device *mgs,
 				 struct obd_ioctl_data *data)
 {
+	bool clean_llog_fileset = false;
+	bool dynamic = false;
+	bool ro_cmd = false;
 	struct fs_db *fsdb;
 	int rc;
 
@@ -752,9 +982,32 @@ static int mgs_iocontrol_nodemap(const struct lu_env *env,
 		GOTO(out, rc = -EINVAL);
 	}
 
-	rc = server_iocontrol_nodemap(mgs->mgs_obd, data, false);
+	rc = server_iocontrol_nodemap(mgs->mgs_obd, data, &dynamic,
+				      &clean_llog_fileset, &ro_cmd);
 	if (rc)
 		GOTO(out, rc);
+
+	/* For dyn. nodemap and ro commands, skip nodemap config distribution */
+	if (dynamic || ro_cmd)
+		GOTO(out, rc);
+
+	/* A llog fileset entry might still exist and needs to be removed */
+	if (clean_llog_fileset) {
+		int rc2;
+
+		/* Attempt to clean up the llog fileset and provide a warning.
+		 * It is not serious enough to fail the original request which
+		 * was already applied on the MGS above.
+		 */
+		rc2 = mgs_llog_fileset_cleanup(env, mgs, data);
+		if (rc2)
+			CWARN("%s: failed to cleanup llog fileset: %d\n",
+			      mgs->mgs_obd->obd_name, rc2);
+	}
+
+	/* if MGS is co-located with an MDT or OST, clear dynamic nodemaps */
+	if (mgs_has_local_targets())
+		nodemap_clear_dynamic_nodemaps();
 
 	/* revoke nodemap lock */
 	rc = mgs_find_or_make_fsdb(env, mgs, LUSTRE_NODEMAP_NAME, &fsdb);
@@ -762,6 +1015,7 @@ static int mgs_iocontrol_nodemap(const struct lu_env *env,
 		CWARN("%s: cannot make nodemap fsdb: rc = %d\n",
 		      mgs->mgs_obd->obd_name, rc);
 	} else {
+		/* require targets to fetch the nodemap config from MGS */
 		mgs_revoke_lock(mgs, fsdb, MGS_CFG_T_NODEMAP);
 		mgs_put_fsdb(mgs, fsdb);
 	}
@@ -801,8 +1055,12 @@ static int mgs_iocontrol_pool(const struct lu_env *env,
 	if (copy_from_user(lcfg, data->ioc_pbuf1, data->ioc_plen1))
 		GOTO(out_lcfg, rc = -EFAULT);
 
+	rc = lustre_cfg_sanity_check(lcfg, data->ioc_plen1);
+	if (rc)
+		GOTO(out_lcfg, rc);
+
 	if (lcfg->lcfg_bufcount < 2)
-		GOTO(out_lcfg, rc = -EFAULT);
+		GOTO(out_lcfg, rc = -EINVAL);
 
 	/* first arg is always <fsname>.<poolname> */
 	rc = mgs_extract_fs_pool(lustre_cfg_string(lcfg, 1), mgi->mgi_fsname,
@@ -872,6 +1130,9 @@ static int mgs_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 	rc = lu_env_init(&env, LCT_MG_THREAD);
 	if (rc)
 		RETURN(rc);
+	rc = lu_env_add(&env);
+	if (unlikely(rc))
+		GOTO(out_fini, rc);
 
 	rc = -EINVAL;
 	switch (cmd) {
@@ -890,8 +1151,12 @@ static int mgs_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		if (copy_from_user(lcfg, data->ioc_pbuf1, data->ioc_plen1))
 			GOTO(out_free, rc = -EFAULT);
 
-		if (lcfg->lcfg_bufcount < 1)
+		rc = lustre_cfg_sanity_check(lcfg, data->ioc_plen1);
+		if (rc)
 			GOTO(out_free, rc);
+
+		if (lcfg->lcfg_bufcount < 1)
+			GOTO(out_free, rc = -EINVAL);
 
 		rc = mgs_set_param(&env, mgs, lcfg);
 		if (rc)
@@ -1007,6 +1272,8 @@ out_free:
 		break;
 	}
 out:
+	lu_env_remove(&env);
+out_fini:
 	lu_env_fini(&env);
 	RETURN(rc);
 }
@@ -1129,6 +1396,7 @@ static int mgs_init0(const struct lu_env *env, struct mgs_device *mgs,
 	struct obd_device		*obd;
 	struct lustre_mount_info	*lmi;
 	struct llog_ctxt		*ctxt;
+	struct lustre_sb_info *lsi;
 	int				 rc;
 
 	ENTRY;
@@ -1164,7 +1432,10 @@ static int mgs_init0(const struct lu_env *env, struct mgs_device *mgs,
 	}
 
 	/* No recovery for MGCs */
-	obd->obd_replayable = 0;
+	clear_bit(OBDF_REPLAYABLE, obd->obd_flags);
+	lsi = s2lsi(lmi->lmi_sb);
+	if (test_bit(LMD_FLG_NO_RCLNT, lsi->lsi_lmd->lmd_flags))
+		obd->obd_no_conn = 1;
 
 	rc = tgt_init(env, &mgs->mgs_lut, obd, mgs->mgs_bottom,
 		      mgs_common_slice, OBD_FAIL_MGS_ALL_REQUEST_NET,
@@ -1346,8 +1617,7 @@ static void mgs_object_free(const struct lu_env *env, struct lu_object *o)
 
 	dt_object_fini(&obj->mgo_obj);
 	lu_object_header_fini(h);
-	OBD_FREE_PRE(obj, sizeof(*obj), "kfreed");
-	kfree_rcu(obj, mgo_header.loh_rcu);
+	OBD_FREE_RCU(obj, sizeof(*obj), mgo_header.loh_rcu);
 }
 
 static int mgs_object_print(const struct lu_env *env, void *cookie,
@@ -1502,6 +1772,9 @@ static int mgs_obd_reconnect(const struct lu_env *env, struct obd_export *exp,
 			     struct obd_device *obd, struct obd_uuid *cluuid,
 			     struct obd_connect_data *data, void *localdata)
 {
+	struct ptlrpc_request *req = localdata;
+	struct lnet_nid *client_nid = NULL;
+
 	ENTRY;
 
 	if (exp == NULL || obd == NULL || cluuid == NULL)
@@ -1519,7 +1792,10 @@ static int mgs_obd_reconnect(const struct lu_env *env, struct obd_export *exp,
 		data->ocd_version = LUSTRE_VERSION_CODE;
 	}
 
-	RETURN(mgs_export_stats_init(obd, exp, localdata));
+	if (req)
+		client_nid = &req->rq_peer.nid;
+
+	RETURN(mgs_export_stats_init(obd, exp, client_nid));
 }
 
 static int mgs_obd_connect(const struct lu_env *env, struct obd_export **exp,
@@ -1609,7 +1885,7 @@ static int __init mgs_init(void)
 	if (rc)
 		return rc;
 
-	return class_register_type(&mgs_obd_device_ops, NULL, true,
+	return class_register_type(&mgs_obd_device_ops, NULL, false,
 				   LUSTRE_MGS_NAME, &mgs_device_type);
 }
 
@@ -1623,5 +1899,5 @@ MODULE_DESCRIPTION("Lustre Management Server (MGS)");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(mgs_init);
+late_initcall_sync(mgs_init);
 module_exit(mgs_exit);

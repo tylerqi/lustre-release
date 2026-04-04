@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Run select tests by setting ONLY, or as arguments to the script.
 # Skip specific tests by setting EXCEPT.
@@ -168,6 +168,24 @@ test_7() {
 }
 run_test 7 "Stale pages after read-on-open"
 
+test_8() {
+        local file=$DIR/$tdir/$tfile
+	local def_stripe_size
+	local stripe_size
+
+        test_mkdir $DIR/$tdir
+        $LFS setstripe -E 128k -L mdt -E 8M -c 1 $file \
+	|| error "setstripe failed"
+        def_stripe_size=$($LFS getstripe -S $MOUNT)
+        stripe_size=$($LFS getstripe -S --component-start=131072 \
+		--component-end=8388608 $file)
+	(($stripe_size == $def_stripe_size)) ||
+                        error "$f stripe size $stripe_size != $def_stripe_size"
+        rm -fr $DIR/$tdir
+}
+run_test 8 "verify the default size of component"
+
+
 test_fsx() {
 	local file1=$DIR1/$tfile
 	local file2=$DIR2/$tfile
@@ -186,16 +204,14 @@ test_sanity()
 
 	# Fallocate tests
 	(( $MDS1_VERSION >= $(version_code 2.14.52) )) &&
-		testlist+=" 150b 150bb 150c 150d 150f 150g"
+		testlist+=" 150b 150bb 150c 150d 150f 150g 150ia 150ib 150ic"
 
 	SANITY_ONLY=${SANITY_ONLY:-$testlist}
 	SANITY_REPEAT=${SANITY_REPEAT:-1}
 	# XXX: to fix 45. Add 42a, c when LU-9693 fixed.
 	# Add 42b when LU-6493 fixed
 	ONLY=$SANITY_ONLY ONLY_REPEAT=$SANITY_REPEAT OSC="mdc" DOM="yes" \
-		bash sanity.sh
-
-	return 0
+		bash sanity.sh || error "sanity-dom failed sanity"
 }
 run_test sanity "Run sanity with Data-on-MDT files"
 
@@ -204,17 +220,14 @@ test_sanityn()
 	local testlist="1 2 4 5 6 7 8 9 10 11 12 14 17 19 20 \
 			23 27 39 51a 51c 51d"
 
-	if [[ $MDS1_VERSION -ge $(version_code 2.13.55) ]]; then
+	(( $MDS1_VERSION >= $(version_code 2.13.55) )) &&
 		testlist+=" 107"
-	fi
 
 	SANITYN_ONLY=${SANITYN_ONLY:-$testlist}
 	SANITYN_REPEAT=${SANITYN_REPEAT:-1}
 	# XXX: to fix 60
 	ONLY=$SANITYN_ONLY ONLY_REPEAT=$SANITYN_REPEAT OSC="mdc" DOM="yes" \
-		bash sanityn.sh
-
-	return 0
+		bash sanityn.sh || error "sanity-dom failed sanityn"
 }
 run_test sanityn "Run sanityn with Data-on-MDT files"
 

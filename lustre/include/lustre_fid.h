@@ -127,7 +127,8 @@
  *  Even so, the MDT and OST resources are also in different LDLM namespaces.
  */
 
-#include <libcfs/libcfs.h>
+#include <linux/hash.h>
+
 #include <lu_object.h>
 #include <uapi/linux/lustre/lustre_fid.h>
 #include <uapi/linux/lustre/lustre_idl.h>
@@ -278,7 +279,13 @@ static inline int fid_seq_in_fldb(u64 seq)
 	       fid_seq_is_root(seq) || fid_seq_is_dot(seq);
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+static inline int fid_is_fs_root(const struct lu_fid *fid)
+{
+	return (unlikely(fid_seq(fid) == FID_SEQ_LOCAL_FILE &&
+			 fid_oid(fid) == OSD_FS_ROOT_OID));
+}
+
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static inline int fid_is_namespace_visible(const struct lu_fid *fid)
 {
 	const __u64 seq = fid_seq(fid);
@@ -342,7 +349,7 @@ static inline void filter_fid_le_to_cpu(struct filter_fid *dst,
 
 	/* XXX: Add more if filter_fid is enlarged in the future. */
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 static inline void lu_last_id_fid(struct lu_fid *fid, __u64 seq, __u32 ost_idx)
 {
@@ -484,12 +491,10 @@ struct seq_server_site {
 
 /* Server methods */
 
-int seq_server_init(const struct lu_env *env,
-		    struct lu_server_seq *seq,
-		    struct dt_device *dev,
-		    const char *prefix,
-		    enum lu_mgr_type type,
-		    struct seq_server_site *ss);
+int seq_server_init(const struct lu_env *env, struct lu_server_seq *seq,
+		    struct dt_device *dev, const char *prefix,
+		    enum lu_mgr_type type, struct seq_server_site *ss,
+		    bool set_batch_width);
 
 void seq_server_fini(struct lu_server_seq *seq,
 		     const struct lu_env *env);
@@ -754,7 +759,7 @@ static inline __u32 fid_hash(const struct lu_fid *f, int bits)
 	 * All objects with same id and different versions will belong to same
 	 * collisions list.
 	 */
-	return cfs_hash_long(fid_flatten64(f), bits);
+	return hash_long(fid_flatten64(f), bits);
 }
 
 u32 lu_fid_hash(const void *data, u32 len, u32 seed);

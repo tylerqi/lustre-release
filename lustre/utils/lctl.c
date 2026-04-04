@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -63,7 +43,7 @@ static int jt_##name(int argc, char **argv)			\
 	return rc < 0 ? -rc : rc;				\
 }
 
-/**
+/*
  * command_t pcc_cmdlist - lctl pcc commands.
  */
 command_t pcc_cmdlist[] = {
@@ -86,7 +66,7 @@ command_t pcc_cmdlist[] = {
 };
 JT_SUBCMD(pcc);
 
-/**
+/*
  * command_t changelog_cmdlist - lctl changelog commands.
  */
 command_t changelog_cmdlist[] = {
@@ -105,7 +85,7 @@ command_t changelog_cmdlist[] = {
 };
 JT_SUBCMD(changelog);
 
-/**
+/*
  * command_t net_drop_cmdlist - lctl net_drop commands.
  */
 command_t net_drop_cmdlist[] = {
@@ -131,7 +111,7 @@ command_t net_drop_cmdlist[] = {
 };
 JT_SUBCMD(net_drop);
 
-/**
+/*
  * command_t net_delay_cmdlist - lctl net_delay commands.
  */
 command_t net_delay_cmdlist[] = {
@@ -157,8 +137,87 @@ command_t net_delay_cmdlist[] = {
 };
 JT_SUBCMD(net_delay);
 
+/*
+ * command_t nodemap_cmdlist - lctl nodemap commands.
+ */
+command_t nodemap_cmdlist[] = {
+	{.pc_name = "activate", .pc_func = jt_nodemap_activate,
+	 .pc_help = "activate nodemap idmapping functions\n"
+	 "usage: nodemap activate {0|1}"},
+	{.pc_name = "add", .pc_func = jt_nodemap_new,
+	 .pc_help = "create a new nodemap\n"
+	 "usage: nodemap add [-d|--dynamic] [-p|--parent PARENT_NAME] --name NODEMAP_NAME"},
+	{.pc_name = "new", .pc_func = jt_nodemap_new,
+	 .pc_help = "create a new nodemap\n"
+	 "usage: nodemap new [-d|--dynamic] [-p|--parent PARENT_NAME] --name NODEMAP_NAME"},
+	{.pc_name = "del", .pc_func = jt_nodemap_del,
+	 .pc_help = "remove a nodemap\n"
+	 "usage: nodemap del --name NODEMAP_NAME"},
+	{.pc_name = "add_range", .pc_func = jt_nodemap_add_range,
+	 .pc_help = "add a nid range to a nodemap\n"
+	 "usage: nodemap add_range --name NODEMAP_NAME --range NID_RANGE"},
+	{.pc_name = "del_range", .pc_func = jt_nodemap_del_range,
+	 .pc_help = "delete a nid range from a nodemap\n"
+	 "usage: nodemap del_range --name NODEMAP_NAME --range NID_RANGE"},
+	{.pc_name = "banlist_add", .pc_func = jt_nodemap_banlist_add,
+	 .pc_help = "add a banned nid range to a nodemap\n"
+	 "usage: nodemap banlist_add --name NODEMAP_NAME --range NID_RANGE"},
+	{.pc_name = "banlist_del", .pc_func = jt_nodemap_banlist_del,
+	 .pc_help = "delete a banned nid range from a nodemap\n"
+	 "usage: nodemap banlist_del --name NODEMAP_NAME --range NID_RANGE"},
+	{.pc_name = "fileset_add", .pc_func = jt_nodemap_fileset_add,
+	 .pc_help = "add a fileset to a nodemap\n"
+	 "usage: nodemap fileset_add [--alt] [--ro] --name NODEMAP_NAME --fileset SUBDIRECTORY"},
+	{.pc_name = "fileset_del", .pc_func = jt_nodemap_fileset_del,
+	 .pc_help = "delete filesets from a nodemap\n"
+	 "usage: nodemap fileset_del --name NODEMAP_NAME [--all] [--fileset SUBDIRECTORY]"},
+	{.pc_name = "fileset_modify", .pc_func = jt_nodemap_fileset_modify,
+	 .pc_help = "modify a fileset in a nodemap\n"
+	 "usage: nodemap fileset_modifiy --name NODEMAP_NAME --fileset SUBDIRECTORY [--rename SUBDIRECTORY] [--ro|--rw] [--alt|--primary]"},
+	{.pc_name = "modify", .pc_func = jt_nodemap_modify,
+	 .pc_help = "modify a nodemap parameters\n"
+	 "usage: nodemap modify --name NODEMAP_NAME --property PROPERTY\n"
+	 "			--value VALUE"},
+	{.pc_name = "add_offset", .pc_func = jt_nodemap_add_offset,
+	 .pc_help = "add an offset for UID/GID/PROJID mappings\n"
+	 "usage: nodemap_add_offset --name NODEMAP_NAME --offset OFFSET\n"
+	 "			    --limit LIMIT"},
+	{.pc_name = "del_offset", .pc_func = jt_nodemap_del_offset,
+	 .pc_help = "delete an offset for UID/GID/PROJID mappings\n"
+	 "usage: nodemap_del_offset --name NODEMAP_NAME"},
+	{.pc_name = "add_idmap", .pc_func = jt_nodemap_add_idmap,
+	 .pc_help = "add a UID or GID mapping to a nodemap\n"
+	 "usage: nodemap add_idmap --name NAME --idtype {uid|gid|projid}\n"
+	 "			   --idmap CLIENTID:FSID"},
+	{.pc_name = "del_idmap", .pc_func = jt_nodemap_del_idmap,
+	 .pc_help = "delete a UID or GID mapping from a nodemap\n"
+	 "usage: nodemap del_idmap --name NAME --idtype {uid|gid|projid}\n"
+	 "			   --idmap CLIENTID:FSID"},
+	{.pc_name = "set_cap", .pc_func = jt_nodemap_set_cap,
+	 .pc_help = "define capabilities for regular users on a nodemap\n"
+	 "usage: nodemap set_cap --name NODEMAP_NAME --caps CAPABILITIES --type {mask|set|off}"},
+	{.pc_name = "set_fileset", .pc_func = jt_nodemap_set_fileset,
+	 .pc_help = "set a fileset on a nodemap\n"
+	 "** deprecated ** set a fileset on a nodemap -- please use nodemap fileset_{add/del} instead\n"
+	 "usage: nodemap set_fileset --name NODEMAP_NAME --fileset SUBDIRECTORY"},
+	{.pc_name = "set_sepol", .pc_func = jt_nodemap_set_sepol,
+	 .pc_help = "set SELinux policy info on a nodemap\n"
+	 "usage: nodemap set_sepol --name NODEMAP_NAME --sepol SEPOL"},
+	{.pc_name = "test_nid", .pc_func = jt_nodemap_test_nid,
+	 .pc_help = "test a nid for nodemap membership\n"
+	 "usage: nodemap test_nid --nid NID"},
+	{.pc_name = "test_id", .pc_func = jt_nodemap_test_id,
+	 .pc_help = "test a nodemap id pair for mapping\n"
+	 "usage: nodemap test_id --nid NID --idtype {uid|gid|projid} --id ID"},
+	{.pc_name = "info", .pc_func = jt_nodemap_info,
+	 .pc_help = "print nodemap information\n"
+	 "usage: nodemap info --list --name NODEMAP_NAME --property PROPERTY_NAME"},
+	{.pc_help = NULL }
+};
+JT_SUBCMD(nodemap);
+
 #ifdef HAVE_SERVER_SUPPORT
-/**
+/*
  * command_t barrier_cmdlist - lctl barrier commands.
  */
 command_t barrier_cmdlist[] = {
@@ -179,7 +238,7 @@ command_t barrier_cmdlist[] = {
 };
 JT_SUBCMD(barrier);
 
-/**
+/*
  * command_t snaptshot_cmdlist - lctl snapshot commands.
  */
 command_t snapshot_cmdlist[] = {
@@ -222,7 +281,35 @@ command_t snapshot_cmdlist[] = {
 };
 JT_SUBCMD(snapshot);
 
-/**
+/*
+ * command_t llog_cmdlist - lctl llog commands.
+ */
+command_t llog_cmdlist[] = {
+	{ .pc_name = "catlist", .pc_func = jt_llog_catlist,
+	  .pc_help = "list Lustre configuration log files\n"
+	 "usage: llog catlist"},
+	{ .pc_name = "info", .pc_func = jt_llog_info,
+	  .pc_help = "print log header information\n"
+	 "usage: llog info {LOGNAME|FID}"},
+	{ .pc_name = "print", .pc_func = jt_llog_print,
+	  .pc_help = "print the content of a configuration log\n"
+	 "usage: llog print {LOGNAME|FID} [--start INDEX] [--end INDEX]\n"
+	 "		    [--raw]"},
+	{ .pc_name = "cancel", .pc_func = jt_llog_cancel,
+	  .pc_help = "cancel one record in specified log.\n"
+	 "usage:llog cancel {LOGNAME|FID} --log_idx INDEX"},
+	{ .pc_name = "check", .pc_func = jt_llog_check,
+	  .pc_help = "verify that log content is valid.\n"
+	 "usage: llog_check {LOGNAME|FID} [--start INDEX] [--end INDEX]\n"
+	 "       check all records from index 1 by default."},
+	{ .pc_name = "remove", .pc_func = jt_llog_check,
+	  .pc_help = "remove one log and erase it from disk.\n"
+	 "usage: llog remove {LOGNAME|FID} [--log_id ID]"},
+	{ .pc_help = NULL }
+};
+JT_SUBCMD(llog);
+
+/*
  * command_t lfsck_cmdlist - lctl lfsck commands.
  */
 command_t lfsck_cmdlist[] = {
@@ -249,6 +336,28 @@ command_t lfsck_cmdlist[] = {
 	{ .pc_help = NULL }
 };
 JT_SUBCMD(lfsck);
+
+/**
+ * command_t lqa_cmdlist - lctl lqa commands.
+ */
+command_t lqa_cmdlist[] = {
+	{.pc_name = "new", .pc_func = lctl_lqa_new,
+	 .pc_help = "create new Lustre Quota ID Aggregate (LQA)\n"
+	 "usage: lqa new --fsname FSNAME --name LQANAME"},
+	{.pc_name = "add", .pc_func = lctl_lqa_add,
+	 .pc_help = "add range of quota IDs to the named LQA\n"
+	 "usage: lqa add --fsname FSNAME --name LQANAME --range ID_RANGE"},
+	{.pc_name = "remove", .pc_func = lctl_lqa_rem,
+	 .pc_help = "remove range of quota IDs from the named LQA\n"
+	 "usage: lqa remove --fsname FSNAME --name LQANAME --range ID_RANGE"},
+	{.pc_name = "destroy", .pc_func = lctl_lqa_del,
+	 .pc_help = "destroy the named Lustre Quota ID Aggregate\n"
+	 "usage: lqa destroy --fsname FSNAME --name LQANAME"},
+	{.pc_name = "list", .pc_func = lctl_lqa_list,
+	 .pc_help = "list LQAs, either all for FSNAME or the details for LQANAME\n"
+	 "usage: lqa list --fsname FSNAME [--name LQANAME]"}
+};
+JT_SUBCMD(lqa);
 #endif
 
 command_t cmdlist[] = {
@@ -357,39 +466,48 @@ command_t cmdlist[] = {
 	 "usage: recover [MDC/OSC device]"},
 #if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(3, 0, 53, 0)
 	{"conf_param", jt_lcfg_confparam, 0,
-	 "set a permanent config parameter.\n"
-	 "This command must be run on the MGS node\n"
+	 "set a permanent config parameter, must be run on the MGS node.\n"
 	 "usage: conf_param [-d] <target.keyword=val>\n"
 	 "  -d  Delete the permanent setting from the configuration."},
 #endif
 	{"get_param", jt_lcfg_getparam, 0, "get the Lustre or LNET parameter\n"
-	 "usage: get_param [--classify|-F] [--header|-H] [--links|-l]\n"
-	 "		   [--no-links|-L] [--no-name|-n] [--only-name|-N]\n"
-	 "		   [--recursive|-R] [--yaml|-y]\n"
-	 "		   <param_path1 param_path2 ...>\n"
-	 "Get the value of Lustre or LNET parameter from the specified path.\n"
-	 "The path can contain shell-style filename patterns.\n"},
+	 "get value of Lustre or LNet parameter(s) from specified path,\n"
+	 "which can contain shell-style filename patterns.\n"
+	 "usage: get_param [--dshbak|-b] [--color|-c auto|always|never] [--classify|-F]\n"
+	 "                 [--header|-H] [--links|-l] [--no-links|-L]\n"
+	 "                 [--merge|-m] [--no-merge|-M] [--no-name|-n] [--only-name|-N]\n"
+	 "                 [--module|-o] [--path|-p] [--readable|-r] [--recursive|-R]\n"
+	 "                 [--only-tunable|-t] [--writable|-w] [--yaml|-y]\n"
+	 "                 PARAM1 [PARAM2 ...]\n"},
 	{"set_param", jt_lcfg_setparam, 0, "set the Lustre or LNET parameter\n"
-	 "usage: set_param [--delete|-d] [--file|-F] [--no-name|-n]\n"
-	 "		   [--permanent|-P]"
+	 "set the value of the Lustre or LNET parameter at the specified path.\n"
+	 "usage: set_param [--client|-C[FSNAME]] [--delete|-d] [--no-name|-n]\n"
+	 "		   [--file|-F YAML_PARAM FILE] [--module|-o] [--permanent|-P]\n"
 #ifdef HAVE_LIBPTHREAD
-	 " [--thread|-t [THREAD_COUNT]]"
+	 " [--thread|-t[THREAD_COUNT]]"
 #endif
 	 "\n"
-	 "		   PARAM1=VALUE1 [PARAM2=VALUE2 ...]\n"
-	 "Set the value of the Lustre or LNET parameter at the specified path.\n"},
-	{"apply_yaml", jt_lcfg_applyyaml, 0, "set/config the Lustre or LNET "
-	 "parameters using configuration from a YAML file.\n"
-	 "usage: apply_yaml file\n"},
+	 "		 PARAM1=VALUE1 [PARAM2=VALUE2 ...]\n"},
+	{"apply_yaml", jt_lcfg_applyyaml, 0, "alias for 'set_param -F'\n"
+	 "usage: apply_yaml YAML_PARAM_FILE\n"},
 	{"list_param", jt_lcfg_listparam, 0,
-	 "list the Lustre or LNET parameter name\n"
-	 "usage: list_param [--dir-only|-D] [--classify|-F] [--links|-l]\n"
-	 "		    [--no-links|-L] [--path|-p] [--recursive|-R]\n"
-	 "		    <param_path1 param_path2 ...>\n"
-	 "List the name of Lustre or LNet parameter from the specified path.\n"},
+	 "list the name of Lustre or LNet parameter from the specified path.\n"
+	 "usage: list_param [--dshbak|-b] [--color|-c auto|always|never]\n"
+	 "                  [--only-dir|-D] [--classify|-F] [--links|-l] [--no-links|-L]\n"
+	 "                  [--merge|-m] [--no-merge|-M] [--module|-o] [--path|-p]\n"
+	 "                  [--readable|-r] [--recursive|-R] [--only-tunable|-t]\n"
+	 "                  [--writable|-w] PARAM1 [PARAM2 ...]\n"},
+	{"find_param", jt_lctl_findparam, 0,
+	 "search recursively for parameters matching the given pattern(s).\n"
+	 "usage: find_param [--dshbak|-b] [--color|-c auto|always|never] [--links|-l]\n"
+	 "                  [--no-links|-L] [--merge|-m] [--no-merge|-M] [--path|-p]\n"
+	 "                  [--no-name|-n] [--only-name|-N] PATTERN1 [PATTERN2 ...]\n"},
+	{"help_param", jt_lctl_helpparam, 0,
+	 "usage: help_param PARAM\n"
+	 "Show help for the specified Lustre or LNet parameter.\n"},
 	{"del_ost", jt_del_ost, 0, "permanently delete OST records\n"
-	 "usage: del_ost [--dryrun] --target <$fsname-OSTxxxx>\n"
-	 "Cancel the config records for a specific OST to forget about it.\n"},
+	 "cancel records from MGS config logs to remove an OST permanently.\n"
+	 "usage: del_ost [--dryrun] --target FSNAME-OSTxxxx\n"},
 
 	/* Debug commands */
 	{"==== debugging control ====", NULL, 0, "debug"},
@@ -442,6 +560,24 @@ command_t cmdlist[] = {
 	 "usage: pool_list  <fsname>[.<poolname>] | <pathname>"},
 
 #ifdef HAVE_SERVER_SUPPORT
+	/* LQA commands */
+	{"===  LQA ==", NULL, 0, "lqa management"},
+	{"lqa_new", lctl_lqa_new, 0,
+	 "create new Lustre Quota ID Aggregate (LQA)\n"
+	 "usage: lqa new --fsname FSNAME --name LQANAME"},
+	{"lqa_add", lctl_lqa_add, 0,
+	 "add range of quota IDs to the named LQA\n"
+	 "usage: lqa add --fsname FSNAME --name LQANAME --range ID_RANGE"},
+	{"lqa_remove", lctl_lqa_rem, 0,
+	 "remove range of quota IDs from the named LQA\n"
+	 "usage: lqa remove --fsname FSNAME --name LQANAME --range ID_RANGE"},
+	{"lqa_destroy", lctl_lqa_del, 0,
+	 "destroy the named Lustre Quota ID Aggregate\n"
+	 "usage: lqa destroy --fsname FSNAME --name LQANAME"},
+	{"lqa_list", lctl_lqa_list, 0,
+	 "list LQAs, either all for FSNAME or the details for LQANAME\n"
+	 "usage: lqa list --fsname FSNAME [--name LQANAME]"},
+	{"lqa", jt_lqa, lqa_cmdlist, ""},
 	/* Barrier commands */
 	{"===  Barrier ==", NULL, 0, "barrier management"},
 	{"barrier_freeze", jt_barrier_freeze, 0,
@@ -502,37 +638,71 @@ command_t cmdlist[] = {
 	{"nodemap_activate", jt_nodemap_activate, 0,
 	 "activate nodemap idmapping functions\n"
 	 "usage: nodemap_activate {0|1}"},
-	{"nodemap_add", jt_nodemap_add, 0,
-	 "add a new nodemap\n"
-	 "usage: nodemap_add [-d|--dynamic] NODEMAP_NAME"},
+	{"nodemap_add", jt_nodemap_new, 0,
+	 "create a new nodemap\n"
+	 "usage: nodemap_add [-d|--dynamic] [-p|--parent PARENT_NAME] --name NODEMAP_NAME"},
+	{"nodemap_new", jt_nodemap_new, 0,
+	 "create a new nodemap\n"
+	 "usage: nodemap_new [-d|--dynamic] [-p|--parent PARENT_NAME] --name NODEMAP_NAME"},
 	{"nodemap_del", jt_nodemap_del, 0,
 	 "remove a nodemap\n"
-	 "usage: nodemap_del NODEMAP_NAME"},
+	 "usage: nodemap_del --name NODEMAP_NAME"},
 	{"nodemap_add_range", jt_nodemap_add_range, 0,
-	 "add a range to a nodemap\n"
+	 "add a nid range to a nodemap\n"
 	 "usage: nodemap_add_range --name NODEMAP_NAME --range NID_RANGE"},
 	{"nodemap_del_range", jt_nodemap_del_range, 0,
-	 "delete a range from a nodemap\n"
+	 "delete a nid range from a nodemap\n"
 	 "usage: nodemap_del_range --name NODEMAP_NAME --range NID_RANGE"},
+	{"nodemap_banlist_add", jt_nodemap_banlist_add, 0,
+	 "add a banned nid range to a nodemap\n"
+	 "usage: nodemap_banlist_add --name NODEMAP_NAME --range NID_RANGE"},
+	{"nodemap_banlist_del", jt_nodemap_banlist_del, 0,
+	 "delete a banned nid range from a nodemap\n"
+	 "usage: nodemap_banlist_del --name NODEMAP_NAME --range NID_RANGE"},
+	{"nodemap_fileset_add", jt_nodemap_fileset_add, 0,
+	 "add a fileset to a nodemap\n"
+	 "usage: nodemap_fileset_add [--alt] [--ro] --name NODEMAP_NAME --fileset SUBDIRECTORY"},
+	{"nodemap_fileset_del", jt_nodemap_fileset_del, 0,
+	 "delete filesets from a nodemap\n"
+	 "usage: nodemap_fileset_del --name NODEMAP_NAME [--all] [--fileset SUBDIRECTORY]"},
+	{"nodemap_fileset_modify", jt_nodemap_fileset_modify, 0,
+	 "modify a fileset in a nodemap\n"
+	 "usage: nodemap_fileset_modifiy --name NODEMAP_NAME --fileset SUBDIRECTORY [--rename SUBDIRECTORY] [--ro|--rw] [--alt|--primary]"},
 	{"nodemap_modify", jt_nodemap_modify, 0,
-	 "modify a nodemap parameters\n"
-	 "usage: nodemap_modify nodemap_name param value"},
+	 "modify a nodemap property\n"
+	 "usage: nodemap_modify --name NODEMAP_NAME --property PROPERTY_NAME{=VALUE| --value VALUE}\n"
+	 "valid properties: admin trusted map_mode squash_uid squash_gid squash_projid deny_unknown audit_mode forbid_encryption readonly_mount rbac deny_mount child_raise_privileges gssonly_identification"},
+	{"nodemap_add_offset", jt_nodemap_add_offset, 0,
+	 "add an offset for UID/GID/PROJID mappings\n"
+	 "usage: nodemap_add_offset --name NODEMAP_NAME --offset OFFSET --limit LIMIT\n"},
+	{"nodemap_del_offset", jt_nodemap_del_offset, 0,
+	 "delete an offset for UID/GID/PROJID mappings\n"
+	 "usage: nodemap_del_offset --name NODEMAP_NAME\n"},
 	{"nodemap_add_idmap", jt_nodemap_add_idmap, 0,
-	 "add a UID or GID mapping to a nodemap"},
+	 "add a UID or GID mapping to a nodemap\n"
+	 "usage: nodemap_add_idmap --name NODEMAP_NAME --idtype {uid|gid|projid} --idmap CLIENTID:FSID"},
 	{"nodemap_del_idmap", jt_nodemap_del_idmap, 0,
-	 "delete a UID or GID mapping from a nodemap"},
+	 "delete a UID or GID mapping from a nodemap\n"
+	 "usage: nodemap_del_idmap --name NODEMAP_NAME --idtype {uid|gid|projid} --idmap CLIENTID:FSID"},
 	{"nodemap_set_fileset", jt_nodemap_set_fileset, 0,
-	 "set a fileset on a nodemap\n"
-	 "usage: nodemap_set_fileset <fileset>"},
+	 "** deprecated ** set a fileset on a nodemap -- please use nodemap_fileset_{add/del} instead\n"
+	 "usage: nodemap_set_fileset --name NODEMAP_NAME --fileset SUBDIRECTORY"},
 	{"nodemap_set_sepol", jt_nodemap_set_sepol, 0,
 	 "set SELinux policy info on a nodemap\n"
-	 "usage: nodemap_set_sepol <SELinux policy info>"},
+	 "usage: nodemap_set_sepol --name NODEMAP_NAME --sepol SEPOL"},
+	{"nodemap_set_cap", jt_nodemap_set_cap, NULL,
+	 "defines capabilities for regular users on a nodemap\n"
+	 "usage: nodemap_set_cap --name NODEMAP_NAME --caps CAPABILITIES --type {mask|set|off}"},
 	{"nodemap_test_nid", jt_nodemap_test_nid, 0,
-	 "usage: nodemap_test_nid <nid>"},
+	 "test a nid for nodemap membership\n"
+	 "usage: nodemap_test_nid --nid NID"},
 	{"nodemap_test_id", jt_nodemap_test_id, 0,
-	 "Usage: nodemap_test_id --nid <nid> --idtype [uid|gid] --id <id>"},
+	 "test a nodemap id pair for mapping\n"
+	 "Usage: nodemap_test_id --nid NID --idtype ID_TYPE --id ID"},
 	{"nodemap_info", jt_nodemap_info, 0,
-	 "Usage: nodemap_info [list|nodemap_name|all]"},
+	 "print nodemap information\n"
+	 "usage: nodemap_info --list --name NODEMAP_NAME --property PROPERTY_NAME"},
+	{"nodemap", jt_nodemap, nodemap_cmdlist, ""},
 
 	/* Changelog commands */
 	{"===  Changelogs ==", NULL, 0, "changelog user management"},
@@ -603,15 +773,15 @@ command_t cmdlist[] = {
 	 "usage: llog_catlist"},
 	{"llog_info", jt_llog_info, 0,
 	 "print log header information.\n"
-	 "usage: llog_info {LOGNAME|FID}\n"},
+	 "usage: llog_info {LOGNAME|FID}"},
 	{"llog_print", jt_llog_print, 0,
 	 "print all effective log records by default, or within given range.\n"
 	 "With --raw option skipped records are printed as well.\n"
 	 "usage: llog_print {LOGNAME|FID} [--start INDEX] [--end INDEX]\n"
-	 "		    [--raw]\n"},
+	 "		    [--raw]"},
 	{"llog_cancel", jt_llog_cancel, 0,
 	 "cancel one record in specified log.\n"
-	 "usage:llog_cancel {LOGNAME|FID} --log_idx INDEX\n"},
+	 "usage:llog_cancel {LOGNAME|FID} --log_idx INDEX"},
 	{"llog_check", jt_llog_check, 0,
 	 "verify that log content is valid.\n"
 	 "usage: llog_check {LOGNAME|FID} [--start INDEX] [--end INDEX]\n"
@@ -619,18 +789,20 @@ command_t cmdlist[] = {
 	{"llog_remove", jt_llog_remove, 0,
 	 "remove one log from catalog or plain log, erase it from disk.\n"
 	 "usage: llog_remove {LOGNAME|FID} [--log_id ID]"},
+	{"llog", jt_llog, llog_cmdlist, ""},
+
 	{"lcfg_clear", jt_lcfg_clear, 0,
 	 "drop unused config llog records for a device or filesystem.\n"
 	 "clients and servers must be unmounted during this operation.\n"
-	 "usage: clear_conf {FSNAME|DEVNAME}"},
+	 "usage: lcfg_clear {FSNAME|DEVNAME}"},
 	{"clear_conf", jt_lcfg_clear, 0, "alias for 'lcfg_clear'\n"},
 	{"lcfg_fork", jt_lcfg_fork, 0,
 	 "copy configuration logs for named filesystem with given name\n"
-	 "usage: fork_lcfg FSNAME NEWNAME"},
+	 "usage: lcfg_fork FSNAME NEWNAME"},
 	{"fork_lcfg", jt_lcfg_fork, 0, "alias for 'lcfg_fork'\n"},
 	{"lcfg_erase", jt_lcfg_erase, 0,
 	 "permanently erase configuration logs for the named filesystem\n"
-	 "usage: erase_lcfg FSNAME"},
+	 "usage: lcfg_erase [--help] [--quiet] FSNAME"},
 	{"erase_lcfg", jt_lcfg_erase, 0, "alias for 'lcfg_erase'\n"},
 #endif /* HAVE_SERVER_SUPPORT */
 

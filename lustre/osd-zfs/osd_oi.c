@@ -19,7 +19,6 @@
 
 #define DEBUG_SUBSYSTEM S_OSD
 
-#include <libcfs/libcfs.h>
 #include <obd_support.h>
 #include <lustre_net.h>
 #include <obd.h>
@@ -167,7 +166,7 @@ static int osd_obj_create(const struct lu_env *env, struct osd_device *o,
 	dmu_tx_hold_bonus(tx, parent);
 	dmu_tx_hold_zap(tx, parent, TRUE, name);
 	dmu_tx_hold_sa_create(tx, ZFS_SA_BASE_ATTR_SIZE);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc) {
 		dmu_tx_abort(tx);
 		GOTO(out, rc);
@@ -176,7 +175,9 @@ static int osd_obj_create(const struct lu_env *env, struct osd_device *o,
 	if (isdir)
 		oid = osd_zap_create_flags(o->od_os, 0, ZAP_FLAG_HASH64,
 					   DMU_OT_DIRECTORY_CONTENTS,
-					   14, DN_MAX_INDBLKSHIFT, 0, tx);
+					   o->od_fzap_blockshift,
+					   DN_MAX_INDBLKSHIFT,
+					   0, tx);
 	else
 		oid = osd_dmu_object_alloc(o->od_os, DMU_OTN_UINT8_METADATA,
 					   0, 0, tx);
@@ -237,7 +238,7 @@ static int osd_oi_destroy(const struct lu_env *env, struct osd_device *o,
 	dmu_tx_mark_netfree(tx);
 	dmu_tx_hold_free(tx, oid, 0, DMU_OBJECT_END);
 	osd_tx_hold_zap(tx, oid, rootdn, FALSE, NULL);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc) {
 		dmu_tx_abort(tx);
 		GOTO(out, rc);
@@ -630,13 +631,6 @@ uint64_t osd_get_name_n_idx(const struct lu_env *env, struct osd_device *osd,
 	}
 
 	return zapid;
-}
-
-static inline int fid_is_fs_root(const struct lu_fid *fid)
-{
-	/* Map root inode to special local object FID */
-	return fid_seq(fid) == FID_SEQ_LOCAL_FILE &&
-		fid_oid(fid) == OSD_FS_ROOT_OID;
 }
 
 int osd_fid_lookup(const struct lu_env *env, struct osd_device *dev,

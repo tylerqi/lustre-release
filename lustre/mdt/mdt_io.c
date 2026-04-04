@@ -1,30 +1,10 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2017, Intel Corporation.
  */
+
 /*
- * lustre/mdt/mdt_io.c
- *
  * Author: Mikhail Pershin <mike.pershin@intel.com>
  */
 
@@ -35,28 +15,6 @@
 #include <lustre_nodemap.h>
 
 #include "mdt_internal.h"
-
-/* functions below are stubs for now, they will be implemented with
- * grant support on MDT */
-static inline void mdt_dom_read_lock(struct mdt_object *mo)
-{
-	down_read(&mo->mot_dom_sem);
-}
-
-static inline void mdt_dom_read_unlock(struct mdt_object *mo)
-{
-	up_read(&mo->mot_dom_sem);
-}
-
-static inline void mdt_dom_write_lock(struct mdt_object *mo)
-{
-	down_write(&mo->mot_dom_sem);
-}
-
-static inline void mdt_dom_write_unlock(struct mdt_object *mo)
-{
-	up_write(&mo->mot_dom_sem);
-}
 
 static void mdt_dom_resource_prolong(struct ldlm_prolong_args *arg)
 {
@@ -215,13 +173,11 @@ static struct ptlrpc_hpreq_ops mdt_hpreq_rw = {
 };
 
 /**
- * Assign high priority operations to an IO request.
+ * mdt_hp_brw() - Assign high priority operations to an IO request.
+ * @tsi: target session environment for this request
  *
- * Check if the incoming request is a candidate for
- * high-priority processing. If it is, assign it a high
- * priority operations table.
- *
- * \param[in] tsi	target session environment for this request
+ * Check if the incoming request is a candidate for high-priority processing.
+ * If it is, assign it a high priority operations table.
  */
 void mdt_hp_brw(struct tgt_session_info *tsi)
 {
@@ -279,19 +235,18 @@ static int mdt_punch_hpreq_lock_match(struct ptlrpc_request *req,
 }
 
 /**
- * Implementation of ptlrpc_hpreq_ops::hpreq_lock_check for OST_PUNCH request.
+ * mdt_punch_hpreq_check() - OST_PUNCH hp lock check request
+ * @req: the incoming request
  *
+ * Implementation of ptlrpc_hpreq_ops::hpreq_lock_check for OST_PUNCH request.
  * High-priority queue request check for whether the given punch request
- * (\a req) is blocking an LDLM lock cancel. Also checks whether the request is
+ * (@req) is blocking an LDLM lock cancel. Also checks whether the request is
  * covered by an LDLM lock.
  *
-
- *
- * \param[in] req	the incoming request
- *
- * \retval		1 if \a req is blocking an LDLM lock cancel
- * \retval		0 if it is not
- * \retval		-ESTALE if lock is not found
+ * Return:
+ * * %1 if @req is blocking an LDLM lock cancel
+ * * %0 if it is not
+ * * %-ESTALE if lock is not found
  */
 static int mdt_punch_hpreq_check(struct ptlrpc_request *req)
 {
@@ -328,12 +283,13 @@ static int mdt_punch_hpreq_check(struct ptlrpc_request *req)
 }
 
 /**
- * Implementation of ptlrpc_hpreq_ops::hpreq_lock_fini for OST_PUNCH request.
+ * mdt_punch_hpreq_fini() - hpreq lock fini for OST_PUNCH request.
+ * @req: request which is being processed.
  *
+ * Implementation of ptlrpc_hpreq_ops::hpreq_lock_fini for OST_PUNCH request.
  * Called after the request has been handled. It refreshes lock timeout again
  * so that client has more time to send lock cancel RPC.
  *
- * \param[in] req	request which is being processed.
  */
 static void mdt_punch_hpreq_fini(struct ptlrpc_request *req)
 {
@@ -364,14 +320,15 @@ static int mdt_preprw_read(const struct lu_env *env, struct obd_export *exp,
 			   struct niobuf_remote *rnb, int *nr_local,
 			   struct niobuf_local *lnb)
 {
+	struct mdt_thread_info *info = mdt_th_info(env);
 	struct dt_object *dob;
-	int i, j, rc, tot_bytes = 0;
+	int i, j, rc;
 	int maxlnb = *nr_local;
 	int level;
 
 	ENTRY;
 
-	mdt_dom_read_lock(mo);
+	down_read(&mo->mot_dom_sem);
 	*nr_local = 0;
 	/* the only valid case when READ can find object is missing or stale
 	 * when export is just evicted and open files are closed forcefully
@@ -390,6 +347,11 @@ static int mdt_preprw_read(const struct lu_env *env, struct obd_export *exp,
 		 */
 		RETURN(0);
 	}
+
+	rc = mdt_check_resource_ids(info, mo);
+	if (unlikely(rc))
+		GOTO(out_sem, rc);
+
 	if (lu_object_is_dying(&mo->mot_header)) {
 		CDEBUG_LIMIT(level,
 			     "%s: READ IO to stale obj "DFID": rc = %d\n",
@@ -411,7 +373,6 @@ static int mdt_preprw_read(const struct lu_env *env, struct obd_export *exp,
 		j += rc;
 		maxlnb -= rc;
 		*nr_local += rc;
-		tot_bytes += rnb[i].rnb_len;
 	}
 
 	rc = dt_attr_get(env, dob, la);
@@ -425,7 +386,8 @@ static int mdt_preprw_read(const struct lu_env *env, struct obd_export *exp,
 	RETURN(0);
 buf_put:
 	dt_bufs_put(env, dob, lnb, *nr_local);
-	mdt_dom_read_unlock(mo);
+out_sem:
+	up_read(&mo->mot_dom_sem);
 	return rc;
 }
 
@@ -436,8 +398,9 @@ static int mdt_preprw_write(const struct lu_env *env, struct obd_export *exp,
 			    struct niobuf_remote *rnb, int *nr_local,
 			    struct niobuf_local *lnb)
 {
+	struct mdt_thread_info *info = mdt_th_info(env);
 	struct dt_object *dob;
-	int i, j, k, rc = 0, tot_bytes = 0;
+	int i, j, k, rc = 0;
 	int maxlnb = *nr_local;
 
 	ENTRY;
@@ -446,7 +409,7 @@ static int mdt_preprw_write(const struct lu_env *env, struct obd_export *exp,
 	 * space back if possible */
 	tgt_grant_prepare_write(env, exp, oa, rnb, obj->ioo_bufcnt);
 
-	mdt_dom_read_lock(mo);
+	down_read(&mo->mot_dom_sem);
 	*nr_local = 0;
 	/* don't report error in cases with failed export */
 	if (!mdt_object_exists(mo)) {
@@ -460,6 +423,11 @@ static int mdt_preprw_write(const struct lu_env *env, struct obd_export *exp,
 		/* exit with no data written, note nr_local = 0 above */
 		GOTO(unlock, rc);
 	}
+
+	rc = mdt_check_resource_ids(info, mo);
+	if (unlikely(rc))
+		GOTO(unlock, rc);
+
 	if (lu_object_is_dying(&mo->mot_header)) {
 		/* This is possible race between object destroy followed by
 		 * discard BL AST and client cache flushing. Object is
@@ -488,7 +456,6 @@ static int mdt_preprw_write(const struct lu_env *env, struct obd_export *exp,
 		j += rc;
 		maxlnb -= rc;
 		*nr_local += rc;
-		tot_bytes += rnb[i].rnb_len;
 	}
 
 	rc = dt_write_prep(env, dob, lnb, *nr_local);
@@ -499,9 +466,11 @@ static int mdt_preprw_write(const struct lu_env *env, struct obd_export *exp,
 err:
 	dt_bufs_put(env, dob, lnb, *nr_local);
 unlock:
-	mdt_dom_read_unlock(mo);
+	up_read(&mo->mot_dom_sem);
 	/* tgt_grant_prepare_write() was called, so we must commit */
 	tgt_grant_commit(exp, oa->o_grant_used, rc);
+	/* dealloc grants, client won't receive them */
+	tgt_grant_dealloc(exp, oa);
 	/* let's still process incoming grant information packed in the oa,
 	 * but without enforcing grant since we won't proceed with the write.
 	 * Just like a read request actually. */
@@ -575,15 +544,21 @@ static int mdt_commitrw_read(const struct lu_env *env, struct mdt_device *mdt,
 	if (niocount)
 		dt_bufs_put(env, dob, lnb, niocount);
 
-	mdt_dom_read_unlock(mo);
+	up_read(&mo->mot_dom_sem);
 	RETURN(rc);
 }
 
+/*
+ * @do_up_read: write() might be invoked through other code paths where the
+ * state of mo->mot_dom_sem differs from the state assumed by down_read().
+ * Take care here to avoid potential inconsistencies or deadlocks.
+ */
 static int mdt_commitrw_write(const struct lu_env *env, struct obd_export *exp,
 			      struct mdt_device *mdt, struct mdt_object *mo,
 			      struct lu_attr *la, struct obdo *oa, int objcount,
 			      int niocount, struct niobuf_local *lnb,
-			      unsigned long granted, int old_rc)
+			      unsigned long granted, int old_rc,
+			      bool do_up_read)
 {
 	struct dt_device *dt = mdt->mdt_bottom;
 	struct dt_object *dob;
@@ -699,9 +674,13 @@ out_stop:
 
 out:
 	dt_bufs_put(env, dob, lnb, niocount);
-	mdt_dom_read_unlock(mo);
+	if (do_up_read)
+		up_read(&mo->mot_dom_sem);
 	if (granted > 0)
 		tgt_grant_commit(exp, granted, old_rc);
+	if (rc)
+		/* dealloc grants, client won't receive them */
+		tgt_grant_dealloc(exp, oa);
 	RETURN(rc);
 }
 
@@ -779,8 +758,14 @@ int mdt_obd_commitrw(const struct lu_env *env, int cmd, struct obd_export *exp,
 		}
 
 		if (!IS_ERR_OR_NULL(nodemap)) {
-			/* do not bypass quota enforcement if squashed uid */
-			if (unlikely(mapped_uid == nodemap->nm_squash_uid)) {
+			/* do not bypass quota enforcement if squashed uid or
+			 * offset root without local_admin RBAC role.
+			 * "mapped_uid == 0" is an optimization to avoid calling
+			 * is_local_root() which returns false for regular users
+			 */
+			if (unlikely(mapped_uid == nodemap->nm_squash_uid ||
+				     (mapped_uid == 0 &&
+				      !is_local_root(oa->o_uid, nodemap)))) {
 				int idx;
 
 				for (idx = 0; idx < npages; idx++)
@@ -810,7 +795,8 @@ int mdt_obd_commitrw(const struct lu_env *env, int cmd, struct obd_export *exp,
 				 ktime_us_delta(ktime_get(), kstart));
 
 		rc = mdt_commitrw_write(env, exp, mdt, mo, la, oa, objcount,
-					npages, lnb, oa->o_grant_used, old_rc);
+					npages, lnb, oa->o_grant_used, old_rc,
+					true);
 		if (rc == 0)
 			obdo_from_la(oa, la, VALID_FLAGS | LA_GID | LA_UID);
 		else
@@ -881,58 +867,150 @@ int mdt_obd_commitrw(const struct lu_env *env, int cmd, struct obd_export *exp,
 
 static int mdt_object_fallocate(const struct lu_env *env, struct dt_device *dt,
 				struct dt_object *dob, __u64 start, __u64 end,
-				int mode, struct lu_attr *la)
+				int mode, struct lu_attr *la,
+				enum dt_fallocate_error_t *error_code)
 {
-	struct thandle *th;
 	int rc;
+	bool restart;
 
 	ENTRY;
 
 	if (!dt_object_exists(dob))
 		RETURN(-ENOENT);
 
-	th = dt_trans_create(env, dt);
-	if (IS_ERR(th))
-		RETURN(PTR_ERR(th));
+	do {
+		struct thandle *th;
 
-	rc = dt_declare_attr_set(env, dob, la, th);
-	if (rc)
-		GOTO(stop, rc);
+		restart = false;
 
-	rc = dt_declare_fallocate(env, dob, start, end, mode, th);
-	if (rc)
-		GOTO(stop, rc);
+		th = dt_trans_create(env, dt);
+		if (IS_ERR(th))
+			RETURN(PTR_ERR(th));
 
-	tgt_vbr_obj_data_set(env, dob, true);
-	rc = dt_trans_start(env, dt, th);
-	if (rc)
-		GOTO(stop, rc);
+		rc = dt_declare_attr_set(env, dob, la, th);
+		if (rc)
+			GOTO(stop, rc);
 
-	dt_write_lock(env, dob, 0);
-	rc = dt_falloc(env, dob, start, end, mode, th);
-	if (rc)
-		GOTO(unlock, rc);
-	rc = dt_attr_set(env, dob, la, th);
-	if (rc)
-		GOTO(unlock, rc);
+		rc = dt_declare_fallocate(env, dob, la, start, end, mode, th,
+					  error_code);
+		if (rc)
+			GOTO(stop, rc);
+
+		tgt_vbr_obj_data_set(env, dob, true);
+		rc = dt_trans_start(env, dt, th);
+		if (rc)
+			GOTO(stop, rc);
+
+		dt_write_lock(env, dob, 0);
+		rc = dt_falloc(env, dob, &start, end, mode, th);
+		if (rc == -EAGAIN)
+			restart = true;
+		if (rc)
+			GOTO(unlock, rc);
+		rc = dt_attr_set(env, dob, la, th);
+		if (rc)
+			GOTO(unlock, rc);
 unlock:
-	dt_write_unlock(env, dob);
+		dt_write_unlock(env, dob);
 stop:
-	th->th_result = rc;
-	dt_trans_stop(env, dt, th);
+		th->th_result = rc;
+		dt_trans_stop(env, dt, th);
+	} while (restart);
 	RETURN(rc);
 }
 
 /**
- * MDT request handler for OST_FALLOCATE RPC.
+ * mdt_object_fallocate_zero() -  brw(ZERO) over specified region
+ * @env: Lustre environment
+ * @exp: Lustre Export
+ * @mdt: MDT device
+ * @mo: object to be applied on
+ * @start: region start position
+ * @end: region end position
+ * @la: Attributes
+ *
+ * There maybe cases when we need to use BRW to mimic fallocate ops,
+ * e.g. when fallocate(zero) is invoked on indirect-mapping inode.
+ *
+ * * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static int
+mdt_object_fallocate_zero(const struct lu_env *env, struct obd_export *exp,
+			  struct mdt_device *mdt, struct mdt_object *mo,
+			  __u64 start, __u64 end, struct lu_attr *la)
+{
+	struct tgt_thread_big_cache *tbc = NULL;
+	struct dt_object *dob = mdt_obj2dt(mo);
+	struct niobuf_local *lnbs = NULL;
+	struct obdo oa;
+	int npages = 0;
+	int rc = 0;
+
+	LASSERT(env->le_ses->lc_thread->t_data);
+	tbc = env->le_ses->lc_thread->t_data;
+	while (start < end) {
+		struct niobuf_remote rnb;
+		/* limit memory usage each round to ~64KB */
+		int mem_threshold = 65536;
+		__u64 next_end = 0;
+		int i = 0;
+
+		oa.o_size = 0;
+		lnbs = NULL;
+		npages = 0;
+
+		next_end = (start + mem_threshold + PAGE_SIZE - 1) & PAGE_MASK;
+		next_end = min(end, next_end);
+		rnb.rnb_offset = start;
+		rnb.rnb_len = next_end - start;
+		rc = dt_bufs_get(env, dob, &rnb, tbc->local,
+				 PTLRPC_MAX_BRW_PAGES, DT_BUFS_TYPE_WRITE);
+		if (unlikely(rc < 0))
+			GOTO(out, rc);
+
+		npages = rc;
+		lnbs = tbc->local;
+		/* read in partial pages, then zero out rest part */
+		rc = dt_write_prep(env, dob, lnbs, npages);
+		if (rc)
+			GOTO(out, rc);
+
+		for (i = 0; i < npages; i++) {
+			void *kaddr = kmap_local_page(lnbs[i].lnb_page);
+
+			memset(kaddr + lnbs[i].lnb_page_offset, 0,
+			       lnbs[i].lnb_len);
+			kunmap_local(kaddr);
+		}
+
+		/* mdt_write will handle write, resource put, etc. */
+		rc = mdt_commitrw_write(env, exp, mdt, mo, la, &oa, 0, npages,
+					lnbs, 0, 0, false);
+		if (rc)
+			GOTO(out, rc);
+
+		start = next_end;
+	}
+	npages = 0;
+	lnbs = NULL;
+out:
+	if (npages && lnbs)
+		dt_bufs_put(env, dob, lnbs, npages);
+	RETURN(rc);
+}
+
+/**
+ * mdt_fallocate_hdl() - MDT request handler for OST_FALLOCATE RPC.
+ * @tsi: target session environment for this request
  *
  * This is part of request processing. Validate request fields,
  * preallocate the given MDT object and pack reply.
  *
- * \param[in] tsi	target session environment for this request
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 int mdt_fallocate_hdl(struct tgt_session_info *tsi)
 {
@@ -948,6 +1026,7 @@ int mdt_fallocate_hdl(struct tgt_session_info *tsi)
 	struct lu_attr *la;
 	__u64 flags = 0;
 	struct lustre_handle lh = { 0, };
+	enum dt_fallocate_error_t error_code = DT_FALLOC_ERR_NONE;
 	int rc, mode;
 	__u64 start, end;
 	bool srvlock;
@@ -1005,10 +1084,11 @@ int mdt_fallocate_hdl(struct tgt_session_info *tsi)
 	       PFID(&tsi->tsi_fid), mode, start, end);
 
 	/*
-	 * mode == 0 (which is standard prealloc) and PUNCH is supported
+	 * mode == 0 (which is standard prealloc) and PUNCH/ZERO is supported
 	 * Rest of mode options are not supported yet.
 	 */
-	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE))
+	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE |
+		     FALLOC_FL_ZERO_RANGE))
 		RETURN(-EOPNOTSUPP);
 
 	if (mode & FALLOC_FL_PUNCH_HOLE && !(mode & FALLOC_FL_KEEP_SIZE)) {
@@ -1048,18 +1128,27 @@ int mdt_fallocate_hdl(struct tgt_session_info *tsi)
 		GOTO(out_put, rc);
 	}
 
+	rc = mdt_check_resource_ids(info, mo);
+	if (unlikely(rc))
+		GOTO(out_put, rc);
+
 	la_from_obdo(la, oa, OBD_MD_FLMTIME | OBD_MD_FLATIME | OBD_MD_FLCTIME);
 
-	mdt_dom_write_lock(mo);
+	down_write(&mo->mot_dom_sem);
 	dob = mdt_obj2dt(mo);
 
 	if (la->la_valid & (LA_ATIME | LA_MTIME | LA_CTIME))
 		tgt_fmd_update(tsi->tsi_exp, &tsi->tsi_fid,
 			       tgt_ses_req(tsi)->rq_xid);
 
-	rc = mdt_object_fallocate(tsi->tsi_env, mdt->mdt_bottom, dob, start,
-				  end, mode, la);
-	mdt_dom_write_unlock(mo);
+	rc = mdt_object_fallocate(tsi->tsi_env, mdt->mdt_bottom, dob,
+				  start, end, mode, la, &error_code);
+	/* in case file is indirect-mapping, mimic brw */
+	if (rc == -EOPNOTSUPP && error_code == DT_FALLOC_ERR_NEED_ZERO)
+		rc = mdt_object_fallocate_zero(tsi->tsi_env, exp, mdt,
+					       mo, start, end, la);
+
+	up_write(&mo->mot_dom_sem);
 	if (rc)
 		GOTO(out_put, rc);
 
@@ -1096,8 +1185,8 @@ static int dom_has_zero_regions(struct fiemap *fiemap)
 	return begin < (fiemap->fm_start + fiemap->fm_length);
 }
 
-int mdt_dom_fiemap(const struct lu_env *env, struct mdt_device *mdt,
-		   const struct lu_fid *fid, struct fiemap *fiemap)
+static int mdt_dom_fiemap(const struct lu_env *env, struct mdt_device *mdt,
+			  const struct lu_fid *fid, struct fiemap *fiemap)
 {
 	struct mdt_object *mo;
 	int rc;
@@ -1108,7 +1197,7 @@ int mdt_dom_fiemap(const struct lu_env *env, struct mdt_device *mdt,
 	if (IS_ERR(mo))
 		RETURN(PTR_ERR(mo));
 
-	mdt_dom_read_lock(mo);
+	down_read(&mo->mot_dom_sem);
 	if (!mdt_object_exists(mo))
 		GOTO(out, rc = -ENOENT);
 	if (mdt_object_remote(mo))
@@ -1118,20 +1207,21 @@ int mdt_dom_fiemap(const struct lu_env *env, struct mdt_device *mdt,
 
 	rc = dt_fiemap_get(env, mdt_obj2dt(mo), fiemap);
 out:
-	mdt_dom_read_unlock(mo);
+	up_read(&mo->mot_dom_sem);
 	lu_object_put(env, &mo->mot_obj);
 	RETURN(rc);
 }
 /**
- * Get FIEMAP (FIle Extent MAPping) for object with the given FID.
+ * mdt_fiemap_get() - Get FIEMAP (FIle Extent MAPping) for object with the
+ *                    given FID.
+ * @tsi: target session environment for this request
  *
  * This function returns a list of extents which describes how a file's
  * blocks are laid out on the disk.
  *
- * \param[in] tsi	target session environment for this request
- *
- * \retval		0 if \a fiemap is filled with data successfully
- * \retval		negative value on error
+ * Return:
+ * * %0 if fiemap is filled with data successfully
+ * * %negative value on error
  */
 int mdt_fiemap_get(struct tgt_session_info *tsi)
 {
@@ -1316,7 +1406,11 @@ int mdt_punch_hdl(struct tgt_session_info *tsi)
 		GOTO(out_put, rc);
 	}
 
-	mdt_dom_write_lock(mo);
+	rc = mdt_check_resource_ids(info, mo);
+	if (unlikely(rc))
+		GOTO(out_put, rc);
+
+	down_write(&mo->mot_dom_sem);
 	dob = mdt_obj2dt(mo);
 
 	la_from_obdo(la, oa, OBD_MD_FLMTIME | OBD_MD_FLATIME | OBD_MD_FLCTIME);
@@ -1330,7 +1424,7 @@ int mdt_punch_hdl(struct tgt_session_info *tsi)
 
 	rc = mdt_object_punch(tsi->tsi_env, mdt->mdt_bottom, dob,
 			      start, end, la);
-	mdt_dom_write_unlock(mo);
+	up_write(&mo->mot_dom_sem);
 	if (rc)
 		GOTO(out_put, rc);
 
@@ -1350,11 +1444,17 @@ out:
 }
 
 /**
- * MDT glimpse for Data-on-MDT
+ * mdt_do_glimpse() - MDT glimpse for Data-on-MDT
+ * @env: Lustre enviroment
+ * @ns: DLM namespace
+ * @res: Object that is being operated
  *
  * If there is write lock on client then function issues glimpse_ast to get
  * an actual size from that client.
  *
+ * * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int mdt_do_glimpse(const struct lu_env *env, struct ldlm_namespace *ns,
 			  struct ldlm_resource *res)
@@ -1373,7 +1473,7 @@ static int mdt_do_glimpse(const struct lu_env *env, struct ldlm_namespace *ns,
 	policy.l_inodebits.bits = MDS_INODELOCK_DOM;
 	mode = ldlm_lock_match(ns, LDLM_FL_TEST_LOCK,
 			       &res->lr_name, LDLM_IBITS, &policy,
-			       LCK_PW, &lockh);
+			       LCK_PW, 0, &lockh);
 
 	/* There is no PW lock on this object; finished. */
 	if (mode == 0)
@@ -1453,11 +1553,20 @@ static void mdt_lvb2reply(struct ldlm_resource *res, struct mdt_body *mb,
 }
 
 /**
- * MDT glimpse for Data-on-MDT
+ * mdt_dom_object_size() - MDT glimpse for Data-on-MDT
+ * @env: Lustre environment
+ * @mdt: Metadata device
+ * @fid: FID object which attribute is requested
+ * @mb: struct mdt_body, which will be poplated on success [out]
+ * @dom_lock: If %true get lock before access
  *
  * This function is called when MDT get attributes for the DoM object.
  * If there is write lock on client then function issues glimpse_ast to get
  * an actual size from that client.
+ *
+ * * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int mdt_dom_object_size(const struct lu_env *env, struct mdt_device *mdt,
 			const struct lu_fid *fid, struct mdt_body *mb,
@@ -1484,7 +1593,11 @@ int mdt_dom_object_size(const struct lu_env *env, struct mdt_device *mdt,
 }
 
 /**
- * MDT DoM lock intent policy (glimpse)
+ * mdt_glimpse_enqueue() - MDT DoM lock intent policy (glimpse)
+ * @mti: pointer to struct mdt_thread_info (context)
+ * @ns: DLM namespace
+ * @lockp: pointer to the lock [in, out]
+ * @flags: LDLM flags
  *
  * Intent policy is called when lock has an intent, for DoM file that
  * means glimpse lock and policy fills Lock Value Block (LVB).
@@ -1492,14 +1605,10 @@ int mdt_dom_object_size(const struct lu_env *env, struct mdt_device *mdt,
  * If already granted lock is found it will be placed in \a lockp and
  * returned back to caller function.
  *
- * \param[in] tsi	 session info
- * \param[in,out] lockp	 pointer to the lock
- * \param[in] flags	 LDLM flags
- *
- * \retval		ELDLM_LOCK_REPLACED if already granted lock was found
- *			and placed in \a lockp
- * \retval		ELDLM_LOCK_ABORTED in other cases except error
- * \retval		negative value on error
+ * Return:
+ * * %ELDLM_LOCK_REPLACED if already granted lock was found and placed in @lockp
+ * * %ELDLM_LOCK_ABORTED in other cases except error
+ * * %negative value on error
  */
 int mdt_glimpse_enqueue(struct mdt_thread_info *mti, struct ldlm_namespace *ns,
 			struct ldlm_lock **lockp, __u64 flags)
@@ -1633,7 +1742,7 @@ int mdt_brw_enqueue(struct mdt_thread_info *mti, struct ldlm_namespace *ns,
 	mdt_intent_fixup_resent(mti, *lockp, lhc, flags);
 	/* resent case */
 	if (!lustre_handle_is_used(&lhc->mlh_reg_lh)) {
-		__u64 ibits = MDS_INODELOCK_DOM;
+		enum mds_ibits_locks ibits = MDS_INODELOCK_DOM;
 
 		mdt_lh_reg_init(lhc, *lockp);
 
@@ -1695,7 +1804,7 @@ bool mdt_dom_client_has_lock(struct mdt_thread_info *info,
 	lm = (open_flags & MDS_FMODE_WRITE) ? LCK_PW : LCK_PR | LCK_PW;
 	mode = ldlm_lock_match(mdt->mdt_namespace, LDLM_FL_BLOCK_GRANTED |
 			       LDLM_FL_TEST_LOCK, res_id, LDLM_IBITS, policy,
-			       lm, &lockh);
+			       lm, 0, &lockh);
 
 	/* There is no other PW lock on this object; finished. */
 	if (mode == 0)
@@ -1713,15 +1822,15 @@ bool mdt_dom_client_has_lock(struct mdt_thread_info *info,
 }
 
 /**
- * MDT request handler for OST_GETATTR RPC.
+ * mdt_data_version_get() - MDT request handler for OST_GETATTR RPC.
+ * @tsi: target session environment for this request
  *
  * This is data-specific request to get object and layout versions under
  * IO lock. It is reliable only for Data-on-MDT files.
  *
- * \param[in] tsi target session environment for this request
- *
- * \retval 0 if successful
- * \retval negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 int mdt_data_version_get(struct tgt_session_info *tsi)
 {
@@ -1832,13 +1941,6 @@ int mdt_dom_read_on_open(struct mdt_thread_info *mti, struct mdt_device *mdt,
 	bool dom_lock = false;
 
 	ENTRY;
-
-	if (!req_capsule_field_present(pill, &RMF_NIOBUF_INLINE, RCL_SERVER)) {
-		/* There is no reply buffers for this field, this means that
-		 * client has no support for data in reply.
-		 */
-		RETURN(0);
-	}
 
 	mbo = req_capsule_server_get(pill, &RMF_MDT_BODY);
 	if (!(mbo->mbo_valid & OBD_MD_DOM_SIZE))
@@ -1976,7 +2078,7 @@ int mdt_dom_read_on_open(struct mdt_thread_info *mti, struct mdt_device *mdt,
 		GOTO(buf_put, rc);
 	/* copy data to the buffer finally */
 	for (i = 0; i < nr_local; i++) {
-		char *p = kmap(lnb[i].lnb_page);
+		char *p = kmap_local_page(lnb[i].lnb_page);
 		long off;
 
 		LASSERT(lnb[i].lnb_page_offset == 0);
@@ -1985,9 +2087,8 @@ int mdt_dom_read_on_open(struct mdt_thread_info *mti, struct mdt_device *mdt,
 			memset(p + off, 0, PAGE_SIZE - off);
 
 		memcpy(buf + (i << PAGE_SHIFT), p, lnb[i].lnb_len);
-		kunmap(lnb[i].lnb_page);
+		kunmap_local(p);
 		copied += lnb[i].lnb_len;
-		LASSERT(rc <= len);
 	}
 	CDEBUG(D_INFO, "Read %i (wanted %u) bytes from %llu\n", copied,
 	       len, offset);
@@ -2020,11 +2121,16 @@ out:
 }
 
 /**
- * Completion AST for DOM discard locks:
+ * ldlm_dom_discard_cp_ast() - Completion AST for DOM discard locks:
+ * @lock: LDLM lock
+ * @flags: unused
+ * @data: unused
  *
  * CP AST an DOM discard lock is called always right after enqueue or from
  * reprocess if lock was blocked, in the latest case l_ast_data is set to
  * the mdt_object which is kept while there are pending locks on it.
+ *
+ * Return %0 always
  */
 static int ldlm_dom_discard_cp_ast(struct ldlm_lock *lock, __u64 flags,
 				   void *data)
@@ -2082,7 +2188,7 @@ void mdt_dom_discard_data(struct mdt_thread_info *info,
 		RETURN_EXIT;
 
 	policy.l_inodebits.bits = MDS_INODELOCK_DOM;
-	policy.l_inodebits.try_bits = 0;
+	policy.l_inodebits.try_bits = MDS_INODELOCK_NONE;
 	policy.l_inodebits.li_initiator_id = mdt_node_id(mdt);
 	fid_build_reg_res_name(mdt_object_fid(mo), &res_id);
 
@@ -2106,6 +2212,8 @@ void mdt_dom_discard_data(struct mdt_thread_info *info,
 		RETURN_EXIT;
 	}
 
+	mo->mot_discard_done = true;
+
 	lock = ldlm_handle2lock(&dom_lh);
 	lock_res_and_lock(lock);
 	/* if lock is not granted then there are BL ASTs in progress and
@@ -2126,4 +2234,3 @@ void mdt_dom_discard_data(struct mdt_thread_info *info,
 
 	RETURN_EXIT;
 }
-

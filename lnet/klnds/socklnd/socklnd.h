@@ -38,13 +38,14 @@
 #include <linux/uio.h>
 #include <linux/unistd.h>
 #include <linux/hashtable.h>
+#include <linux/libcfs/libcfs.h>
 #include <net/sock.h>
 #include <net/tcp.h>
 
 #include <lnet/lib-lnet.h>
 #include <lnet/socklnd.h>
 
-#include <libcfs/linux/linux-net.h>
+#include <lustre_compat/net/linux-net.h>
 
 #ifndef NETIF_F_CSUM_MASK
 # define NETIF_F_CSUM_MASK NETIF_F_ALL_CSUM
@@ -55,7 +56,6 @@
 #define SOCKNAL_NSCHEDS_HIGH	(SOCKNAL_NSCHEDS << 1)
 
 #define SOCKNAL_PEER_HASH_BITS	7	/* log2 of # peer_ni lists */
-#define SOCKNAL_INSANITY_RECONN	5000	/* connd trying on reconn infinitely */
 #define SOCKNAL_ENOMEM_RETRY	1	/* seconds between retries */
 
 #define SOCKNAL_SINGLE_FRAG_TX      0	/* disable multi-fragment sends */
@@ -173,6 +173,9 @@ struct ksock_net {
  * ksnn_npeers, which prevents new peers from being added.
  */
 #define SOCKNAL_SHUTDOWN_BIAS  (INT_MIN+1)
+
+/* default ksocklnd timeout in seconds */
+#define SOCKNAL_TIMEOUT_DEFAULT	50
 
 /** connd timeout */
 #define SOCKNAL_CONND_TIMEOUT  120
@@ -365,7 +368,7 @@ struct ksock_conn {
 };
 
 #define SOCKNAL_CONN_COUNT_MAX_BITS	8	/* max conn count bits */
-#define SOCKNAL_MAX_BUSY_RETRIES	3
+#define SOCKNAL_MAX_RETRIES		3
 
 struct ksock_conn_cb {
 	struct list_head	ksnr_connd_list;/* chain on ksnr_connd_routes */
@@ -387,9 +390,9 @@ struct ksock_conn_cb {
 	unsigned int		ksnr_max_conns; /* conns_per_peer at peer
 						 * creation
 						 */
-	unsigned int		ksnr_busy_retry_count;/* counts retry attempts
-						       * due to EALREADY rc
-						       */
+	unsigned int		ksnr_retry_count;/* counts retry attempts
+						  * due to EALREADY rc
+						  */
 };
 
 #define SOCKNAL_KEEPALIVE_PING          1       /* cookie for keepalive ping */
@@ -473,15 +476,6 @@ extern const struct ksock_proto ksocknal_protocol_v4x;
 #define KSOCK_PROTO_V1_MAJOR    LNET_PROTO_TCP_VERSION_MAJOR
 #define KSOCK_PROTO_V1_MINOR    LNET_PROTO_TCP_VERSION_MINOR
 #define KSOCK_PROTO_V1          KSOCK_PROTO_V1_MAJOR
-
-#ifndef CPU_MASK_NONE
-#define CPU_MASK_NONE   0UL
-#endif
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3, 11, 0)
-#undef netdev_notifier_info_to_dev
-#define netdev_notifier_info_to_dev(ndev) ndev
-#endif
 
 static inline __u32 ksocknal_csum(__u32 crc, unsigned char const *p, size_t len)
 {
@@ -598,6 +592,8 @@ static inline int ksocknal_conns_per_peer(void)
 	return *ksocknal_tunables.ksnd_conns_per_peer ?: 1;
 }
 
+int ksocklnd_lookup_conns_per_peer(struct lnet_ni *ni);
+
 int ksocknal_startup(struct lnet_ni *ni);
 void ksocknal_shutdown(struct lnet_ni *ni);
 int ksocknal_ctl(struct lnet_ni *ni, unsigned int cmd, void *arg);
@@ -613,8 +609,6 @@ int ksocknal_add_peer(struct lnet_ni *ni, struct lnet_processid *id,
 		      struct sockaddr *addr);
 struct ksock_peer_ni *ksocknal_find_peer_locked(struct lnet_ni *ni,
 					   struct lnet_processid *id);
-struct ksock_peer_ni *ksocknal_find_peer(struct lnet_ni *ni,
-					 struct lnet_processid *id);
 extern void ksocknal_peer_failed(struct ksock_peer_ni *peer_ni);
 extern int ksocknal_create_conn(struct lnet_ni *ni,
 				struct ksock_conn_cb *conn_cb,
@@ -686,7 +680,8 @@ extern int ksocknal_lib_get_conn_tunables(struct ksock_conn *conn, int *txmem,
 					  int *rxmem, int *nagle);
 
 extern int ksocknal_tunables_init(void);
-extern void ksocknal_tunables_setup(struct lnet_ni *ni);
+void ksocknal_tunables_setup(struct lnet_lnd_tunables *lnd_tunables,
+			     struct lnet_ioctl_config_lnd_cmn_tunables *net_tunables);
 
 extern void ksocknal_lib_csum_tx(struct ksock_tx *tx);
 

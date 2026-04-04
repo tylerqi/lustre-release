@@ -159,9 +159,12 @@ static void qsd_lqe_debug(struct lquota_entry *lqe, void *arg,
 	struct qsd_qtype_info	*qqi = (struct qsd_qtype_info *)arg;
 
 	libcfs_debug_msg(msgdata,
-			 "%pV qsd:%s qtype:%s id:%llu enforced:%d granted: %llu pending:%llu waiting:%llu req:%d usage: %llu qunit:%llu qtune:%llu edquot:%d default:%s revoke:%d\n",
+			 "%pV qsd:%s qtype:%s lqe: %p "
+			  "id:%llu enforced:%d granted: %llu pending:%llu "
+			  "waiting:%llu req:%d usage: %llu qunit:%llu qtune:%llu "
+			  "edquot:%d default:%s revoke:%d\n",
 			 vaf,
-			 qqi->qqi_qsd->qsd_svname, qtype_name(qqi->qqi_qtype),
+			 qqi->qqi_qsd->qsd_svname, qtype_name(qqi->qqi_qtype), lqe,
 			 lqe->lqe_id.qid_uid, lqe->lqe_enforced,
 			 lqe->lqe_granted, lqe->lqe_pending_write,
 			 lqe->lqe_waiting_write, lqe->lqe_pending_req,
@@ -223,10 +226,12 @@ int qsd_refresh_usage(const struct lu_env *env, struct lquota_entry *lqe)
 		rc = 0;
 		break;
 	case 0:
+		lqe_write_lock(lqe);
 		if (qqi->qqi_qsd->qsd_is_md)
 			lqe->lqe_usage = rec->ispace;
 		else
-			lqe->lqe_usage = toqb(rec->bspace);
+			lqe->lqe_usage = stoqb(rec->bspace);
+		lqe_write_unlock(lqe);
 		break;
 	default:
 		LQUOTA_ERROR(lqe, "failed to read disk usage, rc:%d", rc);

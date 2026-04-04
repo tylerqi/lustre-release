@@ -17,7 +17,6 @@
 #include <linux/delay.h>
 #include <linux/uidgid.h>
 
-#include <libcfs/linux/linux-mem.h>
 #include <obd.h>
 #include <obd_class.h>
 #include <obd_cksum.h>
@@ -331,7 +330,8 @@ static int tgt_request_preprocess(struct tgt_session_info *tsi,
 			if (unlikely(dlm_req->lock_desc.l_resource.lr_type ==
 				     LDLM_IBITS &&
 				     (policy->l_inodebits.bits |
-				      policy->l_inodebits.try_bits) == 0)) {
+				      policy->l_inodebits.try_bits) ==
+						MDS_INODELOCK_NONE)) {
 				/*
 				 * Lock without inodebits makes no sense and
 				 * will oops later in ldlm. If client miss to
@@ -549,7 +549,7 @@ static int tgt_handle_recovery(struct ptlrpc_request *req, int reply_fail_id)
 		RETURN(+1);
 	}
 
-	if (!req->rq_export->exp_obd->obd_replayable)
+	if (!test_bit(OBDF_REPLAYABLE, req->rq_export->exp_obd->obd_flags))
 		RETURN(+1);
 
 	/* sanity check: if the xid matches, the request must be marked as a
@@ -791,6 +791,30 @@ int tgt_request_handle(struct ptlrpc_request *req)
 		GOTO(out, rc);
 	}
 
+	if (req->rq_export->exp_banned && opc != OBD_PING &&
+	    opc != OST_CONNECT && opc != OST_DISCONNECT &&
+	    opc != MDS_CONNECT && opc != MDS_DISCONNECT &&
+	    opc != MDS_CLOSE && opc != OST_CLOSE) {
+		struct lu_nodemap *nodemap;
+
+		nodemap = nodemap_get_from_exp(req->rq_export);
+		if (!IS_ERR_OR_NULL(nodemap)) {
+			LCONSOLE_WARN(
+				"operation %d from peer %s banned by nodemap %s: rc=%d\n",
+				opc, libcfs_idstr(&req->rq_peer),
+				nodemap->nm_name,  -EPERM);
+			nodemap_putref(nodemap);
+		} else {
+			LCONSOLE_WARN(
+				"operation %d from banned peer %s: rc=%d\n",
+				opc, libcfs_idstr(&req->rq_peer),
+				-EPERM);
+		}
+		req->rq_status = -EPERM;
+		rc = ptlrpc_error(req);
+		GOTO(out, rc);
+	}
+
 	tsi->tsi_tgt = tgt = class_exp2tgt(req->rq_export);
 	tsi->tsi_exp = req->rq_export;
 	if (exp_connect_flags(req->rq_export) & OBD_CONNECT_JOBSTATS)
@@ -951,7 +975,8 @@ int tgt_connect_check_sptlrpc(struct ptlrpc_request *req, struct obd_export *exp
 		if ((strcmp(exp->exp_obd->obd_type->typ_name,
 			    LUSTRE_MGS_NAME) == 0) &&
 		    (exp->exp_flvr.sf_rpc == SPTLRPC_FLVR_NULL ||
-		     LNetIsPeerLocal(&exp->exp_connection->c_peer.nid)))
+		     (exp->exp_connection &&
+		      LNetIsPeerLocal(&exp->exp_connection->c_peer.nid))))
 			exp->exp_flvr.sf_rpc = SPTLRPC_FLVR_ANY;
 
 		if (exp->exp_flvr.sf_rpc != SPTLRPC_FLVR_ANY &&
@@ -1121,7 +1146,7 @@ int tgt_obd_ping(struct tgt_session_info *tsi)
 	 *
 	 * Valid only for replayable targets, e.g. MDT and OFD
 	 */
-	if (tsi->tsi_exp->exp_obd->obd_replayable)
+	if (test_bit(OBDF_REPLAYABLE, tsi->tsi_exp->exp_obd->obd_flags))
 		tgt_fmd_expire(tsi->tsi_exp);
 
 	rc = req_capsule_server_pack(tsi->tsi_pill);
@@ -1312,6 +1337,7 @@ int tgt_sync(const struct lu_env *env, struct lu_target *tgt,
 
 	/* if no objid is specified, it means "sync whole filesystem" */
 	if (obj == NULL) {
+		lu_objects_destroy_delayed();
 		rc = dt_sync(env, tgt->lut_bottom);
 	} else if (dt_version_get(env, obj) >
 		   tgt->lut_obd->obd_last_committed) {
@@ -1364,7 +1390,7 @@ int tgt_blocking_ast(struct ldlm_lock *lock, struct ldlm_lock_desc *desc,
 	    (lock->l_granted_mode & (LCK_EX | LCK_PW | LCK_GROUP)) &&
 	    (tgt->lut_sync_lock_cancel == SYNC_LOCK_CANCEL_ALWAYS ||
 	     (tgt->lut_sync_lock_cancel == SYNC_LOCK_CANCEL_BLOCKING &&
-	      ldlm_is_cbpending(lock))) &&
+	      (lock->l_flags & LDLM_FL_CBPENDING))) &&
 	    ((exp_connect_flags(lock->l_export) & OBD_CONNECT_MDS_MDS) ||
 	     lock->l_resource->lr_type == LDLM_EXTENT)) {
 		__u64 start = 0;
@@ -1572,9 +1598,9 @@ void tgt_register_lfsck_in_notify_local(int (*notify)(const struct lu_env *,
 }
 EXPORT_SYMBOL(tgt_register_lfsck_in_notify_local);
 
-int (*tgt_lfsck_in_notify)(const struct lu_env *env,
-			   struct dt_device *key,
-			   struct lfsck_request *lr) = NULL;
+static int (*tgt_lfsck_in_notify)(const struct lu_env *env,
+				  struct dt_device *key,
+				  struct lfsck_request *lr) = NULL;
 
 void tgt_register_lfsck_in_notify(int (*notify)(const struct lu_env *,
 						struct dt_device *,
@@ -1823,10 +1849,10 @@ static int tgt_checksum_niobuf(struct lu_target *tgt,
 				 int opc, enum cksum_types cksum_type,
 				 __u32 *cksum)
 {
-	struct ahash_request	       *req;
-	unsigned int			bufsize;
-	int				i, err;
-	unsigned char			cfs_alg = cksum_obd2cfs(cksum_type);
+	unsigned char cfs_alg = cksum_obd2cfs(cksum_type);
+	struct ahash_request *req;
+	unsigned int bufsize;
+	int i;
 
 	req = cfs_crypto_hash_init(cfs_alg, NULL, 0);
 	if (IS_ERR(req)) {
@@ -1846,16 +1872,17 @@ static int tgt_checksum_niobuf(struct lu_target *tgt,
 			struct page *np = tgt_page_to_corrupt;
 
 			if (np) {
-				char *ptr = kmap_atomic(local_nb[i].lnb_page);
-				char *ptr2 = page_address(np);
+				char *ptr = kmap_local_page(local_nb[i].lnb_page);
+				char *ptr2 = kmap_local_page(np);
 
 				memcpy(ptr2 + off, ptr + off, len);
 				memcpy(ptr2 + off, "bad3", min(4, len));
-				kunmap_atomic(ptr);
+				kunmap_local(ptr2);
+				kunmap_local(ptr);
 
 				/* LU-8376 to preserve original index for
 				 * display in dump_all_bulk_pages() */
-				np->index = i;
+				page_folio(np)->index = i;
 
 				cfs_crypto_hash_update_page(req, np, off,
 							    len);
@@ -1878,16 +1905,17 @@ static int tgt_checksum_niobuf(struct lu_target *tgt,
 			struct page *np = tgt_page_to_corrupt;
 
 			if (np) {
-				char *ptr = kmap_atomic(local_nb[i].lnb_page);
-				char *ptr2 = page_address(np);
+				char *ptr = kmap_local_page(local_nb[i].lnb_page);
+				char *ptr2 = kmap_local_page(np);
 
 				memcpy(ptr2 + off, ptr + off, len);
 				memcpy(ptr2 + off, "bad4", min(4, len));
-				kunmap_atomic(ptr);
+				kunmap_local(ptr2);
+				kunmap_local(ptr);
 
 				/* LU-8376 to preserve original index for
 				 * display in dump_all_bulk_pages() */
-				np->index = i;
+				page_folio(np)->index = i;
 
 				cfs_crypto_hash_update_page(req, np, off,
 							    len);
@@ -1900,25 +1928,28 @@ static int tgt_checksum_niobuf(struct lu_target *tgt,
 	}
 
 	bufsize = sizeof(*cksum);
-	err = cfs_crypto_hash_final(req, (unsigned char *)cksum, &bufsize);
+	cfs_crypto_hash_final(req, (unsigned char *)cksum, &bufsize);
 
 	return 0;
 }
-
-char dbgcksum_file_name[PATH_MAX];
 
 static void dump_all_bulk_pages(struct obdo *oa, int count,
 				struct niobuf_local *local_nb,
 				__u32 server_cksum, __u32 client_cksum)
 {
+	char *dbgcksum_file_name;
 	struct file *filp;
 	int rc, i;
 	unsigned int len;
 	char *buf;
 
+	OBD_ALLOC(dbgcksum_file_name, PATH_MAX);
+	if (!dbgcksum_file_name)
+		return;
+
 	/* will only keep dump of pages on first error for the same range in
 	 * file/fid, not during the resends/retries. */
-	snprintf(dbgcksum_file_name, sizeof(dbgcksum_file_name),
+	snprintf(dbgcksum_file_name, PATH_MAX,
 		 "%s-checksum_dump-ost-"DFID":[%llu-%llu]-%x-%x",
 		 (strncmp(libcfs_debug_file_path, "NONE", 4) != 0 ?
 		  libcfs_debug_file_path : LIBCFS_DEBUG_FILE_PATH_DEFAULT),
@@ -1940,14 +1971,17 @@ static void dump_all_bulk_pages(struct obdo *oa, int count,
 		else
 			CERROR("%s: can't open to dump pages with checksum "
 			       "error: rc = %d\n", dbgcksum_file_name, rc);
+		OBD_FREE(dbgcksum_file_name, PATH_MAX);
 		return;
 	}
 
 	for (i = 0; i < count; i++) {
+		void *addr = kmap(local_nb[i].lnb_page);
+
 		len = local_nb[i].lnb_len;
-		buf = kmap(local_nb[i].lnb_page);
+		buf = addr;
 		while (len != 0) {
-			rc = cfs_kernel_write(filp, buf, len, &filp->f_pos);
+			rc = kernel_write(filp, buf, len, &filp->f_pos);
 			if (rc < 0) {
 				CERROR("%s: wanted to write %u but got %d "
 				       "error\n", dbgcksum_file_name, len, rc);
@@ -1956,7 +1990,7 @@ static void dump_all_bulk_pages(struct obdo *oa, int count,
 			len -= rc;
 			buf += rc;
 		}
-		kunmap(local_nb[i].lnb_page);
+		kunmap(kmap_to_page(addr));
 	}
 
 	rc = vfs_fsync_range(filp, 0, LLONG_MAX, 1);
@@ -1965,6 +1999,7 @@ static void dump_all_bulk_pages(struct obdo *oa, int count,
 	filp_close(filp, NULL);
 
 	libcfs_debug_dumplog();
+	OBD_FREE(dbgcksum_file_name, PATH_MAX);
 }
 
 static int check_read_checksum(struct niobuf_local *local_nb, int npages,
@@ -2032,9 +2067,9 @@ static int tgt_pages2shortio(struct niobuf_local *local, int npages,
 		if (len > size)
 			return -EINVAL;
 
-		ptr = kmap_atomic(local[i].lnb_page);
+		ptr = kmap_local_page(local[i].lnb_page);
 		memcpy(buf, ptr + off, len);
-		kunmap_atomic(ptr);
+		kunmap_local(ptr);
 		buf += len;
 		size -= len;
 	}
@@ -2063,7 +2098,7 @@ static int tgt_checksum_niobuf_t10pi(struct lu_target *tgt,
 	int used;
 	int i;
 
-	__page = alloc_page(GFP_KERNEL);
+	__page = alloc_page(GFP_NOFS);
 	if (__page == NULL)
 		return -ENOMEM;
 
@@ -2100,16 +2135,17 @@ static int tgt_checksum_niobuf_t10pi(struct lu_target *tgt,
 			struct page *np = tgt_page_to_corrupt;
 
 			if (np) {
-				char *ptr = kmap_atomic(local_nb[i].lnb_page);
-				char *ptr2 = page_address(np);
+				char *ptr = kmap_local_page(local_nb[i].lnb_page);
+				char *ptr2 = kmap_local_page(np);
 
 				memcpy(ptr2 + off, ptr + off, len);
 				memcpy(ptr2 + off, "bad3", min(4, len));
-				kunmap_atomic(ptr);
+				kunmap_local(ptr2);
+				kunmap_local(ptr);
 
 				/* LU-8376 to preserve original index for
 				 * display in dump_all_bulk_pages() */
-				np->index = i;
+				page_folio(np)->index = i;
 
 				cfs_crypto_hash_update_page(req, np, off,
 							    len);
@@ -2152,6 +2188,8 @@ static int tgt_checksum_niobuf_t10pi(struct lu_target *tgt,
 				       guard_start + used_number);
 		}
 		if (!use_t10_grd || unlikely(resend)) {
+			struct folio *folio;
+			s32 pgno;
 			__be16 guard_tmp[MAX_GUARD_NUMBER];
 			__be16 *guards = guard_start + used_number;
 			int used_tmp = -1, *usedp = &used;
@@ -2160,8 +2198,10 @@ static int tgt_checksum_niobuf_t10pi(struct lu_target *tgt,
 				guards = guard_tmp;
 				usedp = &used_tmp;
 			}
+			folio = page_folio(local_nb[i].lnb_page);
+			pgno = folio_page_idx(folio, local_nb[i].lnb_page);
 			rc = obd_page_dif_generate_buffer(obd_name,
-				local_nb[i].lnb_page,
+				folio, pgno,
 				local_nb[i].lnb_page_offset & ~PAGE_MASK,
 				local_nb[i].lnb_len, guards,
 				guard_number - used_number, usedp, sector_size,
@@ -2220,16 +2260,17 @@ static int tgt_checksum_niobuf_t10pi(struct lu_target *tgt,
 			struct page *np = tgt_page_to_corrupt;
 
 			if (np) {
-				char *ptr = kmap_atomic(local_nb[i].lnb_page);
-				char *ptr2 = page_address(np);
+				char *ptr = kmap_local_page(local_nb[i].lnb_page);
+				char *ptr2 = kmap_local_page(np);
 
 				memcpy(ptr2 + off, ptr + off, len);
 				memcpy(ptr2 + off, "bad4", min(4, len));
-				kunmap_atomic(ptr);
+				kunmap_local(ptr2);
+				kunmap_local(ptr);
 
 				/* LU-8376 to preserve original index for
 				 * display in dump_all_bulk_pages() */
-				np->index = i;
+				page_folio(np)->index = i;
 
 				cfs_crypto_hash_update_page(req, np, off,
 							    len);
@@ -2240,7 +2281,7 @@ static int tgt_checksum_niobuf_t10pi(struct lu_target *tgt,
 			}
 		}
 	}
-	kunmap(__page);
+	kunmap(kmap_to_page(buffer));
 	if (rc)
 		GOTO(out_hash, rc);
 
@@ -2403,8 +2444,6 @@ int tgt_brw_read(struct tgt_session_info *tsi)
 					    &ptlrpc_bulk_kiov_nopin_ops);
 		if (desc == NULL)
 			GOTO(out_commitrw, rc = -ENOMEM);
-		/* client may have MD handling requirements  */
-		desc->bd_md_offset = ioobj_page_interop_offset(ioo);
 	}
 
 	npages_read = npages;
@@ -2420,6 +2459,10 @@ int tgt_brw_read(struct tgt_session_info *tsi)
 		nob += page_rc;
 		if (page_rc != 0 && desc != NULL) { /* some data! */
 			LASSERT(local_nb[i].lnb_page != NULL);
+			CDEBUG(D_INODE,
+			       "lnb %d, at offset %llu, hole %d\n", i,
+			       local_nb[i].lnb_file_offset,
+			       local_nb[i].lnb_hole);
 			desc->bd_frag_ops->add_kiov_frag
 			  (desc, local_nb[i].lnb_page,
 			   local_nb[i].lnb_page_offset & ~PAGE_MASK,
@@ -2570,11 +2613,9 @@ static int tgt_shortio2pages(struct niobuf_local *local, int npages,
 
 		CDEBUG(D_PAGE, "index %d offset = %d len = %d left = %d\n",
 		       i, off, len, size);
-		ptr = kmap_atomic(local[i].lnb_page);
-		if (ptr == NULL)
-			return -EINVAL;
+		ptr = kmap_local_page(local[i].lnb_page);
 		memcpy(ptr + off, buf, len < size ? len : size);
-		kunmap_atomic(ptr);
+		kunmap_local(ptr);
 		buf += len;
 		size -= len;
 	}
@@ -2727,7 +2768,8 @@ int tgt_brw_write(struct tgt_session_info *tsi)
 		RETURN(err_serious(-EPROTO));
 
 	if ((remote_nb[0].rnb_flags & OBD_BRW_MEMALLOC) &&
-	    ptlrpc_connection_is_local(exp->exp_connection))
+	    exp->exp_connection &&
+	    LNetIsPeerLocal(&exp->exp_connection->c_peer.nid))
 		mpflags = memalloc_noreclaim_save();
 
 	/* it is incorrect to return ENOSPC when granted space has been used */
@@ -2810,9 +2852,6 @@ int tgt_brw_write(struct tgt_session_info *tsi)
 					    &ptlrpc_bulk_kiov_nopin_ops);
 		if (desc == NULL)
 			GOTO(skip_transfer, rc = -ENOMEM);
-		/* client may have MD handling requirements  */
-		desc->bd_md_offset = ioobj_page_interop_offset(ioo);
-
 		/* NB Having prepped, we must commit... */
 		for (i = 0; i < npages; i++)
 			desc->bd_frag_ops->add_kiov_frag(desc,

@@ -1,33 +1,16 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
+
 #define DEBUG_SUBSYSTEM S_LLITE
 
 #include <linux/version.h>
@@ -144,7 +127,7 @@ static ssize_t blocksize_show(struct kobject *kobj, struct attribute *attr,
 	if (rc)
 		return rc;
 
-	return sprintf(buf, "%u\n", osfs.os_bsize);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", osfs.os_bsize);
 }
 LUSTRE_RO_ATTR(blocksize);
 
@@ -154,7 +137,7 @@ static ssize_t stat_blocksize_show(struct kobject *kobj, struct attribute *attr,
 	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
 					      ll_kset.kobj);
 
-	return sprintf(buf, "%u\n", sbi->ll_stat_blksize);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", sbi->ll_stat_blksize);
 }
 
 static ssize_t stat_blocksize_store(struct kobject *kobj,
@@ -200,7 +183,7 @@ static ssize_t kbytestotal_show(struct kobject *kobj, struct attribute *attr,
 	while (blk_size >>= 1)
 		result <<= 1;
 
-	return sprintf(buf, "%llu\n", result);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", result);
 }
 LUSTRE_RO_ATTR(kbytestotal);
 
@@ -224,7 +207,7 @@ static ssize_t kbytesfree_show(struct kobject *kobj, struct attribute *attr,
 	while (blk_size >>= 1)
 		result <<= 1;
 
-	return sprintf(buf, "%llu\n", result);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", result);
 }
 LUSTRE_RO_ATTR(kbytesfree);
 
@@ -248,7 +231,7 @@ static ssize_t kbytesavail_show(struct kobject *kobj, struct attribute *attr,
 	while (blk_size >>= 1)
 		result <<= 1;
 
-	return sprintf(buf, "%llu\n", result);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", result);
 }
 LUSTRE_RO_ATTR(kbytesavail);
 
@@ -264,7 +247,7 @@ static ssize_t filestotal_show(struct kobject *kobj, struct attribute *attr,
 	if (rc)
 		return rc;
 
-	return sprintf(buf, "%llu\n", osfs.os_files);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", osfs.os_files);
 }
 LUSTRE_RO_ATTR(filestotal);
 
@@ -280,9 +263,94 @@ static ssize_t filesfree_show(struct kobject *kobj, struct attribute *attr,
 	if (rc)
 		return rc;
 
-	return sprintf(buf, "%llu\n", osfs.os_ffree);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", osfs.os_ffree);
 }
 LUSTRE_RO_ATTR(filesfree);
+
+static ssize_t maxbytes_show(struct kobject *kobj, struct attribute *attr,
+			     char *buf)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+	struct obd_statfs osfs;
+	int rc;
+
+	rc = ll_statfs_internal(sbi, &osfs, OBD_STATFS_NODELAY);
+	if (rc)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", osfs.os_maxbytes);
+}
+LUSTRE_RO_ATTR(maxbytes);
+
+static ssize_t namelen_max_show(struct kobject *kobj, struct attribute *attr,
+				char *buf)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", sbi->ll_namelen);
+}
+
+static ssize_t namelen_max_store(struct kobject *kobj, struct attribute *attr,
+				 const char *buffer, size_t count)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+	struct obd_statfs osfs;
+	int val;
+	int rc;
+
+	rc = kstrtoint(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	rc = ll_statfs_internal(sbi, &osfs, OBD_STATFS_NODELAY);
+	if (rc)
+		return rc;
+
+	if (val < 12) { /* arbitrary sanity check, but 8.3 was OK for DOS :-) */
+		CERROR("%s: cannot set max filename length %u below 12 chars\n",
+		       sbi->ll_fsname, val);
+		return -ERANGE;
+	}
+
+	/* NAME_MAX is not strictly a VFS limit, but more of a convention.
+	 * It would be possible to allow filenames over NAME_MAX, if the
+	 * code in the client and server was fixed to allow this as well.
+	 */
+	if (val > NAME_MAX) {
+		CERROR("%s: cannot set max filename length %u over VFS limit of %u chars\n",
+		       sbi->ll_fsname, val, NAME_MAX);
+		return -EOVERFLOW;
+	}
+	if (val > osfs.os_namelen) {
+		CERROR("%s: cannot set max filename length %u over MDT limit of %u chars\n",
+		       sbi->ll_fsname, val, osfs.os_namelen);
+		return -EOVERFLOW;
+	}
+
+	sbi->ll_namelen = val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(namelen_max);
+
+static ssize_t statfs_state_show(struct kobject *kobj, struct attribute *attr,
+				 char *buf)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+	struct obd_statfs osfs;
+	int rc;
+
+	rc = ll_statfs_internal(sbi, &osfs, OBD_STATFS_NODELAY);
+	if (rc)
+		return rc;
+
+	return lprocfs_statfs_state(buf, PAGE_SIZE, osfs.os_state);
+}
+LUSTRE_RO_ATTR(statfs_state);
 
 static ssize_t client_type_show(struct kobject *kobj, struct attribute *attr,
 				char *buf)
@@ -348,19 +416,25 @@ static ssize_t max_read_ahead_mb_store(struct kobject *kobj,
 	u64 ra_max_mb, pages_number;
 	int rc;
 
-	rc = sysfs_memparse(buffer, count, &ra_max_mb, "MiB");
+	rc = sysfs_memparse_total(buffer, count, &ra_max_mb,
+				  compat_totalram_pages() << PAGE_SHIFT, "MiB");
+	if (rc == -ERANGE) {
+		CERROR("%s: cannot set max_read_ahead_mb=%llu > totalram=%luMB: rc = %d\n",
+		       sbi->ll_fsname, ra_max_mb >> 20,
+		       PAGES_TO_MiB(compat_totalram_pages()), rc);
+		return rc;
+	}
 	if (rc)
 		return rc;
 
 	pages_number = round_up(ra_max_mb, 1024 * 1024) >> PAGE_SHIFT;
 	CDEBUG(D_INFO, "%s: set max_read_ahead_mb=%llu (%llu pages)\n",
 	       sbi->ll_fsname, PAGES_TO_MiB(pages_number), pages_number);
-	if (pages_number > cfs_totalram_pages() / 2) {
-		/* 1/2 of RAM */
-		CERROR("%s: cannot set max_read_ahead_mb=%llu > totalram/2=%luMB\n",
+	if (pages_number > compat_totalram_pages() / 2) {
+		CWARN("%s: limit max_read_ahead_mb=%llu to totalram/2=%luMB\n",
 		       sbi->ll_fsname, PAGES_TO_MiB(pages_number),
-		       PAGES_TO_MiB(cfs_totalram_pages() / 2));
-		return -ERANGE;
+		       PAGES_TO_MiB(compat_totalram_pages() / 2));
+		pages_number = compat_totalram_pages() / 2;
 	}
 
 	spin_lock(&sbi->ll_lock);
@@ -392,16 +466,23 @@ static ssize_t max_read_ahead_per_file_mb_store(struct kobject *kobj,
 	u64 ra_max_file_mb, pages_number;
 	int rc;
 
-	rc = sysfs_memparse(buffer, count, &ra_max_file_mb, "MiB");
+	rc = sysfs_memparse_total(buffer, count, &ra_max_file_mb,
+				  compat_totalram_pages() << PAGE_SHIFT, "MiB");
+	if (rc == -ERANGE) {
+		CERROR("%s: cannot set max_read_ahead_per_file_mb=%llu > totalram=%luMB: rc = %d\n",
+		       sbi->ll_fsname, ra_max_file_mb >> 20,
+		       PAGES_TO_MiB(compat_totalram_pages()), rc);
+		return rc;
+	}
 	if (rc)
 		return rc;
 
 	pages_number = round_up(ra_max_file_mb, 1024 * 1024) >> PAGE_SHIFT;
 	if (pages_number > sbi->ll_ra_info.ra_max_pages) {
-		CERROR("%s: cannot set max_read_ahead_per_file_mb=%llu > max_read_ahead_mb=%lu\n",
+		CWARN("%s: limit max_read_ahead_per_file_mb=%llu to max_read_ahead_mb=%lu\n",
 		       sbi->ll_fsname, PAGES_TO_MiB(pages_number),
 		       PAGES_TO_MiB(sbi->ll_ra_info.ra_max_pages));
-		return -ERANGE;
+		pages_number = sbi->ll_ra_info.ra_max_pages;
 	}
 
 	spin_lock(&sbi->ll_lock);
@@ -429,9 +510,18 @@ static ssize_t max_read_ahead_whole_mb_store(struct kobject *kobj,
 	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
 					      ll_kset.kobj);
 	u64 ra_max_whole_mb, pages_number;
+	u64 max_limit;
 	int rc;
 
-	rc = sysfs_memparse(buffer, count, &ra_max_whole_mb, "MiB");
+	max_limit = compat_totalram_pages() << PAGE_SHIFT;
+	rc = sysfs_memparse_total(buffer, count, &ra_max_whole_mb, max_limit,
+				  "MiB");
+	if (rc == -ERANGE) {
+		CERROR("%s: cannot set max_read_ahead_whole_mb=%llu > totalram=%luMB: rc = %d\n",
+		       sbi->ll_fsname, ra_max_whole_mb >> 20,
+		       PAGES_TO_MiB(compat_totalram_pages()), rc);
+		return rc;
+	}
 	if (rc)
 		return rc;
 
@@ -440,11 +530,11 @@ static ssize_t max_read_ahead_whole_mb_store(struct kobject *kobj,
 	 * algorithm does this anyway so it's pointless to set it larger.
 	 */
 	if (pages_number > sbi->ll_ra_info.ra_max_pages_per_file) {
-		CERROR("%s: cannot set max_read_ahead_whole_mb=%llu > max_read_ahead_per_file_mb=%lu\n",
+		rc = -ERANGE;
+		CWARN("%s: limit max_read_ahead_whole_mb=%llu to max_read_ahead_per_file_mb=%lu\n",
 		       sbi->ll_fsname, PAGES_TO_MiB(pages_number),
 		       PAGES_TO_MiB(sbi->ll_ra_info.ra_max_pages_per_file));
-
-		return -ERANGE;
+		pages_number = sbi->ll_ra_info.ra_max_pages_per_file;
 	}
 
 	spin_lock(&sbi->ll_lock);
@@ -507,7 +597,6 @@ static ssize_t ll_max_cached_mb_seq_write(struct file *file,
 	u64 pages_number;
 	int rc;
 	char kernbuf[128], *ptr;
-	bool percent = false;
 
 	ENTRY;
 	if (count >= sizeof(kernbuf))
@@ -516,33 +605,20 @@ static ssize_t ll_max_cached_mb_seq_write(struct file *file,
 	if (copy_from_user(kernbuf, buffer, count))
 		RETURN(-EFAULT);
 
-	if (count > 0 && kernbuf[count - 1] == '%') {
-		percent = true;
-		/* strip off the % */
-		kernbuf[count - 1] = '\0';
-	} else {
-		kernbuf[count] = '\0';
-	}
-
+	kernbuf[count] = '\0';
 	ptr = lprocfs_find_named_value(kernbuf, "max_cached_mb:", &count);
-	if (percent)
-		rc = sysfs_memparse(ptr, count, &value, "B");
-	else
-		rc = sysfs_memparse(ptr, count, &value, "MiB");
+	rc = sysfs_memparse_total(ptr, count, &value,
+				  compat_totalram_pages() << PAGE_SHIFT, "MiB");
+	if (rc == -ERANGE) {
+		CERROR("%s: cannot set max_cached_mb=%llu MB more than %lu MB: rc = %d\n",
+		       sbi->ll_fsname, value >> 20,
+		       PAGES_TO_MiB(compat_totalram_pages()), rc);
+		RETURN(rc);
+	}
 	if (rc)
 		RETURN(rc);
 
-	if (percent)
-		pages_number = cfs_totalram_pages() * value / 100;
-	else
-		pages_number = value >> PAGE_SHIFT;
-
-	if (pages_number < 0 || pages_number > cfs_totalram_pages()) {
-		CERROR("%s: can't set max cache more than %lu MB\n",
-		       sbi->ll_fsname,
-		       PAGES_TO_MiB(cfs_totalram_pages()));
-		RETURN(-ERANGE);
-	}
+	pages_number = value >> PAGE_SHIFT;
 	/* Allow enough cache so clients can make well-formed RPCs */
 	pages_number = max_t(long, pages_number, PTLRPC_MAX_BRW_PAGES);
 
@@ -1382,15 +1458,14 @@ static ssize_t max_easize_show(struct kobject *kobj,
 LUSTRE_RO_ATTR(max_easize);
 
 /**
- * Get default_easize.
+ * default_easize_show() - Show default_easize (EA size)
+ * @kobj: seq_file handle
+ * @attr: unused for single entry (attribute structure pointer)
+ * @buf: xattr(EA) size returned to userspace
  *
- * \see client_obd::cl_default_mds_easize
- *
- * \param[in] m		seq_file handle
- * \param[in] v		unused for single entry
- *
- * \retval 0		on success
- * \retval negative	negated errno on failure
+ * Return:
+ * * %0 on success
+ * * %negative negated errno on failure
  */
 static ssize_t default_easize_show(struct kobject *kobj,
 				   struct attribute *attr,
@@ -1411,20 +1486,18 @@ static ssize_t default_easize_show(struct kobject *kobj,
 }
 
 /**
- * Set default_easize.
+ * default_easize_store() - Set default_easize.
+ * @kobj: pointer to a kobject structure
+ * @attr: unused for single entry (attribute structure pointer)
+ * @buffer: string passed from user space
+ * @count: buffer length
  *
  * Range checking on the passed value is handled by
  * ll_set_default_mdsize().
  *
- * \see client_obd::cl_default_mds_easize
- *
- * \param[in] file	proc file
- * \param[in] buffer	string passed from user space
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval positive	\a count on success
- * \retval negative	negated errno on failure
+ * Return:
+ * * %positive count on success
+ * * %negative negated errno on failure
  */
 static ssize_t default_easize_store(struct kobject *kobj,
 				    struct attribute *attr,
@@ -1549,6 +1622,37 @@ static ssize_t tiny_write_store(struct kobject *kobj,
 	return count;
 }
 LUSTRE_RW_ATTR(tiny_write);
+
+static ssize_t enable_erasure_coding_show(struct kobject *kobj,
+					   struct attribute *attr,
+					   char *buf)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 sbi->ll_enable_erasure_coding);
+}
+
+static ssize_t enable_erasure_coding_store(struct kobject *kobj,
+					    struct attribute *attr,
+					    const char *buffer,
+					    size_t count)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buffer, &val);
+	if (rc)
+		return rc;
+
+	sbi->ll_enable_erasure_coding = !!val;
+
+	return count;
+}
+LUSTRE_RW_ATTR(enable_erasure_coding);
 
 static ssize_t unaligned_dio_show(struct kobject *kobj,
 				  struct attribute *attr,
@@ -2152,6 +2256,38 @@ static ssize_t hybrid_io_read_threshold_bytes_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(hybrid_io_read_threshold_bytes);
 
+static ssize_t dir_read_on_open_show(struct kobject *kobj,
+				     struct attribute *attr,
+				     char *buf)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+
+	return snprintf(buf, PAGE_SIZE, "%u\n", sbi->ll_dir_open_read);
+}
+
+
+static ssize_t dir_read_on_open_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer,
+				      size_t count)
+{
+	struct ll_sb_info *sbi = container_of(kobj, struct ll_sb_info,
+					      ll_kset.kobj);
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buffer, &val);
+	if (rc)
+		return rc;
+
+	sbi->ll_dir_open_read = val;
+
+	return count;
+}
+
+LUSTRE_RW_ATTR(dir_read_on_open);
+
 static int ll_unstable_stats_seq_show(struct seq_file *m, void *v)
 {
 	struct super_block	*sb    = m->private;
@@ -2437,27 +2573,42 @@ struct ldebugfs_vars lprocfs_llite_obd_vars[] = {
 
 static struct attribute *llite_attrs[] = {
 	&lustre_attr_blocksize.attr,
-	&lustre_attr_stat_blocksize.attr,
+	&lustre_attr_filestotal.attr,
+	&lustre_attr_filesfree.attr,
 	&lustre_attr_kbytestotal.attr,
 	&lustre_attr_kbytesfree.attr,
 	&lustre_attr_kbytesavail.attr,
-	&lustre_attr_filestotal.attr,
-	&lustre_attr_filesfree.attr,
 	&lustre_attr_client_type.attr,
 	&lustre_attr_foreign_symlink_enable.attr,
 	&lustre_attr_foreign_symlink_prefix.attr,
 	&lustre_attr_foreign_symlink_upcall.attr,
 	&lustre_attr_foreign_symlink_upcall_info.attr,
 	&lustre_attr_fstype.attr,
-	&lustre_attr_uuid.attr,
+	&lustre_attr_heat_decay_percentage.attr,
+	&lustre_attr_heat_period_second.attr,
+	&lustre_attr_hybrid_io.attr,
+	&lustre_attr_hybrid_io_write_threshold_bytes.attr,
+	&lustre_attr_hybrid_io_read_threshold_bytes.attr,
+	&lustre_attr_inode_cache.attr,
 	&lustre_attr_checksums.attr,
 	&lustre_attr_checksum_pages.attr,
+	&lustre_attr_max_easize.attr,
 	&lustre_attr_max_read_ahead_mb.attr,
 	&lustre_attr_max_read_ahead_per_file_mb.attr,
 	&lustre_attr_max_read_ahead_whole_mb.attr,
 	&lustre_attr_max_read_ahead_async_active.attr,
+	&lustre_attr_maxbytes.attr,
+	&lustre_attr_namelen_max.attr,
+	&lustre_attr_opencache_threshold_count.attr,
+	&lustre_attr_opencache_threshold_ms.attr,
+	&lustre_attr_opencache_max_ms.attr,
+	&lustre_attr_parallel_dio.attr,
+	&lustre_attr_pcc_async_threshold.attr,
+	&lustre_attr_pcc_mode.attr,
+	&lustre_attr_pcc_async_affinity.attr,
 	&lustre_attr_read_ahead_async_file_threshold_mb.attr,
 	&lustre_attr_read_ahead_range_kb.attr,
+	&lustre_attr_stat_blocksize.attr,
 	&lustre_attr_stats_track_pid.attr,
 	&lustre_attr_stats_track_ppid.attr,
 	&lustre_attr_stats_track_gid.attr,
@@ -2473,34 +2624,24 @@ static struct attribute *llite_attrs[] = {
 	&lustre_attr_lazystatfs.attr,
 	&lustre_attr_statfs_max_age.attr,
 	&lustre_attr_statfs_project.attr,
-	&lustre_attr_max_easize.attr,
+	&lustre_attr_statfs_state.attr,
 	&lustre_attr_default_easize.attr,
 	&lustre_attr_xattr_cache.attr,
 	&lustre_attr_intent_mkdir.attr,
 	&lustre_attr_fast_read.attr,
 	&lustre_attr_tiny_write.attr,
-	&lustre_attr_parallel_dio.attr,
+	&lustre_attr_enable_erasure_coding.attr,
 	&lustre_attr_unaligned_dio.attr,
-	&lustre_attr_hybrid_io.attr,
 	&lustre_attr_enable_setstripe_gid.attr,
 	&lustre_attr_file_heat.attr,
-	&lustre_attr_heat_decay_percentage.attr,
-	&lustre_attr_heat_period_second.attr,
-	&lustre_attr_opencache_threshold_count.attr,
-	&lustre_attr_opencache_threshold_ms.attr,
-	&lustre_attr_opencache_max_ms.attr,
-	&lustre_attr_inode_cache.attr,
-	&lustre_attr_hybrid_io_write_threshold_bytes.attr,
-	&lustre_attr_hybrid_io_read_threshold_bytes.attr,
 #ifdef CONFIG_LL_ENCRYPTION
 	&lustre_attr_enable_filename_encryption.attr,
 #endif
 #if defined(CONFIG_LL_ENCRYPTION) || defined(HAVE_LUSTRE_CRYPTO)
 	&lustre_attr_filename_enc_use_old_base64.attr,
 #endif
-	&lustre_attr_pcc_async_threshold.attr,
-	&lustre_attr_pcc_mode.attr,
-	&lustre_attr_pcc_async_affinity.attr,
+	&lustre_attr_uuid.attr,
+	&lustre_attr_dir_read_on_open.attr,
 	NULL,
 };
 
@@ -2527,6 +2668,8 @@ static const struct llite_file_opcode {
 	/* file operation */
 	{ LPROC_LL_READ_BYTES,	LPROCFS_TYPE_BYTES_FULL, "read_bytes" },
 	{ LPROC_LL_WRITE_BYTES,	LPROCFS_TYPE_BYTES_FULL, "write_bytes" },
+	{ LPROC_LL_HIO_READ,	LPROCFS_TYPE_BYTES_FULL, "hybrid_read_bytes" },
+	{ LPROC_LL_HIO_WRITE,	LPROCFS_TYPE_BYTES_FULL, "hybrid_write_bytes" },
 	{ LPROC_LL_READ,	LPROCFS_TYPE_LATENCY,	"read" },
 	{ LPROC_LL_WRITE,	LPROCFS_TYPE_LATENCY,	"write" },
 	{ LPROC_LL_IOCTL,	LPROCFS_TYPE_REQS,	"ioctl" },
@@ -2616,13 +2759,14 @@ static const char *const ra_stat_string[] = {
 	[RA_STAT_ASYNC]			= "async_readahead",
 	[RA_STAT_FAILED_FAST_READ]	= "failed_to_fast_read",
 	[RA_STAT_MMAP_RANGE_READ]	= "mmap_range_read",
-	[RA_STAT_READAHEAD_PAGES]	= "readahead_pages"
+	[RA_STAT_READAHEAD_PAGES]	= "readahead_pages",
+	[RA_STAT_FORCEREAD_PAGES]	= "forceread_pages"
 };
 
 int ll_debugfs_register_super(struct super_block *sb, const char *name)
 {
-	struct lustre_sb_info *lsi = s2lsi(sb);
 	struct ll_sb_info *sbi = ll_s2sbi(sb);
+	char param[MAX_OBD_NAME * 4];
 	int err, id;
 
 	ENTRY;
@@ -2639,8 +2783,6 @@ int ll_debugfs_register_super(struct super_block *sb, const char *name)
 	err = kset_register(&sbi->ll_kset);
 	if (err)
 		RETURN(err);
-
-	lsi->lsi_kobj = kobject_get(&sbi->ll_kset.kobj);
 
 	if (IS_ERR_OR_NULL(llite_root))
 		RETURN(0);
@@ -2662,9 +2804,9 @@ int ll_debugfs_register_super(struct super_block *sb, const char *name)
 			    &ll_rw_offset_stats_fops);
 
 	/* File operations stats */
-	sbi->ll_stats = ldebugfs_stats_alloc(LPROC_LL_FILE_OPCODES, "stats",
+	scnprintf(param, sizeof(param), "llite.%s.stats", name);
+	sbi->ll_stats = ldebugfs_stats_alloc(LPROC_LL_FILE_OPCODES, param,
 					     sbi->ll_debugfs_entry,
-					     &sbi->ll_kset.kobj,
 					     LPROCFS_STATS_FLAG_NONE);
 	if (!sbi->ll_stats)
 		GOTO(out_debugfs, err = -ENOMEM);
@@ -2682,7 +2824,8 @@ int ll_debugfs_register_super(struct super_block *sb, const char *name)
 		GOTO(out_stats, err = -ENOMEM);
 
 	for (id = 0; id < ARRAY_SIZE(ra_stat_string); id++) {
-		if (id == RA_STAT_READAHEAD_PAGES)
+		if (id == RA_STAT_READAHEAD_PAGES ||
+		    id == RA_STAT_FORCEREAD_PAGES)
 			lprocfs_counter_init(sbi->ll_ra_stats, id,
 					     LPROCFS_TYPE_PAGES |
 					     LPROCFS_CNTR_AVGMINMAX,
@@ -2707,7 +2850,6 @@ out_debugfs:
 
 void ll_debugfs_unregister_super(struct super_block *sb)
 {
-	struct lustre_sb_info *lsi = s2lsi(sb);
 	struct ll_sb_info *sbi = ll_s2sbi(sb);
 
 	debugfs_remove_recursive(sbi->ll_debugfs_entry);
@@ -2719,8 +2861,6 @@ void ll_debugfs_unregister_super(struct super_block *sb)
 	if (sbi->ll_md_obd)
 		sysfs_remove_link(&sbi->ll_kset.kobj,
 				  sbi->ll_md_obd->obd_type->typ_name);
-
-	kobject_put(lsi->lsi_kobj);
 
 	kset_unregister(&sbi->ll_kset);
 	wait_for_completion(&sbi->ll_kobj_unregister);

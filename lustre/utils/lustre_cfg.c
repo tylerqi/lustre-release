@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -74,6 +54,8 @@
 #include "obdctl.h"
 #include <stdio.h>
 #include <yaml.h>
+
+static int lcfg_apply_param_yaml(const char *func, const char *filename);
 
 static char *lcfg_devname;
 
@@ -412,7 +394,7 @@ int jt_lcfg_param(int argc, char **argv)
 	return jt_lcfg_ioctl(&bufs, argv[0], LCFG_PARAM);
 }
 
-static int lcfg_setparam_perm(char *func, char *buf)
+static int lcfg_setparam_perm(const char *func, char *buf, bool del)
 {
 	int rc = 0;
 	struct lustre_cfg_bufs bufs;
@@ -429,13 +411,14 @@ static int lcfg_setparam_perm(char *func, char *buf)
 	 * if they are the intended targets. They will blindly
 	 * try to set the parameter, and ENOTFOUND means it wasn't
 	 * for them.
-	 * Target name "general" means call on all targets. It is
+	 * Target name LUSTRE_CFG_ALL_TARGETS means call on all targets. It is
 	 * left here in case some filtering will be added in
 	 * future.
 	 */
-	lustre_cfg_bufs_set_string(&bufs, 0, "general");
-
+	lustre_cfg_bufs_set_string(&bufs, 0, LUSTRE_CFG_ALL_TARGETS);
 	lustre_cfg_bufs_set_string(&bufs, 1, buf);
+	if (del)
+		lustre_cfg_bufs_set_string(&bufs, 2, "del");
 
 	lcfg = malloc(lustre_cfg_len(bufs.lcfg_bufcount,
 				     bufs.lcfg_buflen));
@@ -461,40 +444,38 @@ static int lcfg_setparam_perm(char *func, char *buf)
  * This should be loaded after the individual config logs.
  * Called from set param with -P option.
  */
-int jt_lcfg_setparam_perm(int argc, char **argv,
-				 struct param_opts *popt)
+int jt_lcfg_setparam_perm(int argc, char **argv, struct param_opts *popt)
 {
 	int rc;
 	int i;
-	int first_param;
 	char *buf = NULL;
 
-	first_param = optind;
-	if (first_param < 0 || first_param >= argc)
+	if (optind < 0 || optind >= argc)
 		return CMD_HELP;
 
-	for (i = first_param, rc = 0; i < argc; i++) {
+	if (popt->po_file)
+		return lcfg_apply_param_yaml(argv[0], argv[optind]);
+
+	for (i = optind, rc = 0; i < argc; i++) {
 		buf = argv[i];
 		if (popt->po_delete) {
 			char *end_pos;
 			size_t len;
 
 			len = strlen(buf);
-			/* Consider param ends at the first '=' in the buffer
-			 * and make sure it always ends with '=' as well
-			 */
+			/* make sure it always ends with '=' */
 			end_pos = memchr(buf, '=', len - 1);
-			if (end_pos) {
-				*(++end_pos) = '\0';
-			} else if (buf[len - 1] != '=') {
-				buf = malloc(len + 2);
+			if (!end_pos) {
+				size_t buflen = len + 2;
+
+				buf = malloc(buflen);
 				if (buf == NULL)
 					return -ENOMEM;
-				sprintf(buf, "%s=", argv[i]);
+				snprintf(buf, buflen, "%s=", argv[i]);
 			}
 		}
 
-		rc = lcfg_setparam_perm(argv[0], buf);
+		rc = lcfg_setparam_perm(argv[0], buf, popt->po_delete);
 		if (buf != argv[i])
 			free(buf);
 	}
@@ -502,7 +483,7 @@ int jt_lcfg_setparam_perm(int argc, char **argv,
 	return rc;
 }
 
-static int lcfg_conf_param(char *func, char *buf)
+static int lcfg_conf_param(const char *func, char *buf, bool del)
 {
 	int rc;
 	struct lustre_cfg_bufs bufs;
@@ -510,6 +491,8 @@ static int lcfg_conf_param(char *func, char *buf)
 
 	lustre_cfg_bufs_reset(&bufs, NULL);
 	lustre_cfg_bufs_set_string(&bufs, 1, buf);
+	if (del)
+		lustre_cfg_bufs_set_string(&bufs, 2, "del");
 
 	/* We could put other opcodes here. */
 	lcfg = malloc(lustre_cfg_len(bufs.lcfg_bufcount, bufs.lcfg_buflen));
@@ -540,7 +523,7 @@ static int lcfg_conf_param(char *func, char *buf)
 int jt_lcfg_confparam(int argc, char **argv)
 {
 	int rc;
-	int del = 0;
+	bool del = false;
 	char *buf = NULL;
 
 	/* mgs_setparam processes only lctl buf #1 */
@@ -550,7 +533,7 @@ int jt_lcfg_confparam(int argc, char **argv)
 	while ((rc = getopt(argc, argv, "d")) != -1) {
 		switch (rc) {
 		case 'd':
-			del = 1;
+			del = true;
 			break;
 		default:
 			return CMD_HELP;
@@ -558,28 +541,28 @@ int jt_lcfg_confparam(int argc, char **argv)
 	}
 
 	buf = argv[optind];
-
 	if (del) {
-		char *ptr;
+		char *end_pos;
+		size_t len;
 
-		/* for delete, make it "<param>=\0" */
-		buf = malloc(strlen(argv[optind]) + 2);
-		if (!buf) {
-			rc = -ENOMEM;
-			goto out;
+		len = strlen(buf);
+		/* make sure it always ends with '=' */
+		end_pos = memchr(buf, '=', len - 1);
+		if (!end_pos) {
+			size_t buflen = len + 2;
+
+			buf = malloc(buflen);
+			if (buf == NULL)
+				return -ENOMEM;
+			snprintf(buf, buflen, "%s=", argv[optind]);
 		}
-		/* put an '=' on the end in case it doesn't have one */
-		sprintf(buf, "%s=", argv[optind]);
-		/* then truncate after the first '=' */
-		ptr = strchr(buf, '=');
-		*(++ptr) = '\0';
 	}
 
-	rc = lcfg_conf_param(argv[0], buf);
+	rc = lcfg_conf_param(argv[0], buf, del);
 
 	if (buf != argv[optind])
 		free(buf);
-out:
+
 	if (rc < 0) {
 		fprintf(stderr, "error: %s: %s\n", jt_cmdname(argv[0]),
 			strerror(-rc));
@@ -714,11 +697,14 @@ static int yaml_get_device_index(char *source)
 	if (rc == 0)
 		goto error;
 
-	yaml_scalar_event_initialize(&event, NULL,
+	rc = yaml_scalar_event_initialize(&event, NULL,
 				     (yaml_char_t *)YAML_STR_TAG,
 				     (yaml_char_t *)source,
 				     strlen(source), 1, 0,
 				     YAML_PLAIN_SCALAR_STYLE);
+	if (rc == 0)
+		goto error;
+
 	rc = yaml_emitter_emit(&request, &event);
 	if (rc == 0)
 		goto error;
@@ -747,11 +733,11 @@ static int yaml_get_device_index(char *source)
 error:
 	if (rc == 0) {
 		yaml_emitter_log_error(&request, stderr);
-		yaml_emitter_delete(&request);
-		rc = -EINVAL;
+		yaml_emitter_cleanup(&request);
+		rc = -EOPNOTSUPP;
 		goto free_reply;
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 
 	while (!done) {
 		rc = yaml_parser_parse(&reply, &event);
@@ -783,9 +769,65 @@ error:
 		yaml_event_delete(&event);
 	}
 free_reply:
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
+	return rc;
+}
+
+int yaml_get_limit_uid(const char *config)
+{
+	yaml_parser_t parser;
+	yaml_event_t event;
+	bool done = false;
+	int rc;
+
+	/* Initialize parser */
+	if (!yaml_parser_initialize(&parser))
+		return -EOPNOTSUPP;
+
+	/* Set input string */
+	yaml_parser_set_input_string(&parser, (const unsigned char *)config,
+				     strlen(config));
+
+	while (!done) {
+		if (!yaml_parser_parse(&parser, &event)) {
+			yaml_parser_log_error(&parser, stderr, "lctl: ");
+			rc = -EINVAL;
+			goto error;
+		}
+
+		if (event.type == YAML_SCALAR_EVENT) {
+			char *value = (char *)event.data.scalar.value;
+
+			if (strcmp(value, "limit_uid") == 0) {
+				yaml_event_delete(&event);
+				if (!yaml_parser_parse(&parser, &event)) {
+					rc = -EINVAL;
+					goto error;
+				}
+				value = (char *)event.data.scalar.value;
+				errno = 0;
+				rc = strtoul(value, NULL, 10);
+				if (errno)
+					rc = -errno;
+				yaml_event_delete(&event);
+				goto out;
+			}
+		}
+
+		done = (event.type == YAML_STREAM_END_EVENT);
+		yaml_event_delete(&event);
+	}
+
+	rc = -ENOENT; /* Key not found */
+
+out:
+	yaml_parser_delete(&parser);
+	return rc;
+
+error:
+	yaml_parser_delete(&parser);
 	return rc;
 }
 
@@ -797,9 +839,9 @@ int jt_device_list(int argc, char **argv)
 		{ .name = "yaml",	.has_arg = no_argument,	.val = 'y' },
 		{ .name = NULL }
 	};
+	int flags = PARAM_FLAGS_EXTRA_IGNORE_ERROR;
 	struct param_opts opts;
 	char buf[MAX_OBD_NAME];
-	int flags = 0;
 	glob_t path;
 	int rc, c;
 	FILE *fp;
@@ -836,7 +878,7 @@ int jt_device_list(int argc, char **argv)
 	if (rc == 0)
 		return 0;
 
-	rc = llapi_param_get_paths("devices", &path);
+	rc = llapi_param_get_paths("devices", &path, 0);
 	if (rc < 0)
 		return rc;
 
@@ -927,54 +969,6 @@ enum paramtype {
 	PT_CONFPARAM
 };
 
-#ifdef HAVE_SERVER_SUPPORT
-/**
- * Output information about nodemaps.
- * \param	argc		number of args
- * \param	argv[]		variable string arguments
- *
- * [list|nodemap_name|all]	\a list will list all nodemaps (default).
- *				Specifying a \a nodemap_name will
- *				display info about that specific nodemap.
- *				\a all will display info for all nodemaps.
- * \retval			0 on success
- */
-int jt_nodemap_info(int argc, char **argv)
-{
-	const char usage_str[] = "usage: nodemap_info [list|nodemap_name|all]\n";
-	struct param_opts popt;
-	int rc = 0;
-
-	memset(&popt, 0, sizeof(popt));
-	popt.po_show_name = 1;
-
-	if (argc > 2) {
-		fprintf(stderr, usage_str);
-		return -1;
-	}
-
-	if (argc == 1 || strcmp("list", argv[1]) == 0) {
-		popt.po_only_dir = 1;
-		rc = jt_lcfg_listparam(3, (char*[3])
-				       { "list_param", "-D", "nodemap/*" });
-	} else if (strcmp("all", argv[1]) == 0) {
-		rc = jt_lcfg_getparam(3, (char*[3])
-				      { "get_param", "-N", "nodemap/*/*" });
-	} else {
-		char	pattern[PATH_MAX];
-
-		snprintf(pattern, sizeof(pattern), "nodemap/%s/*", argv[1]);
-		rc = jt_lcfg_getparam(3, (char*[3])
-				      { "get_param", "-N", pattern });
-		if (rc == -ESRCH)
-			fprintf(stderr,
-				"error: nodemap_info: cannot find nodemap %s\n",
-				argv[1]);
-	}
-	return rc;
-}
-#endif
-
 #define PS_NONE 0
 #define PS_PARAM_FOUND 1
 #define PS_PARAM_SET 2
@@ -1051,7 +1045,7 @@ static enum paramtype construct_param(enum paramtype confset, const char *param,
 	return PT_NONE;
 }
 
-static int lcfg_apply_param_yaml(char *func, char *filename)
+static int lcfg_apply_param_yaml(const char *func, const char *filename)
 {
 	FILE *file;
 	yaml_parser_t parser;
@@ -1066,7 +1060,7 @@ static int lcfg_apply_param_yaml(char *func, char *filename)
 	char device[PARAM_SZ + 1];
 	bool convert;
 
-	convert = !strncmp(func, "set_param", 9);
+	convert = strncmp(func, "set_param", 9) == 0;
 	file = fopen(filename, "rb");
 	if (!file) {
 		rc1 = -errno;
@@ -1174,9 +1168,9 @@ static int lcfg_apply_param_yaml(char *func, char *filename)
 			       "set_param" : "conf_param", buf);
 
 			if (confset == PT_SETPARAM)
-				rc = lcfg_setparam_perm(func, buf);
+				rc = lcfg_setparam_perm(func, buf, 0);
 			else
-				rc = lcfg_conf_param(func, buf);
+				rc = lcfg_conf_param(func, buf, 0);
 			if (rc) {
 				printf("error: failed to apply parameter rc = %d, tyring next one\n",
 				       rc);

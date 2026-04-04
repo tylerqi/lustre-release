@@ -18,11 +18,14 @@
 #define CFS_FAIL_PTLRPC_OST_BULK_CB2	0xe000
 #define CFS_FAIL_MATCH_MD_NID		0xe001
 #define CFS_FAIL_DELAY_MSG_FORWARD	0xe002
+#define CFS_FAIL_TEST_PING_MD		0xe003
+#define CFS_FAIL_RTR_HEALTH_INC		0xe004
 
-#include <linux/generic-radix-tree.h>
+#include <linux/hash.h>
 #include <linux/netdevice.h>
+#include <linux/libcfs/libcfs_debug.h>
+#include <linux/libcfs/libcfs_private.h>
 
-#include <libcfs/libcfs.h>
 #include <lnet/api.h>
 #include <lnet/lib-cpt.h>
 #include <lnet/lib-types.h>
@@ -239,7 +242,7 @@ __must_hold(&ni->ni_lock)
 		return LNET_NI_STATUS_UP;
 	else if (atomic_read(&ni->ni_fatal_error_on))
 		return LNET_NI_STATUS_DOWN;
-	else if (the_lnet.ln_routing && ni->ni_status)
+	else if (ni->ni_status)
 		return *ni->ni_status;
 	else
 		return LNET_NI_STATUS_UP;
@@ -255,6 +258,18 @@ lnet_ni_set_status(struct lnet_ni *ni, __u32 status)
 	lnet_ni_unlock(ni);
 
 	return update;
+}
+
+static inline unsigned int
+lnet_ni_get_status(struct lnet_ni *ni)
+{
+	unsigned int status;
+
+	lnet_ni_lock(ni);
+	status = lnet_ni_get_status_locked(ni);
+	lnet_ni_unlock(ni);
+
+	return status;
 }
 
 static inline void lnet_md_wait_handling(struct lnet_libmd *md, int cpt)
@@ -384,12 +399,6 @@ lnet_peer_decref_locked(struct lnet_peer *lp)
 		lnet_destroy_peer_locked(lp);
 }
 
-static inline void
-lnet_peer_ni_addref_locked(struct lnet_peer_ni *lp)
-{
-	kref_get(&lp->lpni_kref);
-}
-
 extern void lnet_destroy_peer_ni_locked(struct kref *ref);
 
 static inline void
@@ -504,8 +513,8 @@ lnet_nid2peerhash(struct lnet_nid *nid)
 	int i;
 
 	for (i = 0; i < 4; i++)
-		h = cfs_hash_32(nid->nid_addr[i]^h, 32);
-	return cfs_hash_32(LNET_NID_NET(nid) ^ h, LNET_PEER_HASH_BITS);
+		h = hash_32(nid->nid_addr[i]^h, 32);
+	return hash_32(LNET_NID_NET(nid) ^ h, LNET_PEER_HASH_BITS);
 }
 
 static inline struct list_head *
@@ -612,6 +621,7 @@ extern int live_router_check_interval;
 extern int dead_router_check_interval;
 extern int portal_rotor;
 extern int lock_prim_nid;
+extern int lnet_interfaces_max;
 
 void lnet_mt_event_handler(struct lnet_event *event);
 
@@ -620,14 +630,13 @@ int lnet_notify(struct lnet_ni *ni, struct lnet_nid *peer, bool alive,
 void lnet_notify_locked(struct lnet_peer_ni *lp, int notifylnd, int alive,
 			time64_t when);
 int lnet_add_route(__u32 net, __u32 hops, struct lnet_nid *gateway,
-		   __u32 priority, __u32 sensitivity);
+		   __u32 priority);
 int lnet_del_route(__u32 net, struct lnet_nid *gw_nid);
 void lnet_move_route(struct lnet_route *route, struct lnet_peer *lp,
 		     struct list_head *rt_list);
 void lnet_destroy_routes(void);
 int lnet_get_route(int idx, __u32 *net, __u32 *hops,
-		   lnet_nid_t *gateway, __u32 *alive, __u32 *priority,
-		   __u32 *sensitivity);
+		   lnet_nid_t *gateway, __u32 *alive, __u32 *priority);
 int lnet_get_rtr_pool_cfg(int idx, struct lnet_ioctl_pool_cfg *pool_cfg);
 struct lnet_ni *lnet_get_next_ni_locked(struct lnet_net *mynet,
 					struct lnet_ni *prev);
@@ -643,8 +652,6 @@ extern void lnet_peer_ni_add_to_recoveryq_locked(struct lnet_peer_ni *lpni,
 extern int lnet_peer_add_pref_nid(struct lnet_peer_ni *lpni,
 				  struct lnet_nid *nid);
 extern void lnet_peer_clr_pref_nids(struct lnet_peer_ni *lpni);
-extern int lnet_peer_del_pref_nid(struct lnet_peer_ni *lpni,
-				  struct lnet_nid *nid);
 void lnet_peer_ni_set_selection_priority(struct lnet_peer_ni *lpni,
 					 __u32 priority);
 extern void lnet_ni_add_to_recoveryq_locked(struct lnet_ni *ni,
@@ -667,7 +674,7 @@ int lnet_dyn_del_net(__u32 net);
 int lnet_dyn_add_ni(struct lnet_ioctl_config_ni *conf, u32 net,
 		    struct lnet_nid *nid,
 		    struct lnet_ioctl_config_lnd_tunables *tun);
-int lnet_dyn_del_ni(struct lnet_nid *nid);
+int lnet_dyn_del_ni(struct lnet_nid *nid, bool allow_net_del);
 int lnet_clear_lazy_portal(struct lnet_ni *ni, int portal, char *reason);
 struct lnet_net *lnet_get_net_locked(__u32 net_id);
 void lnet_net_clr_pref_rtrs(struct lnet_net *net);
@@ -696,6 +703,9 @@ void lnet_return_tx_credits_locked(struct lnet_msg *msg);
 void lnet_return_rx_credits_locked(struct lnet_msg *msg);
 void lnet_schedule_blocked_locked(struct lnet_rtrbufpool *rbp);
 void lnet_drop_routed_msgs_locked(struct list_head *list, int cpt);
+int lnet_discover_nid_metadata(struct lnet_processid *id,
+			       signed long timeout,
+			       struct lnet_nid_metadata *data);
 
 struct list_head **lnet_create_array_of_queues(void);
 
@@ -793,7 +803,7 @@ int lnet_fail_nid(struct lnet_nid *nid, unsigned int threshold);
 
 /** \addtogroup lnet_fault_simulation @{ */
 
-/* See struct lnet_fault_attr4 for a description of these fields */
+/* See struct lnet_fault_attr for a description of these fields */
 struct lnet_fault_large_attr {
 	struct lnet_nid			fa_src;
 	struct lnet_nid			fa_dst;
@@ -813,6 +823,7 @@ struct lnet_fault_large_attr {
 			u32		la_interval;
 			u32		la_latency;
 		} delay;
+		u64			space[8];
 	} u;
 };
 
@@ -921,14 +932,20 @@ void lnet_register_lnd(const struct lnet_lnd *lnd);
 void lnet_unregister_lnd(const struct lnet_lnd *lnd);
 
 struct socket *lnet_connect(struct lnet_nid *peer_nid, int interface,
-			    struct sockaddr *peeraddr, struct net *ns);
+			    struct sockaddr *peeraddr, struct net *ns,
+			    bool control);
 void lnet_connect_console_error(int rc, struct lnet_nid *peer_nid,
 				struct sockaddr *sa);
 int lnet_count_acceptor_nets(void);
 int lnet_acceptor_timeout(void);
 int lnet_acceptor_port(void);
+int lnet_acceptor_port_bulk(void);
 int lnet_acceptor_start(void);
 void lnet_acceptor_stop(void);
+int lnet_acceptor_add_sockets(const char *iface, struct sockaddr *addr,
+			      int ifindex, struct net *ni_net_ns);
+void lnet_acceptor_remove_sockets(const char *iface);
+
 
 struct lnet_inetdev {
 	u32	li_cpt;
@@ -957,8 +974,8 @@ int lnet_sock_getaddr(struct socket *socket, bool remote,
 int lnet_sock_write(struct socket *sock, void *buffer, int nob, int timeout);
 int lnet_sock_read(struct socket *sock, void *buffer, int nob, int timeout);
 
-struct socket *lnet_sock_listen(int port, int backlog,
-				struct net *ns);
+struct socket *lnet_sock_listen(int port, int backlog, struct net *ns,
+				struct sockaddr *addr, int ifindex);
 struct socket *lnet_sock_connect(int interface, int local_port,
 				 struct sockaddr *peeraddr,
 				 struct net *ns);
@@ -981,22 +998,10 @@ void lnet_swap_pinginfo(struct lnet_ping_buffer *pbuf);
 
 int lnet_ping_info_validate(struct lnet_ping_info *pinfo);
 struct lnet_ping_buffer *lnet_ping_buffer_alloc(int bytes, gfp_t gfp);
-void lnet_ping_buffer_free(struct lnet_ping_buffer *pbuf);
+void lnet_ping_buffer_free(struct kref *kref);
 int lnet_get_link_status(struct net_device *dev);
+int lnet_get_link_status_locked(struct net_device *dev);
 __u32 lnet_set_link_fatal_state(struct lnet_ni *ni, unsigned int link_state);
-
-static inline void lnet_ping_buffer_addref(struct lnet_ping_buffer *pbuf)
-{
-	atomic_inc(&pbuf->pb_refcnt);
-}
-
-static inline void lnet_ping_buffer_decref(struct lnet_ping_buffer *pbuf)
-{
-	if (atomic_dec_and_test(&pbuf->pb_refcnt)) {
-		wake_up_var(&pbuf->pb_refcnt);
-		lnet_ping_buffer_free(pbuf);
-	}
-}
 
 struct lnet_ping_iter {
 	struct lnet_ping_info	*pinfo;
@@ -1083,20 +1088,6 @@ lnet_peer_net_set_sel_priority_locked(struct lnet_peer_net *lpn, __u32 priority)
 	lpn->lpn_sel_priority = priority;
 }
 
-
-static inline struct lnet_peer_net *
-lnet_find_peer_net_locked(struct lnet_peer *peer, __u32 net_id)
-{
-	struct lnet_peer_net *peer_net;
-
-	list_for_each_entry(peer_net, &peer->lp_peer_nets, lpn_peer_nets) {
-		if (peer_net->lpn_net_id == net_id)
-			return peer_net;
-	}
-
-	return NULL;
-}
-
 static inline bool
 lnet_peer_is_multi_rail(struct lnet_peer *lp)
 {
@@ -1147,6 +1138,17 @@ lnet_peer_needs_push(struct lnet_peer *lp)
 	return false;
 }
 
+static inline bool
+lnet_peer_needs_ping(struct lnet_peer *lp)
+{
+	if (lp->lp_state & LNET_PEER_FORCE_PING)
+		return true;
+	else if (!(lp->lp_state & LNET_PEER_NIDS_UPTODATE))
+		return true;
+
+	return false;
+}
+
 static inline unsigned int
 lnet_get_next_recovery_ping(unsigned int ping_count, time64_t now)
 {
@@ -1174,20 +1176,12 @@ lnet_ni_set_next_ping(struct lnet_ni *ni, time64_t now)
 	ni->ni_next_ping = lnet_get_next_recovery_ping(ni->ni_ping_count, now);
 }
 
-/*
- * A peer NI is alive if it satisfies the following two conditions:
- *  1. peer NI health >= LNET_MAX_HEALTH_VALUE * router_sensitivity_percentage
- *  2. the cached NI status received when we discover the peer is UP
+/* We consider a peer NI to be alive if its cached NI status is UP
  */
 static inline bool
 lnet_is_peer_ni_alive(struct lnet_peer_ni *lpni)
 {
-	bool halive = false;
-
-	halive = (atomic_read(&lpni->lpni_healthv) >=
-		 (LNET_MAX_HEALTH_VALUE * router_sensitivity_percentage / 100));
-
-	return halive && lpni->lpni_ns_status == LNET_NI_STATUS_UP;
+	return lpni->lpni_ns_status == LNET_NI_STATUS_UP;
 }
 
 static inline void
@@ -1248,54 +1242,64 @@ lnet_atomic_add_unless_max(atomic_t *v, int a, int u)
 }
 
 static bool
-lnet_dec_healthv_locked(atomic_t *healthv, int sensitivity)
+lnet_dec_healthv_locked(atomic_t *healthv)
 {
 	int h = atomic_read(healthv);
 
 	if (h == 0)
 		return false;
 
-	if (h < sensitivity)
+	if (h < lnet_health_sensitivity)
 		h = 0;
 	else
-		h -= sensitivity;
+		h -= lnet_health_sensitivity;
 
 	return (atomic_xchg(healthv, h) != h);
 }
 
 static inline void
+lnet_dec_ni_healthv_locked(struct lnet_ni *ni)
+{
+	/* Decrement health and if health value transitioned to 0 then update
+	 * status to DOWN
+	 */
+	if (lnet_dec_healthv_locked(&ni->ni_healthv) &&
+	    atomic_read(&ni->ni_healthv) == 0)
+		lnet_ni_set_status(ni, LNET_NI_STATUS_DOWN);
+}
+
+static inline void
 lnet_dec_lpni_healthv_locked(struct lnet_peer_ni *lpni)
 {
-	/* If there is a health sensitivity in the peer then use that
-	 * instead of the globally set one.
-	 * only adjust the net health if the lpni health value changed
-	 */
-	if (lnet_dec_healthv_locked(&lpni->lpni_healthv,
-			lpni->lpni_peer_net->lpn_peer->lp_health_sensitivity ? :
-			lnet_health_sensitivity)) {
+	 /* only adjust the net health if the lpni health value changed */
+	if (lnet_dec_healthv_locked(&lpni->lpni_healthv))
 		lnet_update_peer_net_healthv(lpni);
-	}
+}
+
+static inline bool
+lnet_inc_healthv(atomic_t *healthv)
+{
+	return lnet_atomic_add_unless_max(healthv, lnet_health_sensitivity,
+					  LNET_MAX_HEALTH_VALUE);
+}
+
+static inline void
+lnet_inc_ni_healthv(struct lnet_ni *ni)
+{
+	/* Increment health and if health value transitioned to maximum then
+	 * update status to UP
+	 */
+	if (lnet_inc_healthv(&ni->ni_healthv) &&
+	    atomic_read(&ni->ni_healthv) == LNET_MAX_HEALTH_VALUE)
+		lnet_ni_set_status(ni, LNET_NI_STATUS_UP);
 }
 
 static inline void
 lnet_inc_lpni_healthv_locked(struct lnet_peer_ni *lpni)
 {
-	/* If there is a health sensitivity in the peer then use that
-	 * instead of the globally set one.
-	 * only adjust the net health if the lpni health value changed
-	 */
-	if (lnet_atomic_add_unless_max(&lpni->lpni_healthv,
-			lpni->lpni_peer_net->lpn_peer->lp_health_sensitivity ? :
-			lnet_health_sensitivity,
-				       LNET_MAX_HEALTH_VALUE)) {
+	 /* only adjust the net health if the lpni health value changed */
+	if (lnet_inc_healthv(&lpni->lpni_healthv))
 		lnet_update_peer_net_healthv(lpni);
-	}
-}
-
-static inline void
-lnet_inc_healthv(atomic_t *healthv, int value)
-{
-	lnet_atomic_add_unless_max(healthv, value, LNET_MAX_HEALTH_VALUE);
 }
 
 static inline int

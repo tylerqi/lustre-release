@@ -30,12 +30,21 @@ struct lov_stripe_md_entry {
 	u32			lsme_magic;
 	u32			lsme_flags;
 	u32			lsme_pattern;
-	u64			lsme_timestamp;
+	union {
+		u64		lsme_time_and_id;
+		struct {
+			u64	lsme_timestamp:48;
+			u16	lsme_mirror_link_id;
+		};
+	};
 	union {
 		struct { /* For stripe objects */
+			/* EC info */
 			u32	lsme_stripe_size;
 			u16	lsme_stripe_count;
 			u16	lsme_layout_gen;
+			u8	lsme_dstripe_count;
+			u8	lsme_cstripe_count;
 			char	lsme_pool_name[LOV_MAXPOOLNAME + 1];
 			struct lov_oinfo	*lsme_oinfo[];
 		};
@@ -74,7 +83,7 @@ static inline void copy_lsm_entry(struct lov_stripe_md_entry *dst,
 }
 
 struct lov_stripe_md {
-	atomic_t	lsm_refc;
+	struct kref	lsm_refc;
 	spinlock_t	lsm_lock;
 	pid_t		lsm_lock_owner; /* debugging */
 
@@ -98,6 +107,17 @@ struct lov_stripe_md {
 };
 
 #define lsm_foreign(lsm) (lsm->lsm_entries[0])
+
+static inline bool lsme_is_parity(const struct lov_stripe_md_entry *lsme)
+{
+	return lsme->lsme_flags & LCME_FL_PARITY;
+}
+
+static inline bool lsm_entry_is_parity(const struct lov_stripe_md *lsm,
+					int index)
+{
+	return lsme_is_parity(lsm->lsm_entries[index]);
+}
 
 static inline bool lsme_is_foreign(const struct lov_stripe_md_entry *lsme)
 {
@@ -195,7 +215,7 @@ struct lsm_operations {
 };
 
 const struct lsm_operations *lsm_op_find(int magic);
-void lsm_free(struct lov_stripe_md *lsm);
+void lsm_free(struct kref *kref);
 
 static inline bool lov_supported_comp_magic(unsigned int magic)
 {
@@ -241,8 +261,17 @@ extern struct kmem_cache *lov_oinfo_slab;
 
 extern struct lu_kmem_descr lov_caches[];
 
+static inline struct lu_tgt_desc *lov_tgt(struct lov_obd *lov, u32 index)
+{
+	return index < lov->lov_ost_descs.ltd_tgts_size ?
+		LTD_TGT(&lov->lov_ost_descs, index) : NULL;
+}
+
 #define lov_uuid2str(lv, index) \
-        (char *)((lv)->lov_tgts[index]->ltd_uuid.uuid)
+	(char *)(lov_tgt(lv, index)->ltd_uuid.uuid)
+
+#define lov_foreach_tgt(lov, tgt) \
+	ltd_foreach_tgt(&(lov)->lov_ost_descs, tgt)
 
 /* lov_merge.c */
 int lov_merge_lvb_kms(struct lov_stripe_md *lsm, int index,
@@ -264,7 +293,7 @@ pgoff_t lov_stripe_pgoff(struct lov_stripe_md *lsm, int index,
 
 /* lov_request.c */
 int lov_prep_statfs_set(struct obd_device *obd, struct obd_info *oinfo,
-                        struct lov_request_set **reqset);
+			struct lov_request_set **reqset);
 int lov_fini_statfs_set(struct lov_request_set *set);
 
 /* lov_obd.c */
@@ -282,6 +311,7 @@ __u16 lov_get_stripe_count(struct lov_obd *lov, __u32 magic,
 int lov_connect_obd(struct obd_device *obd, u32 index, int activate,
 		    struct obd_connect_data *data);
 int lov_setup(struct obd_device *obd, struct lustre_cfg *lcfg);
+int lov_cleanup(struct obd_device *obd);
 int lov_process_config_base(struct obd_device *obd, struct lustre_cfg *lcfg,
 			    u32 *indexp, int *genp);
 int lov_del_target(struct obd_device *obd, u32 index,
@@ -292,7 +322,7 @@ ssize_t lov_lsm_pack(const struct lov_stripe_md *lsm, void *buf,
 		     size_t buf_size);
 struct lov_stripe_md *lov_unpackmd(struct lov_obd *lov, void *buf,
 				   size_t buf_size);
-int lov_free_memmd(struct lov_stripe_md **lsmp);
+void lov_free_memmd(struct lov_stripe_md **lsmp);
 
 void lov_dump_lmm_v1(int level, struct lov_mds_md_v1 *lmm);
 void lov_dump_lmm_common(int level, void *lmmp);
@@ -317,9 +347,9 @@ int lov_pool_remove(struct obd_device *obd, char *poolname, char *ostname);
 
 static inline struct lov_stripe_md *lsm_addref(struct lov_stripe_md *lsm)
 {
-	LASSERT(atomic_read(&lsm->lsm_refc) > 0);
-	atomic_inc(&lsm->lsm_refc);
-	return lsm;
+	if (kref_get_unless_zero(&lsm->lsm_refc))
+		return lsm;
+	return NULL;
 }
 
 static inline bool lov_oinfo_is_dummy(const struct lov_oinfo *loi)

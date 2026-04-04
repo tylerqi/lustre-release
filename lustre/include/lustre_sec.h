@@ -14,6 +14,10 @@
 #ifndef _LUSTRE_SEC_H_
 #define _LUSTRE_SEC_H_
 
+#include <linux/module.h>
+#include <linux/libcfs/libcfs_debug.h>
+#include <linux/libcfs/libcfs_private.h>
+
 /** \defgroup sptlrpc sptlrpc
  *
  * @{
@@ -884,6 +888,7 @@ static inline int sec_is_rootonly(struct ptlrpc_sec *sec)
 struct ptlrpc_svc_ctx {
 	atomic_t                        sc_refcount;
 	struct ptlrpc_sec_policy       *sc_policy;
+	char			       *sc_nodemap;
 };
 
 /*
@@ -933,7 +938,7 @@ struct ptlrpc_bulk_sec_desc {
 };
 
 extern struct dentry *sptlrpc_debugfs_dir;
-extern struct proc_dir_entry *sptlrpc_lprocfs_dir;
+extern struct kobject *sptlrpc_kobj;
 
 /*
  * round size up to next power of 2, for slab allocation.
@@ -1168,6 +1173,7 @@ struct gss_svc_ctx {
 				gsc_usr_oss:1,
 				gsc_remote:1,
 				gsc_reverse:1;
+	char		       *gsc_nm_name;
 };
 
 int sptlrpc_svc_install_rvs_ctx(struct obd_import *imp,
@@ -1182,7 +1188,7 @@ int sptlrpc_cli_unwrap_bulk_read(struct ptlrpc_request *req,
 				 struct ptlrpc_bulk_desc *desc, int nob);
 int sptlrpc_cli_unwrap_bulk_write(struct ptlrpc_request *req,
 				  struct ptlrpc_bulk_desc *desc);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 int sptlrpc_svc_prep_bulk(struct ptlrpc_request *req,
 			  struct ptlrpc_bulk_desc *desc);
 int sptlrpc_svc_wrap_bulk(struct ptlrpc_request *req,

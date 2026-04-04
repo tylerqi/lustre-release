@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2010, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -69,9 +51,9 @@ static void ptlrpc_at_remove_timed(struct ptlrpc_request *req);
 static int ptlrpc_start_threads(struct ptlrpc_service *svc);
 static int ptlrpc_start_thread(struct ptlrpc_service_part *svcpt, int wait);
 
-/** Holds a list of all PTLRPC services */
+/* Holds a list of all PTLRPC services */
 LIST_HEAD(ptlrpc_all_services);
-/** Used to protect the \e ptlrpc_all_services list */
+/* Used to protect the @ptlrpc_all_services list */
 struct mutex ptlrpc_all_services_mutex;
 
 static struct ptlrpc_request_buffer_desc *
@@ -178,8 +160,12 @@ static int ptlrpc_grow_req_bufs(struct ptlrpc_service_part *svcpt, int post)
 }
 
 /**
- * Part of Rep-Ack logic.
- * Puts a lock and its mode into reply state assotiated to request reply.
+ * ptlrpc_save_lock() - Part of Rep-Ack(Reply Acknowledgement) logic
+ * @req: pointer to struct ptlrpc_request
+ * @lock: pointer to lustre_handle (to be saved)
+ * @no_ack: if True, server will not wait for client ack. (incl difficult reqs)
+ *
+ * Puts(saves) a lock and its mode into reply state assotiated to request reply
  */
 void ptlrpc_save_lock(struct ptlrpc_request *req, struct lustre_handle *lock,
 		      bool no_ack)
@@ -248,25 +234,17 @@ struct rs_batch {
 /** reply handling service. */
 static struct ptlrpc_hr_service		ptlrpc_hr;
 
-/**
- * maximum mumber of replies scheduled in one batch
- */
+/* maximum mumber of replies scheduled in one batch */
 #define MAX_SCHEDULED 256
 
-/**
- * Initialize a reply batch.
- *
- * \param b batch
- */
+/* Initialize a reply batch. */
 static void rs_batch_init(struct rs_batch *b)
 {
 	memset(b, 0, sizeof(*b));
 	INIT_LIST_HEAD(&b->rsb_replies);
 }
 
-/**
- * Choose an hr thread to dispatch requests to.
- */
+/* Choose an hr thread to dispatch requests to. */
 static
 struct ptlrpc_hr_thread *ptlrpc_hr_select(struct ptlrpc_service_part *svcpt)
 {
@@ -289,11 +267,8 @@ struct ptlrpc_hr_thread *ptlrpc_hr_select(struct ptlrpc_service_part *svcpt)
 	return &hrp->hrp_thrs[rotor % hrp->hrp_nthrs];
 }
 
-/**
- * Dispatch all replies accumulated in the batch to one from
+/* Dispatch all replies accumulated in the batch to one from
  * dedicated reply handling threads.
- *
- * \param b batch
  */
 static void rs_batch_dispatch(struct rs_batch *b)
 {
@@ -312,11 +287,11 @@ static void rs_batch_dispatch(struct rs_batch *b)
 }
 
 /**
- * Add a reply to a batch.
- * Add one reply object to a batch, schedule batched replies if overload.
+ * rs_batch_add() - Add a reply to a batch.
+ * @b: pointer to struct rs_batch where @rs will be added
+ * @rs: pointer to ptlrpc_reply_state to be added to @b
  *
- * \param b batch
- * \param rs reply
+ * Add one reply object to a batch, schedule batched replies if overload.
  */
 static void rs_batch_add(struct rs_batch *b, struct ptlrpc_reply_state *rs)
 {
@@ -341,12 +316,8 @@ static void rs_batch_add(struct rs_batch *b, struct ptlrpc_reply_state *rs)
 	spin_unlock(&rs->rs_lock);
 }
 
-/**
- * Reply batch finalization.
- * Dispatch remaining replies from the batch
+/* Reply batch finalization. Dispatch remaining replies from the batch
  * and release remaining spinlock.
- *
- * \param b batch
  */
 static void rs_batch_fini(struct rs_batch *b)
 {
@@ -359,8 +330,7 @@ static void rs_batch_fini(struct rs_batch *b)
 #define DECLARE_RS_BATCH(b)     struct rs_batch b
 
 
-/**
- * Put reply state into a queue for processing because we received
+/* Put reply state into a queue for processing because we received
  * ACK from the client
  */
 void ptlrpc_dispatch_difficult_reply(struct ptlrpc_reply_state *rs)
@@ -602,7 +572,14 @@ static void ptlrpc_server_nthreads_check(struct ptlrpc_service *svc,
 }
 
 /**
- * Initialize percpt data for a service
+ * ptlrpc_service_part_init() - Initialize percpt data for a service
+ * @svc: pointer to ptlrpc_service struct
+ * @svcpt: pltrpc_service_part which is to get intialize
+ * @cpt: CPU ID @svcpt will be tied to
+ *
+ * Returns:
+ * * %0 on success
+ * * %negative on failure
  */
 static int ptlrpc_service_part_init(struct ptlrpc_service *svc,
 				    struct ptlrpc_service_part *svcpt, int cpt)
@@ -696,9 +673,15 @@ static int ptlrpc_service_part_init(struct ptlrpc_service *svc,
 }
 
 /**
- * Initialize service on a given portal.
- * This includes starting serving threads , allocating and posting rqbds and
+ * ptlrpc_register_service() - Initialize service on a given portal (LNET)
+ * @conf: pointer to ptlrpc_service_conf (configuration)
+ * @parent: Parent directory under sysfs
+ * @debugfs_entry: Parent directoy under debugfs
+ *
+ * This includes starting serving threads, allocating and posting rqbds and
  * so on.
+ *
+ * Return pointer to ptlrpc_service on Success else ERR_PTR on failure
  */
 struct ptlrpc_service *ptlrpc_register_service(struct ptlrpc_service_conf *conf,
 					       struct kset *parent,
@@ -708,7 +691,8 @@ struct ptlrpc_service *ptlrpc_register_service(struct ptlrpc_service_conf *conf,
 	struct ptlrpc_service *service;
 	struct ptlrpc_service_part *svcpt;
 	struct cfs_cpt_table *cptable;
-	__u32 *cpts = NULL;
+	char param[MAX_OBD_NAME * 4];
+	u32 *cpts = NULL;
 	int ncpts;
 	int cpt;
 	int rc;
@@ -836,13 +820,25 @@ struct ptlrpc_service *ptlrpc_register_service(struct ptlrpc_service_conf *conf,
 	mutex_unlock(&ptlrpc_all_services_mutex);
 
 	if (parent) {
+		char *path, *tmp;
+
 		rc = ptlrpc_sysfs_register_service(parent, service);
 		if (rc)
 			GOTO(failed, rc);
+
+		path = kobject_get_path(&parent->kobj, GFP_KERNEL);
+		if (path) {
+			tmp = path + strlen("/fs/lustre/");
+			scnprintf(param, sizeof(param), "%s.%s.stats",
+				  tmp, service->srv_name);
+			tmp = param;
+			while ((tmp = strchr(tmp, '/')) != NULL)
+				*tmp = '.';
+			kfree(path);
+		}
 	}
 
-	if (debugfs_entry != NULL)
-		ptlrpc_ldebugfs_register_service(debugfs_entry, service);
+	ptlrpc_ldebugfs_register_service(debugfs_entry, param, service);
 
 	rc = ptlrpc_service_nrs_setup(service);
 	if (rc != 0)
@@ -866,7 +862,10 @@ failed:
 EXPORT_SYMBOL(ptlrpc_register_service);
 
 /**
- * to actually free the request, must be called without holding svc_lock.
+ * ptlrpc_server_free_request() - free the request
+ * @req: ptlrpc request
+ *
+ * Actually free the request, must be called without holding svc_lock.
  * note it's caller's responsibility to unlink req->rq_list.
  */
 static void ptlrpc_server_free_request(struct ptlrpc_request *req)
@@ -893,6 +892,9 @@ static void ptlrpc_server_free_request(struct ptlrpc_request *req)
 }
 
 /**
+ * ptlrpc_server_drop_request() - drop a reference count of the request
+ * @req: pltrpc request
+ *
  * drop a reference count of the request. if it reaches 0, we either
  * put it into history list, or free it immediately.
  */
@@ -1029,9 +1031,14 @@ static void ptlrpc_add_exp_list_nolock(struct ptlrpc_request *req,
 		set_bit(tag - 1, export->exp_used_slots);
 }
 
-static void ptlrpc_del_exp_list(struct ptlrpc_request *req)
+void ptlrpc_del_exp_list(struct ptlrpc_request *req)
 {
-	__u16 tag = lustre_msg_get_tag(req->rq_reqmsg);
+	__u16 tag = 0;
+
+	if (unlikely(!req->rq_export))
+		return;
+	if (likely(req->rq_reqmsg))
+		tag = lustre_msg_get_tag(req->rq_reqmsg);
 
 	spin_lock(&req->rq_export->exp_rpc_lock);
 	list_del_init(&req->rq_exp_list);
@@ -1040,7 +1047,13 @@ static void ptlrpc_del_exp_list(struct ptlrpc_request *req)
 	spin_unlock(&req->rq_export->exp_rpc_lock);
 }
 
-/** Change request export and move hp request from old export to new */
+/**
+ * ptlrpc_request_change_export() - Change request export
+ * @req: ptlrpc request export to be changed
+ * @export: new export @req is changed to
+ *
+ * Change request export and move hp request from old export to new
+ */
 void ptlrpc_request_change_export(struct ptlrpc_request *req,
 				  struct obd_export *export)
 {
@@ -1065,8 +1078,7 @@ void ptlrpc_request_change_export(struct ptlrpc_request *req,
 	class_export_rpc_inc(export);
 }
 
-/**
- * to finish a request: stop sending more early replies, and release
+/* to finish a request: stop sending more early replies, and release
  * the request.
  */
 static void ptlrpc_server_finish_request(struct ptlrpc_service_part *svcpt,
@@ -1077,8 +1089,7 @@ static void ptlrpc_server_finish_request(struct ptlrpc_service_part *svcpt,
 	ptlrpc_server_drop_request(req);
 }
 
-/**
- * to finish an active request: stop sending more early replies, and release
+/* to finish an active request: stop sending more early replies, and release
  * the request. should be called after we finished handling the request.
  */
 static void ptlrpc_server_finish_active_request(
@@ -1101,34 +1112,166 @@ static void ptlrpc_server_finish_active_request(
 }
 
 /**
+ * ptlrpc_export_timeout() - Calcuate an export eviction timeout
+ * @obd: export to calucalte the timout of
+ * @at: AT of RPC service time to calculate timeout for
+ * @netl: network AT
+ * @rpc_left_time: left service time for the current RPC 0 if not applicable
+ * @pinger: if the caller is ping evictor or ldlm
+ *
+ * Calculate an export eviction timeout.
+ * Used for both cases, lock prolong timeout and ping evictor timeout.
+ *
+ * Whereas a problem client may be still alive trying hard to reconnect and to
+ * resend its RPCs, we should not consider the worst ever case, consisting of
+ * a chain of failures on each step. Let this timeout survive a recovery of
+ * just 1 failure:
+ * - an RPC timeout;
+ * - a re-connect success;
+ *
+ * For lock prolong timeout, we are in the middle of the process -
+ * BL AST is sent, CANCEL is ahead - it is still 1 reply for the current RPC
+ * and at least 1 another RPC (which will trigger another refresh if it will be
+ * not CANCEL) - but more accurate than ldlm_bl_timeout as the timeout is taken
+ * from the RPC (i.e. the view of the client on the current AT) is taken into
+ * account.
+ *
+ * Return timeout in seconds to wait for the next client's RPC
+ */
+static timeout_t ptlrpc_export_timeout(struct obd_device *obd,
+				       struct adaptive_timeout *at,
+				       timeout_t netl,
+				       timeout_t rpc_left_time,
+				       bool pinger)
+{
+	timeout_t timeout, at_timeout, req_timeout;
+
+	if (obd_at_off(obd))
+		return obd_timeout / 2;
+
+	LASSERT(at != NULL);
+	at_timeout = at_est2timeout(obd_at_get(obd, at)) + netl;
+
+	if (pinger) {
+		/* There might be a delay till the next RPC. In fact it is two
+		 * PING_INTERVALs due to ptlrpc_pinger_main logic.
+		 * In addition, the ping itself may time out, but no resend will
+		 * be needed, export is updated on re-connect */
+		timeout = 2 * PING_INTERVAL + at_timeout;
+	} else {
+		/* For the lock prolong, we have an RPC in hand, which may still
+		 * get its reply lost. Thus, it may be either this one or the
+		 * next client's RPC times out, take the max.
+		 * Considering the current RPC, take just the left time. */
+		req_timeout = max(rpc_left_time + (netl >> 1), at_timeout);
+		/* Adding the RPC resend time */
+		timeout = req_timeout + at_timeout;
+	}
+
+	/* Adding the re-connect time */
+	timeout += INITIAL_CONNECT_TIMEOUT + netl;
+
+	/* Let's be a bit more conservative than client */
+	return max(timeout + (timeout >> 4),
+		   (timeout_t)obd_get_ldlm_enqueue_min(obd));
+}
+
+/**
+ * ptlrpc_export_prolong_timeout() - Used for lock prolog timeout
+ * @req: ptlrpc request
+ * @recovery: True if this is recovery
+ *
+ * Used for lock prolog timeout, calculates a timeout for CANCEL to come.
+ * Also used for recovery, calculates a timeout for a next recovery RPC to come.
+ * In this case, there is an RPC, in hand. Thus, a particular svcpt AT is used.
+ *
+ * The reverse import network AT is used as an estimate for the client side one.
+ *
+ * Returns timeout value (seconds)
+ */
+timeout_t ptlrpc_export_prolong_timeout(struct ptlrpc_request *req,
+					bool recovery)
+{
+	timeout_t netl;
+
+	if (recovery)
+		netl = lustre_msg_get_service_timeout(req->rq_reqmsg);
+	else
+		netl = obd_at_get(req->rq_export->exp_obd,
+				  &req->rq_export->exp_imp_reverse->
+				  imp_at.iat_net_latency);
+
+	return ptlrpc_export_timeout(req->rq_export->exp_obd,
+				     &req->rq_rqbd->rqbd_svcpt->scp_at_estimate,
+				     netl, req->rq_deadline -
+				     ktime_get_real_seconds(), false);
+}
+
+/*
+ * Used for ping evictor, calculates a timeout for any next RPC to come.
+ * As there are different portals and the AT stats is separated for them,
+ * just the last RPC AT is used here.
+ *
+ * The reverse import network AT is used as an estimate for the client side one.
+ */
+static timeout_t ptlrpc_export_pinger_timeout(struct ptlrpc_request *req)
+{
+	struct obd_import *revimp = req->rq_export->exp_imp_reverse;
+	timeout_t netl = obd_at_get(req->rq_export->exp_obd,
+				    &revimp->imp_at.iat_net_latency);
+
+	return ptlrpc_export_timeout(req->rq_export->exp_obd,
+				     &req->rq_rqbd->rqbd_svcpt->scp_at_estimate,
+				     netl, 0, true);
+}
+
+/*
+ * In this case the net was down and just came back, when the 1st timeout has
+ * been already expired, clients just keep sending re-connects, switching
+ * between different connections, thus what is to be covered:
+ * - a previous reconnect to not yet recovered network, times out;
+ * - the second reconnect to the failover pair, ENODEV;
+ * - the third reconnect succeeds;
+ */
+static timeout_t ptlrpc_export_extra_timeout(struct obd_export *exp)
+{
+	timeout_t netl, tout;
+
+	/* As this is not the 1st re-connection failure, the client might
+	 * have net latency get extended to the max - CONNECTION_SWITCH_MAX */
+	netl = obd_at_get(exp->exp_obd,
+			  &exp->exp_imp_reverse->imp_at.iat_net_latency);
+	tout = 3 * (INITIAL_CONNECT_TIMEOUT +
+		    max((timeout_t)CONNECTION_SWITCH_MAX, netl));
+
+	/* Let's be a bit more conservative than client */
+	return tout + (tout >> 4);
+}
+
+/*
  * This function makes sure dead exports are evicted in a timely manner.
  * This function is only called when some export receives a message (i.e.,
  * the network is up.)
  */
-void ptlrpc_update_export_timer(struct obd_export *exp, time64_t extra_delay)
+void ptlrpc_update_export_timer(struct ptlrpc_request *req)
 {
-	struct obd_export *oldest_exp, *newest_exp;
-	time64_t oldest_time, current_time;
-	bool	evict = false;
+	struct obd_export *oldest_exp, *newest_exp, *exp;
+	time64_t current_time, timeout;
+	bool evict = false;
+	void *data;
+	int rc;
 	ENTRY;
 
-	LASSERT(exp);
+	LASSERT(req != NULL);
+	LASSERT(req->rq_export != NULL);
 
-	/*
-	 * Compensate for slow machines, etc, by faking our request time
-	 * into the future.  Although this can break the strict time-ordering
-	 * of the list, we can be really lazy here - we don't have to evict
-	 * at the exact right moment.  Eventually, all silent exports
-	 * will make it to the top of the list.
-	 */
-
-	/* Do not pay attention on 1sec or smaller renewals. */
+	exp = req->rq_export;
 	current_time = ktime_get_real_seconds();
-	/* 1 seconds */
-	if (exp->exp_last_request_time + 1 >= current_time + extra_delay)
-		RETURN_EXIT;
 
-	exp->exp_last_request_time = current_time + extra_delay;
+	rc = obd_export_timed_init(exp, &data);
+	if (rc)
+		/* will be updated next time */
+		RETURN_EXIT;
 
 	/*
 	 * exports may get disconnected from the chain even though the
@@ -1136,54 +1279,60 @@ void ptlrpc_update_export_timer(struct obd_export *exp, time64_t extra_delay)
 	 * manipulating the lists
 	 */
 	spin_lock(&exp->exp_obd->obd_dev_lock);
-
-	if (list_empty(&exp->exp_obd_chain_timed)) {
+	if (list_empty(&exp->exp_timed_chain)) {
 		/* this one is not timed */
 		spin_unlock(&exp->exp_obd->obd_dev_lock);
-		RETURN_EXIT;
+		GOTO(err, 0);
 	}
 
-	newest_exp = list_last_entry(&exp->exp_obd->obd_exports_timed,
-				     struct obd_export, exp_obd_chain_timed);
+	exp->exp_last_request_time = current_time;
 
-	list_move_tail(&exp->exp_obd_chain_timed,
-		       &exp->exp_obd->obd_exports_timed);
+	timeout = ptlrpc_export_pinger_timeout(req);
+
+	/* Do not pay attention on 1sec or smaller renewals. */
+	if (exp->exp_deadline + 1 >= current_time + timeout) {
+		spin_unlock(&exp->exp_obd->obd_dev_lock);
+		GOTO(err, 0);
+	}
+
+	newest_exp = obd_export_timed_get(exp->exp_obd, true);
+	obd_export_timed_del(exp);
+	exp->exp_deadline = current_time + timeout;
+	obd_export_timed_add(exp, &data);
 
 	if (test_bit(OBDF_RECOVERING, exp->exp_obd->obd_flags)) {
 		/* be nice to everyone during recovery */
 		spin_unlock(&exp->exp_obd->obd_dev_lock);
-		RETURN_EXIT;
+		GOTO(err, 0);
 	}
-
-	oldest_exp = list_entry(exp->exp_obd->obd_exports_timed.next,
-				struct obd_export, exp_obd_chain_timed);
-
-	oldest_time = oldest_exp->exp_last_request_time;
+	oldest_exp = obd_export_timed_get(exp->exp_obd, false);
 
 	/* Check if the oldest entry is expired. */
-	if (exp->exp_obd->obd_eviction_timer == 0 &&
-	    current_time > oldest_time + PING_EVICT_TIMEOUT + extra_delay) {
-
-		if (current_time < newest_exp->exp_last_request_time +
-			     PING_EVICT_TIMEOUT / 2) {
-			/* If import is active - evict stale clients */
-			evict = true;
-		} else {
-			/*
-			 * We need a second timer, in case the net was down and
-			 * it just came back. Since the pinger may skip every
-			 * other PING_INTERVAL (see note in ptlrpc_pinger_main),
-			 * we better wait for 3.
-			 */
-			exp->exp_obd->obd_eviction_timer =
-				ktime_get_real_seconds() + 3 * PING_INTERVAL;
-			CDEBUG(D_HA, "%s: Think about evicting %s from %lld\n",
-			       exp->exp_obd->obd_name,
-			       obd_export_nid2str(oldest_exp), oldest_time);
-
+	if (exp->exp_obd->obd_eviction_timer == 0) {
+		if (current_time > oldest_exp->exp_deadline) {
+			timeout = newest_exp->exp_last_request_time +
+				((newest_exp->exp_deadline -
+				  newest_exp->exp_last_request_time) >> 1);
+			if (current_time < timeout) {
+				/* If import is active - evict stale clients */
+				evict = true;
+			} else {
+				/*
+				 * We need a second timer, in case the net was
+				 * down and it just came back.
+				 */
+				exp->exp_obd->obd_eviction_timer =
+					ktime_get_real_seconds() +
+					ptlrpc_export_extra_timeout(oldest_exp);
+				CDEBUG(D_HA, "%s: Think about evicting %s "
+				       "from %lld deadline at %lld\n",
+				       exp->exp_obd->obd_name,
+				       obd_export_nid2str(oldest_exp),
+				       oldest_exp->exp_deadline,
+				       exp->exp_obd->obd_eviction_timer);
+			}
 		}
 	}
-
 	spin_unlock(&exp->exp_obd->obd_dev_lock);
 
 	if (evict) {
@@ -1191,7 +1340,7 @@ void ptlrpc_update_export_timer(struct obd_export *exp, time64_t extra_delay)
 		ping_evictor_wake(exp);
 	} else {
 		if (ktime_get_real_seconds() >
-		    (exp->exp_obd->obd_eviction_timer + extra_delay)) {
+		    exp->exp_obd->obd_eviction_timer) {
 			/*
 			 * The evictor won't evict anyone who we've heard from
 			 * recently, so we don't have to check before we start
@@ -1203,10 +1352,14 @@ void ptlrpc_update_export_timer(struct obd_export *exp, time64_t extra_delay)
 	}
 
 	EXIT;
+err:
+	obd_export_timed_fini(exp, &data);
 }
 
 /**
- * Sanity check request \a req.
+ * ptlrpc_check_req() - Sanity check request @req.
+ * @req: ptlrpc request
+ *
  * Return 0 if all is ok, error code otherwise.
  */
 static int ptlrpc_check_req(struct ptlrpc_request *req)
@@ -1353,8 +1506,7 @@ static void ptlrpc_at_remove_timed(struct ptlrpc_request *req)
 	array->paa_count--;
 }
 
-/*
- * Attempt to extend the request deadline by sending an early reply to the
+/* Attempt to extend the request deadline by sending an early reply to the
  * client.
  */
 static int ptlrpc_at_send_early_reply(struct ptlrpc_request *req)
@@ -1497,6 +1649,7 @@ static int ptlrpc_at_send_early_reply(struct ptlrpc_request *req)
 			lustre_msg_get_handle(reqcopy->rq_reqmsg));
 	if (reqcopy->rq_export == NULL)
 		GOTO(out, rc = -ENODEV);
+	INIT_LIST_HEAD(&reqcopy->rq_exp_list);
 
 	/* RPC ref */
 	class_export_rpc_inc(reqcopy->rq_export);
@@ -1689,7 +1842,7 @@ found:
 	return tmp;
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static void ptlrpc_server_mark_obsolete(struct ptlrpc_request *req)
 {
 	spin_lock(&req->rq_lock);
@@ -1733,11 +1886,14 @@ ptlrpc_server_mark_in_progress_obsolete(struct ptlrpc_request *req)
 #endif
 
 /**
- * Check if a request should be assigned with a high priority.
+ * ptlrpc_server_hpreq_init() - Check request can be assigned with high priority
+ * @svcpt: the PTLRPC service partition
+ * @req: ptlrpc thread
  *
- * \retval	< 0: error occurred
- *		  0: normal RPC request
- *		 +1: high priority request
+ * Return:
+ * * %<0 error occurred
+ * * %0 normal RPC request
+ * * %1 high priority request
  */
 static int ptlrpc_server_hpreq_init(struct ptlrpc_service_part *svcpt,
 				    struct ptlrpc_request *req)
@@ -1777,7 +1933,7 @@ static int ptlrpc_server_hpreq_init(struct ptlrpc_service_part *svcpt,
 	RETURN(rc);
 }
 
-/** Remove the request from the export list. */
+/* Remove the request from the export list. */
 static void ptlrpc_server_hpreq_fini(struct ptlrpc_request *req)
 {
 	ENTRY;
@@ -1825,7 +1981,8 @@ static int ptlrpc_server_request_add(struct ptlrpc_service_part *svcpt,
 {
 	int rc;
 	bool hp;
-	struct ptlrpc_request *orig;
+	struct ptlrpc_request *orig = NULL;
+	int opc;
 
 	ENTRY;
 
@@ -1836,6 +1993,8 @@ static int ptlrpc_server_request_add(struct ptlrpc_service_part *svcpt,
 	hp = rc > 0;
 	ptlrpc_nrs_req_initialize(svcpt, req, hp);
 
+	opc = lustre_msg_get_opc(req->rq_reqmsg);
+
 	while (req->rq_export != NULL) {
 		struct obd_export *exp = req->rq_export;
 
@@ -1844,16 +2003,25 @@ static int ptlrpc_server_request_add(struct ptlrpc_service_part *svcpt,
 		 * atomically
 		 */
 		spin_lock_bh(&exp->exp_rpc_lock);
-#ifdef HAVE_SERVER_SUPPORT
-		ptlrpc_server_mark_in_progress_obsolete(req);
-#endif
-		orig = ptlrpc_server_check_resend_in_progress(req);
-		if (orig && CFS_FAIL_PRECHECK(OBD_FAIL_PTLRPC_RESEND_RACE)) {
-			spin_unlock_bh(&exp->exp_rpc_lock);
 
-			CFS_RACE(OBD_FAIL_PTLRPC_RESEND_RACE);
-			msleep(4 * MSEC_PER_SEC);
-			continue;
+		/* Cancels are unbounded unlimited requests, they are also
+		 * stateless, so we don't really want to search for duplicates
+		 * as that can take a really long time (under spinlock at that.
+		 * There might be other requests like this and we might want to
+		 * make this code a bit more generic, but this should plug
+		 * the most obious hole for now */
+		if (opc != LDLM_CANCEL) {
+#ifdef CONFIG_LUSTRE_FS_SERVER
+			ptlrpc_server_mark_in_progress_obsolete(req);
+#endif
+			orig = ptlrpc_server_check_resend_in_progress(req);
+			if (orig && CFS_FAIL_PRECHECK(OBD_FAIL_PTLRPC_RESEND_RACE)) {
+				spin_unlock_bh(&exp->exp_rpc_lock);
+
+				CFS_RACE(OBD_FAIL_PTLRPC_RESEND_RACE);
+				msleep(4 * MSEC_PER_SEC);
+				continue;
+			}
 		}
 
 		if (orig && likely(atomic_inc_not_zero(&orig->rq_refcount))) {
@@ -1912,7 +2080,7 @@ static int ptlrpc_server_request_add(struct ptlrpc_service_part *svcpt,
 	RETURN(0);
 }
 
-/**
+/*
  * Allow to handle high priority request
  * User can call it w/o any lock but need to hold
  * ptlrpc_service_part::scp_req_lock to get reliable result
@@ -1956,7 +2124,7 @@ static bool ptlrpc_server_high_pending(struct ptlrpc_service_part *svcpt,
 	       ptlrpc_nrs_req_pending_nolock(svcpt, true);
 }
 
-/**
+/*
  * Only allow normal priority requests on a service that has a high-priority
  * queue if forced (i.e. cleanup), if there are other high priority requests
  * already being processed (i.e. those threads can service more high-priority
@@ -2000,13 +2168,13 @@ static bool ptlrpc_server_normal_pending(struct ptlrpc_service_part *svcpt,
 	       ptlrpc_nrs_req_pending_nolock(svcpt, false);
 }
 
-/**
+/*
  * Returns true if there are requests available in incoming
  * request queue for processing and it is allowed to fetch them.
  * User can call it w/o any lock but need to hold ptlrpc_service::scp_req_lock
  * to get reliable result
- * \see ptlrpc_server_allow_normal
- * \see ptlrpc_server_allow high
+ * see @ptlrpc_server_allow_normal
+ * see @ptlrpc_server_allow high
  */
 static inline
 bool ptlrpc_server_request_pending(struct ptlrpc_service_part *svcpt,
@@ -2017,9 +2185,14 @@ bool ptlrpc_server_request_pending(struct ptlrpc_service_part *svcpt,
 }
 
 /**
- * Fetch a request for processing from queue of unprocessed requests.
+ * ptlrpc_server_request_get() - Fetch a request for processing from queue of
+ * unprocessed requests.
+ * @svcpt: the PTLRPC service partition
+ * @force: If true Fetch the request regardless (even if it is stuck)
+ *
  * Favors high-priority requests.
- * Returns a pointer to fetched request.
+ *
+ * Returns a pointer to fetched request else NULL
  */
 static struct ptlrpc_request *
 ptlrpc_server_request_get(struct ptlrpc_service_part *svcpt, bool force)
@@ -2064,10 +2237,17 @@ got_request:
 }
 
 /**
- * Handle freshly incoming reqs, add to timed early reply list,
- * pass on to regular request queue.
- * All incoming requests pass through here before getting into
- * ptlrpc_server_handle_req later on.
+ * ptlrpc_server_handle_req_in() - Handle freshly incoming reqs
+ * @svcpt: the PTLRPC service partition
+ * @thread: ptlrpc thread
+ *
+ * Handle freshly incoming reqs, add to timed early reply list, pass on to
+ * regular request queue. All incoming requests pass through here before getting
+ * into @ptlrpc_server_handle_req later on.
+ *
+ * Return:
+ * * %0 Request was processed
+ * * %1 Request not processed or no request available
  */
 static int ptlrpc_server_handle_req_in(struct ptlrpc_service_part *svcpt,
 				       struct ptlrpc_thread *thread)
@@ -2177,7 +2357,8 @@ static int ptlrpc_server_handle_req_in(struct ptlrpc_service_part *svcpt,
 
 		if (rc)
 			goto err_req;
-		ptlrpc_update_export_timer(req->rq_export, 0);
+
+		ptlrpc_update_export_timer(req);
 	}
 
 	/* req_in handling should/must be fast */
@@ -2250,8 +2431,15 @@ err_req:
 }
 
 /**
- * Main incoming request handling logic.
+ * ptlrpc_server_handle_request() - Main incoming request handling logic
+ * @svcpt: pointer to struct ptlrpc_service_part
+ * @thread: pointer to struct ptlrpc_thread(actual handling done by this thread)
+ *
  * Calls handler function from service to do actual processing.
+ *
+ * Return:
+ * * %1 request is processed
+ * * %0 no request processed or request not available
  */
 static int ptlrpc_server_handle_request(struct ptlrpc_service_part *svcpt,
 					struct ptlrpc_thread *thread)
@@ -2312,9 +2500,8 @@ static int ptlrpc_server_handle_request(struct ptlrpc_service_part *svcpt,
 	if (likely(request->rq_export)) {
 		if (unlikely(ptlrpc_check_req(request)))
 			goto put_conn;
-		ptlrpc_update_export_timer(request->rq_export,
-					   div_u64(timediff_usecs,
-						   USEC_PER_SEC / 2));
+
+		ptlrpc_update_export_timer(request);
 	}
 
 	/*
@@ -2343,8 +2530,14 @@ static int ptlrpc_server_handle_request(struct ptlrpc_service_part *svcpt,
 	       libcfs_idstr(&request->rq_peer), op,
 	       lustre_msg_get_jobid(request->rq_reqmsg) ?: "");
 
-	if (op != OBD_PING)
-		CFS_FAIL_TIMEOUT_MS(OBD_FAIL_PTLRPC_PAUSE_REQ, cfs_fail_val);
+	if (CFS_FAIL_PRECHECK(OBD_FAIL_PTLRPC_PAUSE_REQ)) {
+		if (op != OBD_PING && op != OST_STATFS &&
+		    op != MDS_STATFS && op != OST_CREATE &&
+		    op != OST_DISCONNECT) {
+			DEBUG_REQ(D_ERROR, request, "HIT");
+			CFS_FAIL_TIMEOUT_MS(OBD_FAIL_PTLRPC_PAUSE_REQ, cfs_fail_val);
+		}
+	}
 
 	CDEBUG(D_NET, "got req %llu\n", request->rq_xid);
 
@@ -2410,15 +2603,18 @@ put_conn:
 			  request->rq_early_count,
 			  div_u64(arrived_usecs, USEC_PER_SEC));
 	}
+	if (unlikely(request->rq_pause_after_reply)) {
+		DEBUG_REQ(D_WARNING, request, "pause req after reply");
+		schedule_timeout_uninterruptible(cfs_time_seconds(3));
+		DEBUG_REQ(D_WARNING, request, "continue");
+	}
 
 	ptlrpc_server_finish_active_request(svcpt, request);
 
 	RETURN(1);
 }
 
-/**
- * An internal function to process a single reply state object.
- */
+/* An internal function to process a single reply state object. */
 static int ptlrpc_handle_rs(struct ptlrpc_reply_state *rs)
 {
 	struct ptlrpc_service_part *svcpt = rs->rs_svcpt;
@@ -2514,7 +2710,7 @@ static int ptlrpc_handle_rs(struct ptlrpc_reply_state *rs)
 
 		class_export_put(exp);
 		rs->rs_export = NULL;
-		ptlrpc_rs_decref(rs);
+		kref_put(&rs->rs_refcount, lustre_free_reply_state);
 		if (atomic_dec_and_test(&svcpt->scp_nreps_difficult) &&
 		    svc->srv_is_stopping)
 			wake_up_all(&svcpt->scp_waitq);
@@ -2559,9 +2755,15 @@ static inline int ptlrpc_threads_enough(struct ptlrpc_service_part *svcpt)
 }
 
 /**
- * allowed to create more threads
+ * ptlrpc_threads_increasable() - allowed to create more threads
+ * @svcpt: the PTLRPC service partition to increase thread
+ *
  * user can call it w/o any lock but need to hold
  * ptlrpc_service_part::scp_lock to get reliable result
+ *
+ * Return:
+ * * %0 if it can be increased
+ * * %1 if it cannot be increased
  */
 static inline int ptlrpc_threads_increasable(struct ptlrpc_service_part *svcpt)
 {
@@ -2570,9 +2772,7 @@ static inline int ptlrpc_threads_increasable(struct ptlrpc_service_part *svcpt)
 	       svcpt->scp_service->srv_nthrs_cpt_limit;
 }
 
-/**
- * too many requests and allowed to create more threads
- */
+/* too many requests and allowed to create more threads */
 static inline int ptlrpc_threads_need_create(struct ptlrpc_service_part *svcpt)
 {
 	return !ptlrpc_threads_enough(svcpt) &&
@@ -2653,7 +2853,7 @@ static void ptlrpc_watchdog_fire(struct work_struct *work)
 			      thread->t_task->comm, thread->t_task->pid,
 			      ms_elapsed, ms_frac);
 
-		libcfs_debug_dumpstack(thread->t_task);
+		sched_show_task(thread->t_task);
 	} else {
 		LCONSOLE_WARN("%s: service thread pid %u was inactive for %llu.%03u seconds. Watchdog stack traces are limited to 3 per %u seconds, skipping this one.\n",
 			      thread->t_task->comm, thread->t_task->pid,
@@ -2717,15 +2917,28 @@ void ptlrpc_watchdog_delete(struct delayed_work *work)
 }
 
 /**
- * requests wait on preprocessing
+ * ptlrpc_server_request_incoming() - check incoming queue for requests which
+ * is waiting for processing
+ * @svcpt: pointer to struct ptlrpc_service_part
+ *
  * user can call it w/o any lock but need to hold
  * ptlrpc_service_part::scp_lock to get reliable result
+ *
+ * Returns:
+ * * %1 if incoming requests waiting to be processed
+ * * %0 if incoming request queue is empty
  */
 static inline int
 ptlrpc_server_request_incoming(struct ptlrpc_service_part *svcpt)
 {
 	return !list_empty(&svcpt->scp_req_incoming);
 }
+
+/* We perfer lifo queuing, but kernel doesn't provide that yet. */
+#ifndef wait_event_idle_exclusive_lifo
+#define wait_event_idle_exclusive_lifo wait_event_idle_exclusive
+#define wait_event_idle_exclusive_lifo_timeout wait_event_idle_exclusive_timeout
+#endif
 
 static __attribute__((__noinline__)) int
 ptlrpc_wait_event(struct ptlrpc_service_part *svcpt,
@@ -2762,21 +2975,15 @@ ptlrpc_wait_event(struct ptlrpc_service_part *svcpt,
 	return 0;
 }
 
-#ifdef HAVE_SERVER_SUPPORT
-# ifdef HAVE_FLUSH_DELAYED_FPUT
-#  define cfs_flush_delayed_fput() flush_delayed_fput()
-# else
-void (*cfs_flush_delayed_fput)(void);
-# endif /* HAVE_FLUSH_DELAYED_FPUT */
-#else /* !HAVE_SERVER_SUPPORT */
-#define cfs_flush_delayed_fput() do {} while (0)
-#endif /* HAVE_SERVER_SUPPORT */
-
 /**
- * Main thread body for service threads.
+ * ptlrpc_main() - Main thread body for service threads.
+ * @arg: pointer to a struct ptlrpc_thread
+ *
  * Waits in a loop waiting for new requests to process to appear.
  * Every time an incoming requests is added to its queue, a waitq
  * is woken up and one of the threads will handle it.
+ *
+ * Returns 0 on success or error code on failure
  */
 static int ptlrpc_main(void *arg)
 {
@@ -2878,16 +3085,8 @@ static int ptlrpc_main(void *arg)
 	CDEBUG(D_NET, "service thread %d (#%d) started\n", thread->t_id,
 	       svcpt->scp_nthrs_running);
 
-#ifdef HAVE_SERVER_SUPPORT
-#ifndef HAVE_FLUSH_DELAYED_FPUT
-	if (unlikely(cfs_flush_delayed_fput == NULL))
-		cfs_flush_delayed_fput =
-			cfs_kallsyms_lookup_name("flush_delayed_fput");
-#endif
-#endif
 	/* XXX maintain a list of all managed devices: insert here */
 	while (!ptlrpc_thread_stopping(thread)) {
-		bool idle = true;
 
 		if (ptlrpc_wait_event(svcpt, thread))
 			break;
@@ -2897,7 +3096,6 @@ static int ptlrpc_main(void *arg)
 		if (ptlrpc_threads_need_create(svcpt)) {
 			/* Ignore return code - we tried... */
 			ptlrpc_start_thread(svcpt, 0);
-			idle = false;
 		}
 
 		/* reset le_ses to initial state */
@@ -2915,7 +3113,6 @@ static int ptlrpc_main(void *arg)
 			if (counter++ < 100)
 				continue;
 			counter = 0;
-			idle = false;
 		}
 
 		if (ptlrpc_at_check(svcpt))
@@ -2925,7 +3122,6 @@ static int ptlrpc_main(void *arg)
 			lu_context_enter(&env->le_ctx);
 			ptlrpc_server_handle_request(svcpt, thread);
 			lu_context_exit(&env->le_ctx);
-			idle = false;
 		}
 
 		if (ptlrpc_rqbd_pending(svcpt) &&
@@ -2938,15 +3134,7 @@ static int ptlrpc_main(void *arg)
 			svcpt->scp_rqbd_timeout = cfs_time_seconds(1) / 10;
 			CDEBUG(D_RPCTRACE, "Posted buffers: %d\n",
 			       svcpt->scp_nrqbds_posted);
-			idle = false;
 		}
-
-		/* If nothing to do, flush old alloc_file_pseudo() descriptors.
-		 * This has internal atomicity so it is OK to call often.
-		 * We could also do other idle tasks at this time.
-		 */
-		if (idle)
-			cfs_flush_delayed_fput();
 
 		/*
 		 * If the number of threads has been tuned downward and this
@@ -3005,8 +3193,14 @@ static int hrt_dont_sleep(struct ptlrpc_hr_thread *hrt,
 }
 
 /**
- * Main body of "handle reply" function.
+ * ptlrpc_hr_main() - Main body of "handle reply" function.
+ * @arg: Pointer to struct 'ptlrpc_hr_thread'
+ *
  * It processes acked reply states
+ *
+ * Returns:
+ * * %0 on success
+ * * %ERRNO on failure
  */
 static int ptlrpc_hr_main(void *arg)
 {
@@ -3181,9 +3375,7 @@ static void ptlrpc_svcpt_stop_threads(struct ptlrpc_service_part *svcpt)
 	EXIT;
 }
 
-/**
- * Stops all threads of a particular service \a svc
- */
+/* Stops all threads of a particular service @svc */
 static void ptlrpc_stop_all_threads(struct ptlrpc_service *svc)
 {
 	struct ptlrpc_service_part *svcpt;
@@ -3418,9 +3610,7 @@ void ptlrpc_hr_fini(void)
 }
 
 
-/**
- * Wait until all already scheduled replies are processed.
- */
+/* Wait until all already scheduled replies are processed */
 static void ptlrpc_wait_replies(struct ptlrpc_service_part *svcpt)
 {
 	while (1) {
@@ -3675,7 +3865,8 @@ int ptlrpc_unregister_service(struct ptlrpc_service *service)
 EXPORT_SYMBOL(ptlrpc_unregister_service);
 
 /**
- * Returns 0 if the service is healthy.
+ * ptlrpc_svcpt_health_check() - checks the health of a PTLRPC service
+ * @svcpt: PTLRPC service partition structure to be cecked for health
  *
  * Check whether requests have been waiting in the queue for an excessive
  * time without being processed.  Individual requests may wait in the queue
@@ -3684,6 +3875,10 @@ EXPORT_SYMBOL(ptlrpc_unregister_service);
  *
  * We'll use this health check to govern whether a node needs to be shot,
  * so it's intentionally non-aggressive.
+ *
+ * Returns:
+ * * %0 if the service is healthy.
+ * * %negative if the service is not healthy.
  */
 static int ptlrpc_svcpt_health_check(struct ptlrpc_service_part *svcpt)
 {

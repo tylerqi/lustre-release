@@ -1,37 +1,19 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * Client Lustre Object.
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
- *   Author: Jinshan Xiong <jinshan.xiong@intel.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Jinshan Xiong <jinshan.xiong@intel.com>
  */
 
 /*
@@ -46,7 +28,7 @@
 #define DEBUG_SUBSYSTEM S_CLASS
 
 #include <linux/list.h>
-#include <libcfs/libcfs.h>
+
 #include <obd_class.h>
 #include <obd_support.h>
 #include <lustre_fid.h>
@@ -64,7 +46,12 @@ unsigned short cl_page_kmem_size_array[16];
 static struct lock_class_key cl_attr_guard_class;
 
 /**
- * Initialize cl_object_header.
+ * cl_object_header_init() - Initialize cl_object_header (client side)
+ * @h: cl_object_header that needs to be initilized
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_header_init(struct cl_object_header *h)
 {
@@ -76,12 +63,13 @@ int cl_object_header_init(struct cl_object_header *h)
 		spin_lock_init(&h->coh_attr_guard);
 		lockdep_set_class(&h->coh_attr_guard, &cl_attr_guard_class);
 		h->coh_page_bufsize = 0;
+		set_bit(LU_OBJECT_DFREE, &h->coh_lu.loh_flags);
 	}
 	RETURN(result);
 }
 EXPORT_SYMBOL(cl_object_header_init);
 
-/**
+/*
  * Finalize cl_object_header.
  */
 void cl_object_header_fini(struct cl_object_header *h)
@@ -90,12 +78,20 @@ void cl_object_header_fini(struct cl_object_header *h)
 }
 
 /**
- * Returns a cl_object with a given \a fid.
+ * cl_object_find() - Returns cl_object (client side object) based on given @fid
+ * @env: current lustre environment
+ * @cd: client device (where to find object)
+ * @fid: globally unique identifier
+ * @c: Used for newly created object (not when returning from cache) provides
+ * object layout
  *
  * Returns either cached or newly created object. Additional reference on the
  * returned object is acquired.
+ * see lu_object_find(), cl_page_find(), cl_lock_find()
  *
- * \see lu_object_find(), cl_page_find(), cl_lock_find()
+ * Return:
+ * * %Success: Returns a pointer to the cl_object
+ * * %Failure: Returns an ERR_PTR encoded pointer
  */
 struct cl_object *cl_object_find(const struct lu_env *env,
                                  struct cl_device *cd, const struct lu_fid *fid,
@@ -107,12 +103,13 @@ struct cl_object *cl_object_find(const struct lu_env *env,
 EXPORT_SYMBOL(cl_object_find);
 
 /**
- * Releases a reference on \a o.
+ * cl_object_put() - Releases a reference on @o.
+ * @env: current lustre environment
+ * @o: cl_object to release
  *
  * When last reference is released object is returned to the cache, unless
  * lu_object_header_flags::LU_OBJECT_HEARD_BANSHEE bit is set in its header.
- *
- * \see cl_page_put(), cl_lock_put().
+ * see cl_page_put(), cl_lock_put().
  */
 void cl_object_put(const struct lu_env *env, struct cl_object *o)
 {
@@ -121,12 +118,12 @@ void cl_object_put(const struct lu_env *env, struct cl_object *o)
 EXPORT_SYMBOL(cl_object_put);
 
 /**
- * Acquire an additional reference to the object \a o.
+ * cl_object_get() - Acquire an additional reference to the object @o.
+ * @o: cl_object to get
  *
  * This can only be used to acquire _additional_ reference, i.e., caller
- * already has to possess at least one reference to \a o before calling this.
- *
- * \see cl_page_get(), cl_lock_get().
+ * already has to possess at least one reference to @o before calling this.
+ * see cl_page_get(), cl_lock_get().
  */
 void cl_object_get(struct cl_object *o)
 {
@@ -135,9 +132,12 @@ void cl_object_get(struct cl_object *o)
 EXPORT_SYMBOL(cl_object_get);
 
 /**
- * Returns the top-object for a given \a o.
+ * cl_object_top() - Returns the top-object for a given @o
+ * @o: pointer to cl_object within the client object stack
  *
- * \see cl_io_top()
+ * see cl_io_top()
+ *
+ * Return cl_object (top most) in the client object stack
  */
 struct cl_object *cl_object_top(struct cl_object *o)
 {
@@ -153,14 +153,13 @@ struct cl_object *cl_object_top(struct cl_object *o)
 }
 EXPORT_SYMBOL(cl_object_top);
 
-/**
- * Returns pointer to the lock protecting data-attributes for the given object
- * \a o.
+/*
+ * Returns pointer to the lock protecting data-attributes for the object @o.
  *
  * Data-attributes are protected by the cl_object_header::coh_attr_guard
  * spin-lock in the top-object.
  *
- * \see cl_attr, cl_object_attr_lock(), cl_object_operations::coo_attr_get().
+ * see cl_attr, cl_object_attr_lock(), cl_object_operations::coo_attr_get().
  */
 static spinlock_t *cl_object_attr_guard(struct cl_object *o)
 {
@@ -168,7 +167,8 @@ static spinlock_t *cl_object_attr_guard(struct cl_object *o)
 }
 
 /**
- * Locks data-attributes.
+ * cl_object_attr_lock() - Locks data-attributes.
+ * @o: cl_object to lock
  *
  * Prevents data-attributes from changing, until lock is released by
  * cl_object_attr_unlock(). This has to be called before calls to
@@ -182,6 +182,9 @@ __acquires(cl_object_attr_guard(o))
 EXPORT_SYMBOL(cl_object_attr_lock);
 
 /**
+ * cl_object_attr_unlock() - Releases data-attributes lock
+ * @o: cl_object to unlock
+ *
  * Releases data-attributes lock, acquired by cl_object_attr_lock().
  */
 void cl_object_attr_unlock(struct cl_object *o)
@@ -192,11 +195,18 @@ __releases(cl_object_attr_guard(o))
 EXPORT_SYMBOL(cl_object_attr_unlock);
 
 /**
- * Returns data-attributes of an object \a obj.
+ * cl_object_attr_get() - Returns data-attributes of an object @top
+ * @env: current lustre environment
+ * @top: cl_object for which to data attributes
+ * @attr: attribute which will be populated
  *
  * Every layer is asked (by calling cl_object_operations::coo_attr_get())
- * top-to-bottom to fill in parts of \a attr that this layer is responsible
+ * top-to-bottom to fill in parts of @attr that this layer is responsible
  * for.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_attr_get(const struct lu_env *env, struct cl_object *top,
 			struct cl_attr *attr)
@@ -222,14 +232,22 @@ int cl_object_attr_get(const struct lu_env *env, struct cl_object *top,
 EXPORT_SYMBOL(cl_object_attr_get);
 
 /**
- * Updates data-attributes of an object \a obj.
+ * cl_object_attr_update() - Updates data-attributes of an object @top.
+ * @env: current lustre environment
+ * @top: cl_object to update
+ * @attr: input value to be updated
+ * @v: valid fields in cl_attr that are being set
  *
- * Only attributes, mentioned in a validness bit-mask \a v are
+ * Only attributes, mentioned in a validness bit-mask @v are
  * updated. Calls cl_object_operations::coo_upd_attr() on every layer, bottom
  * to top.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_attr_update(const struct lu_env *env, struct cl_object *top,
-			  const struct cl_attr *attr, unsigned v)
+			  const struct cl_attr *attr, enum cl_attr_valid v)
 {
 	struct cl_object *obj;
 	int result = 0;
@@ -253,8 +271,12 @@ int cl_object_attr_update(const struct lu_env *env, struct cl_object *top,
 EXPORT_SYMBOL(cl_object_attr_update);
 
 /**
+ * cl_object_dirty_for_sync() - Mark inode(object) as dirty
+ * @env: current lustre environment
+ * @top: cl_object to be marked as dirty
+ *
  * Mark the inode as dirty when the inode has uncommitted (unstable) pages.
- * Thus when the system is under momory pressure, it will trigger writeback
+ * Thus when the system is under memory pressure, it will trigger writeback
  * on background to commit and unpin the pages.
  */
 void cl_object_dirty_for_sync(const struct lu_env *env, struct cl_object *top)
@@ -272,12 +294,20 @@ void cl_object_dirty_for_sync(const struct lu_env *env, struct cl_object *top)
 EXPORT_SYMBOL(cl_object_dirty_for_sync);
 
 /**
- * Notifies layers (bottom-to-top) that glimpse AST was received.
+ * cl_object_glimpse() - Notifies layers (bottom-to-top) that glimpse AST was
+ * received.
+ * @env: current lustre environment
+ * @top: cl_object (file) object to get glimpse
+ * @lvb: updated lvb struct with latest attribute [out]
  *
- * Layers have to fill \a lvb fields with information that will be shipped
- * back to glimpse issuer.
+ * Layers have to fill @lvb fields with information that will be shipped
+ * back to glimpse issuer (server)
  *
- * \see cl_lock_operations::clo_glimpse()
+ * see cl_lock_operations::clo_glimpse()
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_glimpse(const struct lu_env *env, struct cl_object *top,
 		      struct ost_lvb *lvb)
@@ -303,7 +333,14 @@ int cl_object_glimpse(const struct lu_env *env, struct cl_object *top,
 EXPORT_SYMBOL(cl_object_glimpse);
 
 /**
- * Updates a configuration of an object \a obj.
+ * cl_conf_set() - Updates a configuration of an object @top
+ * @env: current lustre environment
+ * @top: cl_object to update conf
+ * @conf: setting to be applied on @top
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_conf_set(const struct lu_env *env, struct cl_object *top,
 		const struct cl_object_conf *conf)
@@ -324,7 +361,13 @@ int cl_conf_set(const struct lu_env *env, struct cl_object *top,
 EXPORT_SYMBOL(cl_conf_set);
 
 /**
- * Prunes caches of pages and locks for this object.
+ * cl_object_prune() - Prunes caches of pages and locks for this object.
+ * @env: current lustre environment
+ * @top: cl_object to prune pages
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_prune(const struct lu_env *env, struct cl_object *top)
 {
@@ -345,7 +388,15 @@ int cl_object_prune(const struct lu_env *env, struct cl_object *top)
 EXPORT_SYMBOL(cl_object_prune);
 
 /**
- * Get stripe information of this object.
+ * cl_object_getstripe() - Get stripe information of this object.
+ * @env: current lustre environment
+ * @top: cl_object for which to get stripe info
+ * @uarg: user-space buffer to put stripe info [out]
+ * @size: size of @uarg
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_getstripe(const struct lu_env *env, struct cl_object *top,
 			struct lov_user_md __user *uarg, size_t size)
@@ -367,16 +418,16 @@ int cl_object_getstripe(const struct lu_env *env, struct cl_object *top,
 EXPORT_SYMBOL(cl_object_getstripe);
 
 /**
- * Get fiemap extents from file object.
+ * cl_object_fiemap() - Get fiemap extents from file object.
+ * @env: lustre environment
+ * @top: file object
+ * @key: fiemap request argument
+ * @fiemap: fiemap extents mapping retrived [out]
+ * @buflen: max buffer length of @fiemap
  *
- * \param env [in]	lustre environment
- * \param obj [in]	file object
- * \param key [in]	fiemap request argument
- * \param fiemap [out]	fiemap extents mapping retrived
- * \param buflen [in]	max buffer length of @fiemap
- *
- * \retval 0	success
- * \retval < 0	error
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_object_fiemap(const struct lu_env *env, struct cl_object *top,
 		     struct ll_fiemap_info_key *key,
@@ -447,29 +498,28 @@ int cl_object_flush(const struct lu_env *env, struct cl_object *top,
 }
 EXPORT_SYMBOL(cl_object_flush);
 
-int cl_object_inode_ops(const struct lu_env *env, struct cl_object *top,
-			enum coo_inode_opc opc, void *data)
+void cl_req_projid_set(const struct lu_env *env, struct cl_object *top,
+		       __u32 *projid)
 {
 	struct cl_object *obj;
-	int rc = 0;
 
 	ENTRY;
 
 	cl_object_for_each(obj, top) {
-		if (obj->co_ops->coo_inode_ops) {
-			rc = obj->co_ops->coo_inode_ops(env, obj, opc, data);
-			if (rc)
-				break;
-		}
+		if (obj->co_ops->coo_req_projid_set)
+			obj->co_ops->coo_req_projid_set(env, obj, projid);
 	}
-	RETURN(rc);
+	EXIT;
 }
-EXPORT_SYMBOL(cl_object_inode_ops);
+EXPORT_SYMBOL(cl_req_projid_set);
 
 /**
+ * cl_object_kill() - Mark object for deletion
+ * @env: current lustre environment
+ * @obj: cl_object which is marked for deletion
+ *
  * Helper function removing all object locks, and marking object for
  * deletion. All object pages must have been deleted at this point.
- *
  * This is called by cl_inode_fini() and lov_object_delete() to destroy top-
  * and sub- objects respectively.
  */
@@ -517,10 +567,16 @@ static int cache_stats_print(const struct cache_stats *cs,
 static void cl_env_percpu_refill(void);
 
 /**
- * Initialize client site.
+ * cl_site_init() - Initialize client site.
+ * @s: pointer to cl_site struct (lustre mount)
+ * @d: client device (where to find object)
  *
  * Perform common initialization (lu_site_init()), and initialize statistical
  * counters. Also perform global initializations on the first call.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 int cl_site_init(struct cl_site *s, struct cl_device *d)
 {
@@ -539,7 +595,8 @@ int cl_site_init(struct cl_site *s, struct cl_device *d)
 EXPORT_SYMBOL(cl_site_init);
 
 /**
- * Finalize client site. Dual to cl_site_init().
+ * cl_site_fini() - Finalize client site. Dual to cl_site_init().
+ * @s: pointer to cl_site (lustre mount)
  */
 void cl_site_fini(struct cl_site *s)
 {
@@ -553,8 +610,14 @@ static struct cache_stats cl_env_stats = {
 };
 
 /**
+ * cl_site_stats_print() - Outputs client site statistical counters into buffer
+ * @site: pointer to lu_site struct (lustre mount)
+ * @m: seq_file pointer
+ *
  * Outputs client site statistical counters into a buffer. Suitable for
  * ll_rd_*()-style functions.
+ *
+ * Return 0 always
  */
 int cl_site_stats_print(const struct cl_site *site, struct seq_file *m)
 {
@@ -586,12 +649,9 @@ locks: ...... ...... ...... ...... ...... [...... ...... ...... ...... ......]
 }
 EXPORT_SYMBOL(cl_site_stats_print);
 
-/*****************************************************************************
- *
+/*
  * lu_env handling on client.
- *
  */
-
 static unsigned cl_envs_cached_max = 32; /* XXX: prototype: arbitrary limit
 					  * for now. */
 static struct cl_env_cache {
@@ -636,10 +696,10 @@ static void cl_env_dec(enum cache_stats_item item)
 #endif
 }
 
-static void cl_env_init0(struct cl_env *cle, void *debug)
+static void cl_env_init(struct cl_env *cle, void *debug)
 {
 	LASSERT(cle->ce_ref == 0);
-	LASSERT(cle->ce_magic == &cl_env_init0);
+	LASSERT(cle->ce_magic == &cl_env_init);
 	LASSERT(cle->ce_debug == NULL);
 
 	cle->ce_ref = 1;
@@ -657,7 +717,7 @@ static struct lu_env *cl_env_new(__u32 ctx_tags, __u32 ses_tags, void *debug)
 		int rc;
 
 		INIT_LIST_HEAD(&cle->ce_linkage);
-		cle->ce_magic = &cl_env_init0;
+		cle->ce_magic = &cl_env_init;
 		env = &cle->ce_lu;
 		rc = lu_env_init(env, LCT_CL_THREAD|ctx_tags);
 		if (rc == 0) {
@@ -666,7 +726,7 @@ static struct lu_env *cl_env_new(__u32 ctx_tags, __u32 ses_tags, void *debug)
 			if (rc == 0) {
 				lu_context_enter(&cle->ce_ses);
 				env->le_ses = &cle->ce_ses;
-				cl_env_init0(cle, debug);
+				cl_env_init(cle, debug);
 			} else
 				lu_env_fini(env);
 		}
@@ -717,7 +777,7 @@ static struct lu_env *cl_env_obtain(void *debug)
                 env = &cle->ce_lu;
                 rc = lu_env_refill(env);
                 if (rc == 0) {
-                        cl_env_init0(cle, debug);
+			cl_env_init(cle, debug);
                         lu_context_enter(&env->le_ctx);
                         lu_context_enter(&cle->ce_ses);
                 } else {
@@ -739,7 +799,8 @@ static inline struct cl_env *cl_env_container(struct lu_env *env)
 }
 
 /**
- * Returns an lu_env.
+ * cl_env_get() - Returns an lu_env.
+ * @refcheck: unique id used to setup env
  *
  * No link to thread, this returns an env from the cache or
  * allocates a new one.
@@ -748,12 +809,14 @@ static inline struct cl_env *cl_env_container(struct lu_env *env)
  * you must either pass the pointer directly or store it in the file/inode
  * private data and retrieve it from there using ll_cl_add/ll_cl_find.
  *
- * \param refcheck pointer to a counter used to detect environment leaks. In
+ * @refcheck pointer to a counter used to detect environment leaks. In
  * the usual case cl_env_get() and cl_env_put() are called in the same lexical
- * scope and pointer to the same integer is passed as \a refcheck. This is
+ * scope and pointer to the same integer is passed as @refcheck. This is
  * used to detect missed cl_env_put().
  *
- * \see cl_env_put()
+ * see cl_env_put()
+ *
+ * Returns valid pointer to %lu_env on success or ERR_PTR on failure
  */
 struct lu_env *cl_env_get(__u16 *refcheck)
 {
@@ -772,9 +835,13 @@ struct lu_env *cl_env_get(__u16 *refcheck)
 EXPORT_SYMBOL(cl_env_get);
 
 /**
- * Forces an allocation of a fresh environment with given tags.
+ * cl_env_alloc() - Forces an allocation of a fresh environment with given tags
+ * @refcheck: unique id used to setup env
+ * @tags: unique tag
  *
- * \see cl_env_get()
+ * see cl_env_get()
+ *
+ * Returns valid pointer to %lu_env on success or ERR_PTR on failure
  */
 struct lu_env *cl_env_alloc(__u16 *refcheck, __u32 tags)
 {
@@ -799,9 +866,16 @@ static void cl_env_exit(struct cl_env *cle)
 }
 
 /**
+ * cl_env_cache_purge() - Finalizes and frees a given number of cached env
+ * @nr: number of cached environments to be purge
+ *
  * Finalizes and frees a given number of cached environments. This is done to
  * (1) free some memory (not currently hooked into VM), or (2) release
  * references to modules.
+ *
+ * Return:
+ * * %0 success (all @nr env purged)
+ * * %positive number of env which cannot be purged
  */
 unsigned cl_env_cache_purge(unsigned nr)
 {
@@ -831,9 +905,11 @@ unsigned cl_env_cache_purge(unsigned nr)
 EXPORT_SYMBOL(cl_env_cache_purge);
 
 /**
- * Release an environment.
+ * cl_env_put() - Release an environment.
+ * @env: current lustre environment
+ * @refcheck: unique id used to release (originally set in setup)
  *
- * Decrement \a env reference counter. When counter drops to 0, nothing in
+ * Decrement @env reference counter. When counter drops to 0, nothing in
  * this thread is using environment and it is returned to the per-CPU cache or
  * freed immediately if the cache is full.
  */
@@ -873,10 +949,10 @@ void cl_env_put(struct lu_env *env, __u16 *refcheck)
 }
 EXPORT_SYMBOL(cl_env_put);
 
-/**
+/*
  * Converts struct cl_attr to struct ost_lvb.
  *
- * \see cl_lvb2attr
+ * see cl_lvb2attr
  */
 void cl_attr2lvb(struct ost_lvb *lvb, const struct cl_attr *attr)
 {
@@ -888,9 +964,11 @@ void cl_attr2lvb(struct ost_lvb *lvb, const struct cl_attr *attr)
 }
 
 /**
- * Converts struct ost_lvb to struct cl_attr.
+ * cl_lvb2attr() - Converts struct ost_lvb to struct cl_attr.
+ * @attr: attribute which will be populated (converted to)
+ * @lvb: lvb struct to be converted
  *
- * \see cl_attr2lvb
+ * see cl_attr2lvb
  */
 void cl_lvb2attr(struct cl_attr *attr, const struct ost_lvb *lvb)
 {
@@ -923,7 +1001,7 @@ static int cl_env_percpu_init(void)
 		env = &cle->ce_lu;
 
 		INIT_LIST_HEAD(&cle->ce_linkage);
-		cle->ce_magic = &cl_env_init0;
+		cle->ce_magic = &cl_env_init;
 		rc = lu_env_init(env, LCT_CL_THREAD | tags);
 		if (rc == 0) {
 			rc = lu_context_init(&cle->ce_ses, LCT_SESSION | tags);
@@ -998,56 +1076,55 @@ struct lu_env *cl_env_percpu_get(void)
 	struct cl_env *cle;
 
 	cle = &cl_env_percpu[get_cpu()];
-	cl_env_init0(cle, __builtin_return_address(0));
+	cl_env_init(cle, __builtin_return_address(0));
 
 	return &cle->ce_lu;
 }
 EXPORT_SYMBOL(cl_env_percpu_get);
 
-/*****************************************************************************
+/*
+ * cl_type_setup() - Create cl_device
+ * @env: current lustre environment
+ * @site: pointer to lu_site struct (lustre mount)
+ * @ldt: pointer to lu_device_type (type of device)
+ * @next: next device in the lustre stack. NULL if this is the most bottom
  *
- * Temporary prototype thing: mirror obd-devices into cl devices.
+ * Temporary prototype: mirror obd-devices into cl devices.
  *
+ * Return struct cl_device on success or ERR_PTR on error
  */
-
 struct cl_device *cl_type_setup(const struct lu_env *env, struct lu_site *site,
-                                struct lu_device_type *ldt,
-                                struct lu_device *next)
+				struct lu_device_type *ldt,
+				struct lu_device *next)
 {
-        const char       *typename;
-        struct lu_device *d;
+	const char *typename;
+	struct lu_device *d;
 
-        LASSERT(ldt != NULL);
+	LASSERT(ldt);
 
-        typename = ldt->ldt_name;
-        d = ldt->ldt_ops->ldto_device_alloc(env, ldt, NULL);
-        if (!IS_ERR(d)) {
-                int rc;
+	typename = ldt->ldt_name;
+	d = ldto_device_alloc(env, ldt, NULL);
+	if (!IS_ERR(d)) {
+		int rc;
 
-                if (site != NULL)
-                        d->ld_site = site;
-                rc = ldt->ldt_ops->ldto_device_init(env, d, typename, next);
-                if (rc == 0) {
-                        lu_device_get(d);
-                } else {
-                        ldt->ldt_ops->ldto_device_free(env, d);
-                        CERROR("can't init device '%s', %d\n", typename, rc);
-                        d = ERR_PTR(rc);
-                }
-        } else
-                CERROR("Cannot allocate device: '%s'\n", typename);
-        return lu2cl_dev(d);
+		if (site)
+			d->ld_site = site;
+
+		rc = ldto_device_init(env, d, typename, next);
+		if (rc == 0) {
+			lu_device_get(d);
+		} else {
+			ldto_device_free(env, d);
+			CERROR("can't init device '%s', %d\n", typename, rc);
+			d = ERR_PTR(rc);
+		}
+	} else {
+		CERROR("Cannot allocate device: '%s'\n", typename);
+	}
+
+	return lu2cl_dev(d);
 }
 EXPORT_SYMBOL(cl_type_setup);
-
-/**
- * Finalize device stack by calling lu_stack_fini().
- */
-void cl_stack_fini(const struct lu_env *env, struct cl_device *cl)
-{
-        lu_stack_fini(env, cl2lu_dev(cl));
-}
-EXPORT_SYMBOL(cl_stack_fini);
 
 static struct lu_context_key cl_key;
 
@@ -1086,11 +1163,11 @@ static struct lu_kmem_descr cl_object_caches[] = {
 	}
 };
 
-/**
+/*
  * Global initialization of cl-data. Create kmem caches, register
  * lu_context_key's, etc.
  *
- * \see cl_global_fini()
+ * see cl_global_fini()
  */
 int cl_global_init(void)
 {
@@ -1125,7 +1202,7 @@ out:
 	return result;
 }
 
-/**
+/*
  * Finalization of global cl-data. Dual to cl_global_init().
  */
 void cl_global_fini(void)

@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -34,7 +16,6 @@
 #include <linux/user_namespace.h>
 #include <linux/uidgid.h>
 
-#include <libcfs/libcfs.h>
 #include <obd.h>
 #include <obd_support.h>
 #include <obd_class.h>
@@ -45,18 +26,16 @@
 #include <lustre_acl.h>
 #include <uapi/linux/lustre/lustre_ioctl.h>
 #include <lustre_net.h>
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 # include <md_object.h>
 
 #define ETI_NAME_LEN	20
 
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 #include "echo_internal.h"
 
-/** \defgroup echo_client Echo Client
- * @{
- */
+/* echo_client Echo Client  */
 
 /* echo thread key have a CL_THREAD flag, which set cl_env function directly */
 #define ECHO_MD_CTX_TAG (LCT_REMEMBER | LCT_MD_THREAD)
@@ -72,10 +51,10 @@ struct echo_device {
 	struct lu_device	 *ed_next;
 	int			  ed_next_ismd;
 	struct lu_client_seq	 *ed_cl_seq;
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	struct local_oid_storage *ed_los;
 	struct lu_fid		  ed_root_fid;
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 };
 
 struct echo_object {
@@ -92,10 +71,10 @@ struct echo_object_conf {
 	struct lov_oinfo      **eoc_oinfo;
 };
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static const char echo_md_root_dir_name[] = "ROOT_ECHO";
 
-/**
+/*
  * In order to use the values of members in struct mdd_device,
  * we define an alias structure here.
  */
@@ -107,16 +86,14 @@ struct echo_md_device {
 	struct lu_fid			 emd_root_fid;
 	struct lu_fid			 emd_local_root_fid;
 };
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 static int echo_client_setup(const struct lu_env *env,
 			     struct obd_device *obd,
 			     struct lustre_cfg *lcfg);
 static int echo_client_cleanup(struct obd_device *obd);
 
-/** \defgroup echo_helpers Helper functions
- * @{
- */
+/* echo_helpers Helper functions */
 static struct echo_device *cl2echo_dev(const struct cl_device *dev)
 {
 	return container_of_safe(dev, struct echo_device, ed_cl);
@@ -158,7 +135,7 @@ static struct echo_object_conf *cl2echo_conf(const struct cl_object_conf *c)
 	return container_of(c, struct echo_object_conf, eoc_cl);
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static struct echo_md_device *lu2emd_dev(struct lu_device *d)
 {
 	return container_of_safe(d, struct echo_md_device,
@@ -179,9 +156,9 @@ static struct obd_device *emd2obd_dev(struct echo_md_device *d)
 {
 	return d->emd_md_dev.md_lu_dev.ld_obd;
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
-/** @} echo_helpers */
+/* echo_helpers */
 
 static int cl_echo_object_put(struct echo_object *eco);
 
@@ -190,7 +167,7 @@ struct echo_thread_info {
 	struct lustre_md        eti_md;
 	struct lu_fid           eti_fid;
 	struct lu_fid		eti_fid2;
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	struct md_op_spec       eti_spec;
 	struct lov_mds_md_v3    eti_lmm;
 	struct lov_user_md_v3   eti_lum;
@@ -236,11 +213,15 @@ static struct lu_kmem_descr echo_caches[] = {
 	}
 };
 
-/** \defgroup echo_lu_ops lu_object operations
+/**
+ * echo_object_init() - initilize echo_object
+ * @env: lustre execution environment
+ * @obj: pointer to lu_object
+ * @conf: pointer to conf lu_object_conf (holding params to initilize)
  *
- * operations for echo lu object.
- *
- * @{
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int echo_object_init(const struct lu_env *env, struct lu_object *obj,
 			    const struct lu_object_conf *conf)
@@ -346,14 +327,9 @@ static const struct lu_object_operations echo_lu_obj_ops = {
 	.loo_object_print     = echo_object_print,
 	.loo_object_invariant = NULL
 };
-/** @} echo_lu_ops */
+/* echo_lu_ops */
 
-/** \defgroup echo_lu_dev_ops  lu_device operations
- *
- * Operations for echo lu device.
- *
- * @{
- */
+/* Operations for echo lu device  */
 static struct lu_object *echo_object_alloc(const struct lu_env *env,
 					   const struct lu_object_header *hdr,
 					   struct lu_device *dev)
@@ -383,13 +359,20 @@ static const struct lu_device_operations echo_device_lu_ops = {
 	.ldo_object_alloc   = echo_object_alloc,
 };
 
-/** @} echo_lu_dev_ops */
+/* echo_lu_dev_ops */
 
-/** \defgroup echo_init Setup and teardown
- *
+/* echo_init Setup and teardown
  * Init and fini functions for echo client.
+ */
+
+/**
+ * echo_site_init() - initilize client side echo_device
+ * @env: lustre execution environment
+ * @ed: pointer to echo_device which is getting intitilize [out]
  *
- * @{
+ * Return:
+ * * %0 on success
+ * * %negative on error
  */
 static int echo_site_init(const struct lu_env *env, struct echo_device *ed)
 {
@@ -474,7 +457,7 @@ static struct lu_context_key echo_session_key = {
 
 LU_TYPE_INIT_FINI(echo, &echo_thread_key, &echo_session_key);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 # define ECHO_SEQ_WIDTH 0xffffffff
 static int echo_fid_init(struct echo_device *ed, char *obd_name,
 			 struct seq_server_site *ss)
@@ -603,7 +586,7 @@ out_los:
 
 	RETURN(rc);
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 static struct lu_device *echo_device_alloc(const struct lu_env *env,
 					   struct lu_device_type *t,
@@ -667,7 +650,7 @@ static struct lu_device *echo_device_alloc(const struct lu_env *env,
 	cleanup = 4;
 
 	if (ed->ed_next_ismd) {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 		/* Suppose to connect to some Metadata layer */
 		struct lu_site		*ls = NULL;
 		struct lu_device	*ld = NULL;
@@ -724,11 +707,11 @@ static struct lu_device *echo_device_alloc(const struct lu_env *env,
 				emd2obd_dev(emd)->obd_name, rc);
 			GOTO(out, rc);
 		}
-#else /* !HAVE_SERVER_SUPPORT */
+#else /* !CONFIG_LUSTRE_FS_SERVER */
 		CERROR(
 		       "Local operations are NOT supported on client side. Only remote operations are supported. Metadata client must be run on server side.\n");
 		GOTO(out, rc = -EOPNOTSUPP);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	} else {
 		/*
 		 * if echo client is to be stacked upon ost device, the next is
@@ -744,9 +727,8 @@ static struct lu_device *echo_device_alloc(const struct lu_env *env,
 				GOTO(out, rc = -EBUSY);
 
 			next->ld_site = ed->ed_site;
-			rc = next->ld_type->ldt_ops->ldto_device_init(env, next,
-							next->ld_type->ldt_name,
-							NULL);
+			rc = ldto_device_init(env, next, next->ld_type->ldt_name,
+					      NULL);
 			if (rc)
 				GOTO(out, rc);
 		} else {
@@ -787,7 +769,6 @@ out:
 static int echo_device_init(const struct lu_env *env, struct lu_device *d,
 			    const char *name, struct lu_device *next)
 {
-	LBUG();
 	return 0;
 }
 
@@ -797,8 +778,9 @@ static struct lu_device *echo_device_fini(const struct lu_env *env,
 	struct echo_device *ed = cl2echo_dev(lu2cl_dev(d));
 	struct lu_device *next = ed->ed_next;
 
-	while (next && !ed->ed_next_ismd)
-		next = next->ld_type->ldt_ops->ldto_device_fini(env, next);
+	while (next && !ed->ed_next_ismd &&
+	       strcmp(next->ld_type->ldt_name, LUSTRE_OSC_NAME) != 0)
+		next = ldto_device_fini(env, next);
 	return NULL;
 }
 
@@ -849,12 +831,13 @@ static struct lu_device *echo_device_free(const struct lu_env *env,
 	CDEBUG(D_INFO, "No object exists, exiting...\n");
 
 	echo_client_cleanup(d->ld_obd);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	echo_fid_fini(d->ld_obd);
 	echo_ed_los_fini(env, ed);
 #endif
-	while (next && !ed->ed_next_ismd)
-		next = next->ld_type->ldt_ops->ldto_device_free(env, next);
+	while (next && !ed->ed_next_ismd &&
+	       strcmp(next->ld_type->ldt_name, LUSTRE_OSC_NAME) != 0)
+		next = ldto_device_free(env, next);
 
 	LASSERT(ed->ed_site == d->ld_site);
 	echo_site_fini(env, ed);
@@ -885,13 +868,11 @@ static struct lu_device_type echo_device_type = {
 	.ldt_ops      = &echo_device_type_ops,
 	.ldt_ctx_tags = LCT_CL_THREAD | LCT_MD_THREAD | LCT_DT_THREAD,
 };
-/** @} echo_init */
+/** echo_init */
 
-/** \defgroup echo_exports Exported operations
+/** echo_exports Exported operations
  *
  * exporting functions to echo client
- *
- * @{
  */
 
 /* Interfaces to echo client obd device */
@@ -987,11 +968,11 @@ static int cl_echo_object_put(struct echo_object *eco)
 	RETURN(0);
 }
 
-/** @} echo_exports */
+/* echo_exports */
 
 static u64 last_object_id;
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static void echo_md_build_name(struct lu_name *lname, char *name,
 				      __u64 id)
 {
@@ -1840,6 +1821,10 @@ static void echo_ucred_init(struct lu_env *env)
 	ucred->uc_rbac_chlg_ops = 1;
 	ucred->uc_rbac_fscrypt_admin = 1;
 	ucred->uc_rbac_server_upcall = 1;
+	ucred->uc_rbac_ignore_root_prjquota = 1;
+	ucred->uc_rbac_hsm_ops = 1;
+	ucred->uc_rbac_local_admin = 1;
+	ucred->uc_rbac_pool_quota_ops = 1;
 }
 
 static void echo_ucred_fini(struct lu_env *env)
@@ -1965,7 +1950,7 @@ out_env:
 	cl_env_put(env, &refcheck);
 	return rc;
 }
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 static int echo_create_object(const struct lu_env *env, struct echo_device *ed,
 			      struct obdo *oa)
@@ -2062,7 +2047,7 @@ static void echo_client_page_debug_setup(struct page *page, int rw, u64 id,
 	/* no partial pages on the client */
 	LASSERT(count == PAGE_SIZE);
 
-	addr = kmap(page);
+	addr = kmap_local_page(page);
 
 	for (delta = 0; delta < PAGE_SIZE; delta += OBD_ECHO_BLOCK_SIZE) {
 		if (rw == OBD_BRW_WRITE) {
@@ -2076,7 +2061,7 @@ static void echo_client_page_debug_setup(struct page *page, int rw, u64 id,
 				  stripe_off, stripe_id);
 	}
 
-	kunmap(page);
+	kunmap_local(addr);
 }
 
 static int
@@ -2092,7 +2077,7 @@ echo_client_page_debug_check(struct page *page, u64 id, u64 offset, u64 count)
 	/* no partial pages on the client */
 	LASSERT(count == PAGE_SIZE);
 
-	addr = kmap(page);
+	addr = kmap_local_page(page);
 
 	for (rc = delta = 0; delta < PAGE_SIZE; delta += OBD_ECHO_BLOCK_SIZE) {
 		stripe_off = offset + delta;
@@ -2107,7 +2092,7 @@ echo_client_page_debug_check(struct page *page, u64 id, u64 offset, u64 count)
 		}
 	}
 
-	kunmap(page);
+	kunmap_local(addr);
 	return rc;
 }
 
@@ -2257,7 +2242,7 @@ static int
 echo_client_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		      void *karg, void __user *uarg)
 {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	struct tgt_session_info *tsi;
 #endif
 	struct obd_device *obd = exp->exp_obd;
@@ -2295,9 +2280,11 @@ echo_client_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 	if (IS_ERR(env))
 		RETURN(PTR_ERR(env));
 
-	lu_env_add(env);
+	rc = lu_env_add(env);
+	if (rc)
+		GOTO(out_put, rc);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	if (cmd == OBD_IOC_ECHO_MD || cmd == OBD_IOC_ECHO_ALLOC_SEQ)
 		env_tags = ECHO_MD_CTX_TAG;
 	else
@@ -2308,7 +2295,7 @@ echo_client_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 	if (rc != 0)
 		GOTO(out, rc);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	tsi = tgt_ses_info(env);
 	/* treat as local operation */
 	tsi->tsi_exp = NULL;
@@ -2323,7 +2310,7 @@ echo_client_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 		rc = echo_create_object(env, ed, oa);
 		GOTO(out, rc);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	case OBD_IOC_ECHO_MD: {
 		int count;
 		int cmd;
@@ -2375,7 +2362,7 @@ echo_client_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 			return -EFAULT;
 		GOTO(out, rc);
 	}
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	case OBD_IOC_DESTROY:
 		if (!capable(CAP_SYS_ADMIN))
 			GOTO(out, rc = -EPERM);
@@ -2425,6 +2412,7 @@ echo_client_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 	EXIT;
 out:
 	lu_env_remove(env);
+out_put:
 	cl_env_put(env, &refcheck);
 
 	return rc;
@@ -2435,7 +2423,7 @@ static int echo_client_setup(const struct lu_env *env,
 {
 	struct echo_client_obd *ec = &obd->u.echo_client;
 	struct obd_device *tgt;
-	struct obd_uuid echo_uuid = { "ECHO_UUID" };
+	struct obd_uuid echo_uuid = { LUSTRE_ECHO_UUID };
 	struct obd_connect_data *ocd = NULL;
 	int rc;
 
@@ -2462,7 +2450,7 @@ static int echo_client_setup(const struct lu_env *env,
 	lu_session_tags_update(ECHO_SES_TAG);
 
 	if (!strcmp(tgt->obd_type->typ_name, LUSTRE_MDT_NAME)) {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 		lu_context_tags_update(ECHO_MD_CTX_TAG);
 #else
 		CERROR(
@@ -2478,7 +2466,7 @@ static int echo_client_setup(const struct lu_env *env,
 		return -ENOMEM;
 	}
 
-	ocd->ocd_connect_flags = OBD_CONNECT_VERSION | OBD_CONNECT_REQPORTAL |
+	ocd->ocd_connect_flags = OBD_CONNECT_VERSION |
 				 OBD_CONNECT_BRW_SIZE |
 				 OBD_CONNECT_GRANT | OBD_CONNECT_FULL20 |
 				 OBD_CONNECT_64BITHASH | OBD_CONNECT_LVB_TYPE |
@@ -2490,13 +2478,6 @@ static int echo_client_setup(const struct lu_env *env,
 	ocd->ocd_group = FID_SEQ_ECHO;
 
 	rc = obd_connect(env, &ec->ec_exp, tgt, &echo_uuid, ocd, NULL);
-	if (rc == 0) {
-		/* Turn off pinger because it connects to tgt obd directly. */
-		spin_lock(&tgt->obd_dev_lock);
-		list_del_init(&ec->ec_exp->exp_obd_chain_timed);
-		spin_unlock(&tgt->obd_dev_lock);
-	}
-
 	OBD_FREE(ocd, sizeof(*ocd));
 
 	if (rc != 0) {
@@ -2522,7 +2503,7 @@ static int echo_client_cleanup(struct obd_device *obd)
 	lu_session_tags_clear(ECHO_SES_TAG & ~LCT_SESSION);
 	lu_context_tags_clear(ECHO_DT_CTX_TAG);
 	if (ed->ed_next_ismd) {
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 		lu_context_tags_clear(ECHO_MD_CTX_TAG);
 #else
 		CERROR(
@@ -2594,12 +2575,12 @@ static int __init obdecho_init(void)
 	if (rc)
 		return rc;
 
-# ifdef HAVE_SERVER_SUPPORT
+# ifdef CONFIG_LUSTRE_FS_SERVER
 	rc = echo_persistent_pages_init();
 	if (rc != 0)
 		goto failed_0;
 
-	rc = class_register_type(&echo_obd_ops, NULL, true,
+	rc = class_register_type(&echo_obd_ops, NULL, false,
 				 LUSTRE_ECHO_NAME, &echo_srv_type);
 	if (rc != 0)
 		goto failed_1;
@@ -2614,7 +2595,7 @@ static int __init obdecho_init(void)
 			lu_kmem_fini(echo_caches);
 	}
 
-# ifdef HAVE_SERVER_SUPPORT
+# ifdef CONFIG_LUSTRE_FS_SERVER
 	if (rc == 0)
 		RETURN(0);
 
@@ -2631,7 +2612,7 @@ static void __exit obdecho_exit(void)
 	class_unregister_type(LUSTRE_ECHO_CLIENT_NAME);
 	lu_kmem_fini(echo_caches);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	class_unregister_type(LUSTRE_ECHO_NAME);
 	echo_persistent_pages_fini();
 #endif
@@ -2642,7 +2623,7 @@ MODULE_DESCRIPTION("Lustre Echo Client test driver");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(obdecho_init);
+late_initcall_sync(obdecho_init);
 module_exit(obdecho_exit);
 
-/** @} echo_client */
+/* echo_client */

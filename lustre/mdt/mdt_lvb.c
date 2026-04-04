@@ -1,30 +1,8 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2012, 2017, Intel Corporation.
  * Use is subject to license terms.
- *
- * lustre/mdt/mdt_lvb.c
  *
  * Author: Jinshan Xiong <jinshan.xiong@intel.com>
  */
@@ -298,19 +276,17 @@ static int mdt_lvbo_size(struct ldlm_lock *lock)
 }
 
 /**
+ * mdt_lvbo_fill() - Fill the given RPC buffer @buf with LVB data
+ * @lock: LDLM lock
+ * @lvb: RPC buffer to fill
+ * @lvblen: lvb buffer length [in,out]
+ *
+ * This function is called to fill the given RPC buffer @buf with LVB data
  * Implementation of ldlm_valblock_ops::lvbo_fill for MDT.
  *
- * This function is called to fill the given RPC buffer \a buf with LVB data
- *
- * \param[in] env		execution environment
- * \param[in] lock		LDLM lock
- * \param[in] buf		RPC buffer to fill
- * \param[in,out] lvblen	lvb buffer length
- *
- * \retval		size of LVB data written into \a buf buffer
- *			or -ERANGE when the provided @lvblen is not big enough,
- *			and the needed lvb buffer size will be returned in
- *			@lvblen
+ * Returns size of LVB data written into @lvb buffer or %-ERANGE when the
+ * provided @lvblen is not big enough, and the needed lvb buffer size will be
+ * returned in @lvblen
  */
 static int mdt_lvbo_fill(struct ldlm_lock *lock,
 			 void *lvb, int *lvblen)

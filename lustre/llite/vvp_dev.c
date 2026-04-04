@@ -1,37 +1,19 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2016, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * cl_device and cl_device_type implementation for VVP layer.
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
- *   Author: Jinshan Xiong <jinshan.xiong@intel.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Jinshan Xiong <jinshan.xiong@intel.com>
  */
 
 #define DEBUG_SUBSYSTEM S_LLITE
@@ -39,7 +21,6 @@
 #include <obd.h>
 #include "llite_internal.h"
 #include "vvp_internal.h"
-#include <linux/kallsyms.h>
 
 /*
  * Vvp device and device type functions.
@@ -230,8 +211,7 @@ static int vvp_device_init(const struct lu_env *env, struct lu_device *d,
 
 	LASSERT(d->ld_site != NULL && next->ld_type != NULL);
 	next->ld_site = d->ld_site;
-	rc = next->ld_type->ldt_ops->ldto_device_init(
-		env, next, next->ld_type->ldt_name, NULL);
+	rc = ldto_device_init(env, next, next->ld_type->ldt_name, NULL);
 	if (rc == 0) {
 		lu_device_get(next);
 	}
@@ -264,17 +244,15 @@ struct lu_device_type vvp_device_type = {
 	.ldt_ctx_tags = LCT_CL_THREAD
 };
 
-unsigned int (*vvp_account_page_dirtied)(struct page *page,
-					 struct address_space *mapping);
-#if !defined(FOLIO_MEMCG_LOCK_EXPORTED) && defined(HAVE_FOLIO_MEMCG_LOCK) && \
-     defined(HAVE_KALLSYMS_LOOKUP_NAME)
-void (*vvp_folio_memcg_lock)(struct folio *folio);
-void (*vvp_folio_memcg_unlock)(struct folio *folio);
-#endif
-
 /**
+ * vvp_global_init() - init global resources required by the VVP layer
+ *
  * A mutex serializing calls to vvp_inode_fini() under extreme memory
  * pressure, when environments cannot be allocated.
+ *
+ * Returns:
+ * * %0  Success
+ * * <0 Failure
  */
 int vvp_global_init(void)
 {
@@ -286,33 +264,7 @@ int vvp_global_init(void)
 
 	rc = lu_device_type_init(&vvp_device_type);
 	if (rc != 0)
-		goto out_kmem;
-
-#ifndef HAVE_ACCOUNT_PAGE_DIRTIED_EXPORT
-#ifdef HAVE_KALLSYMS_LOOKUP_NAME
-	/*
-	 * Kernel v5.2-5678-gac1c3e4 no longer exports account_page_dirtied
-	 */
-	vvp_account_page_dirtied = (void *)
-		cfs_kallsyms_lookup_name("account_page_dirtied");
-#endif
-#endif
-
-#if !defined(FOLIO_MEMCG_LOCK_EXPORTED) && defined(HAVE_FOLIO_MEMCG_LOCK) && \
-     defined(HAVE_KALLSYMS_LOOKUP_NAME)
-	vvp_folio_memcg_lock = (void *)
-		cfs_kallsyms_lookup_name("folio_memcg_lock");
-	LASSERT(vvp_folio_memcg_lock);
-
-	vvp_folio_memcg_unlock = (void *)
-		cfs_kallsyms_lookup_name("folio_memcg_unlock");
-	LASSERT(vvp_folio_memcg_unlock);
-#endif
-
-	return 0;
-
-out_kmem:
-	lu_kmem_fini(vvp_caches);
+		lu_kmem_fini(vvp_caches);
 
 	return rc;
 }
@@ -365,7 +317,7 @@ int cl_sb_fini(struct super_block *sb)
 		cld = sbi->ll_cl;
 
 		if (cld != NULL) {
-			cl_stack_fini(env, cld);
+			lu_stack_fini(env, cl2lu_dev(cld));
 			sbi->ll_cl = NULL;
 			sbi->ll_site = NULL;
 		}
@@ -450,7 +402,7 @@ static struct page *vvp_pgcache_current(struct vvp_seq_private *priv)
 						    priv->vsp_page_index,
 						    &vmpage);
 		if (nr > 0) {
-			priv->vsp_page_index = vmpage->index;
+			priv->vsp_page_index = folio_index_page(vmpage);
 			break;
 		}
 		cl_object_put(priv->vsp_env, priv->vsp_clob);
@@ -483,11 +435,13 @@ static void vvp_pgcache_page_show(const struct lu_env *env,
 		   PageWriteback(vmpage) ? "wb" : "-",
 		   vmpage,
 		   PFID(ll_inode2fid(vmpage->mapping->host)),
-		   vmpage->mapping->host, vmpage->index,
+		   vmpage->mapping->host, folio_index_page(vmpage),
 		   page_count(vmpage));
 	has_flags = 0;
 	seq_page_flag(seq, vmpage, locked, has_flags);
+#ifdef HAVE_PG_ERROR
 	seq_page_flag(seq, vmpage, error, has_flags);
+#endif
 	seq_page_flag(seq, vmpage, referenced, has_flags);
 	seq_page_flag(seq, vmpage, uptodate, has_flags);
 	seq_page_flag(seq, vmpage, dirty, has_flags);
@@ -501,7 +455,7 @@ static int vvp_pgcache_show(struct seq_file *f, void *v)
 	struct page *vmpage = v;
 	struct cl_page *page;
 
-	seq_printf(f, "%8lx@" DFID ": ", vmpage->index,
+	seq_printf(f, "%8lx@" DFID ": ", folio_index_page(vmpage),
 		   PFID(lu_object_fid(&priv->vsp_clob->co_lu)));
 	lock_page(vmpage);
 	page = cl_vmpage_page(vmpage, priv->vsp_clob);

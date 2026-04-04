@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ofd/ofd_io.c
  *
  * This file provides functions to handle IO requests from clients and
  * also LFSCK routines to check parent file identifier (PFID) consistency.
@@ -407,7 +387,7 @@ int ofd_verify_ff(const struct lu_env *env, struct ofd_object *fo,
 	if (fo->ofo_pfid_checking)
 		RETURN(-EINPROGRESS);
 
-	rc = ofd_object_ff_load(env, fo);
+	rc = ofd_object_ff_load(env, fo, false);
 	if (rc == -ENODATA)
 		RETURN(0);
 
@@ -440,12 +420,15 @@ int ofd_verify_layout_version(const struct lu_env *env,
 			      struct ofd_object *fo, const struct obdo *oa)
 {
 	int rc;
+	bool force = false;
+
 	ENTRY;
 
 	if (unlikely(CFS_FAIL_CHECK(OBD_FAIL_OST_SKIP_LV_CHECK)))
 		GOTO(out, rc = 0);
 
-	rc = ofd_object_ff_load(env, fo);
+again:
+	rc = ofd_object_ff_load(env, fo, force);
 	if (rc < 0) {
 		if (rc == -ENODATA)
 			rc = 0;
@@ -457,14 +440,24 @@ int ofd_verify_layout_version(const struct lu_env *env,
 	 * that on the disk.
 	 */
 	if (ofd_layout_version_less(oa->o_layout_version,
-				    fo->ofo_ff.ff_layout_version))
+				    fo->ofo_ff.ff_layout_version)) {
+		/* the object's filter_fid could be changed via
+		 * out_xattr_set(),  and the ofd_object::ofo_ff is out of date.
+		 */
+		if (!force) {
+			force = true;
+			GOTO(again, rc);
+		}
 		GOTO(out, rc = -ESTALE);
+	}
 
 out:
-	CDEBUG(D_INODE, DFID " verify layout version: %u vs. %u/%u: rc = %d\n",
+	CDEBUG(D_INODE,
+	       "%s:"DFID" verify layout version: %#x/%#x -> %#x, rc: %d\n",
+	       ofd_name(ofd_obj2dev(fo)),
 	       PFID(lu_object_fid(&fo->ofo_obj.do_lu)),
-	       oa->o_layout_version, fo->ofo_ff.ff_layout_version,
-	       fo->ofo_ff.ff_range, rc);
+	       fo->ofo_ff.ff_layout_version, fo->ofo_ff.ff_range,
+	       oa->o_layout_version, rc);
 	RETURN(rc);
 
 }
@@ -612,7 +605,12 @@ static int ofd_preprw_read(const struct lu_env *env, struct obd_export *exp,
 	if (!ofd_object_exists(fo))
 		GOTO(obj_put, rc = -ENOENT);
 
-	if (ptlrpc_connection_is_local(exp->exp_connection))
+	rc = ofd_check_repair_resource_ids(env, fo, oa);
+	if (unlikely(rc))
+		GOTO(obj_put, rc);
+
+	if (exp->exp_connection &&
+	    LNetIsPeerLocal(&exp->exp_connection->c_peer.nid))
 		dbt |= DT_BUFS_TYPE_LOCAL;
 
 	begin = -1;
@@ -771,9 +769,12 @@ static int ofd_preprw_write(const struct lu_env *env, struct obd_export *exp,
 	 * transactions to complete. */
 	tgt_grant_prepare_write(env, exp, oa, rnb, obj->ioo_bufcnt);
 
+	if (CFS_FAIL_CHECK(OBD_FAIL_OST_GRANT_PREPARE))
+		GOTO(err_commit, rc = -EIO);
+
 	fo = ofd_object_find(env, ofd, fid);
 	if (IS_ERR(fo))
-		GOTO(out, rc = PTR_ERR(fo));
+		GOTO(err_commit, rc = PTR_ERR(fo));
 	LASSERT(fo != NULL);
 
 	ofd_info(env)->fti_obj = fo;
@@ -781,11 +782,11 @@ static int ofd_preprw_write(const struct lu_env *env, struct obd_export *exp,
 	if (!ofd_object_exists(fo)) {
 		CERROR("%s: BRW to missing obj "DOSTID"\n",
 		       exp->exp_obd->obd_name, POSTID(&obj->ioo_oid));
-		ofd_object_put(env, fo);
-		GOTO(out, rc = -ENOENT);
+		GOTO(err_put, rc = -ENOENT);
 	}
 
-	if (ptlrpc_connection_is_local(exp->exp_connection))
+	if (exp->exp_connection &&
+	    LNetIsPeerLocal(&exp->exp_connection->c_peer.nid))
 		dbt |= DT_BUFS_TYPE_LOCAL;
 
 	begin = -1;
@@ -861,9 +862,13 @@ err:
 	ofd_read_unlock(env, fo);
 err_nolock:
 	dt_bufs_put(env, ofd_object_child(fo), lnb, *nr_local);
+err_put:
 	ofd_object_put(env, fo);
+err_commit:
 	/* tgt_grant_prepare_write() was called, so we must commit */
 	tgt_grant_commit(exp, oa->o_grant_used, rc);
+	/* dealloc grants, client won't receive them */
+	tgt_grant_dealloc(exp, oa);
 out:
 	/* let's still process incoming grant information packed in the oa,
 	 * but without enforcing grant since we won't proceed with the write.
@@ -1060,7 +1065,7 @@ ofd_write_attr_set(const struct lu_env *env, struct ofd_device *ofd,
 
 	if (oa->o_valid & (OBD_MD_FLFID | OBD_MD_FLOSTLAYOUT |
 			   OBD_MD_LAYOUT_VERSION)) {
-		rc = dt_declare_xattr_set(env, dt_obj, &info->fti_buf,
+		rc = dt_declare_xattr_set(env, dt_obj, NULL, &info->fti_buf,
 					  XATTR_NAME_FID, 0, th);
 		if (rc)
 			GOTO(out_tx, rc);
@@ -1082,13 +1087,14 @@ ofd_write_attr_set(const struct lu_env *env, struct ofd_device *ofd,
 		/* no attributes to set */
 		GOTO(out_unlock, rc = 0);
 
-
-
 	/* set uid/gid/projid */
 	if (la->la_valid) {
 		rc = dt_attr_set(env, dt_obj, la, th);
 		if (rc)
 			GOTO(out_unlock, rc);
+
+		if (!(la->la_mode & (S_ISUID | S_ISGID | S_ISVTX)))
+			ofd_obj->ofo_resource_ids_set = 1;
 	}
 
 	fl = ofd_object_ff_update(env, ofd_obj, oa, ff);
@@ -1254,6 +1260,10 @@ ofd_commitrw_write(const struct lu_env *env, struct obd_export *exp,
 	if (!ofd_object_exists(fo))
 		GOTO(out, rc = -ENOENT);
 
+	rc = ofd_check_resource_ids(env, fo, oa);
+	if (unlikely(rc))
+		GOTO(out, rc);
+
 	/*
 	 * The first write to each object must set some attributes.  It is
 	 * important to set the uid/gid before calling
@@ -1408,6 +1418,9 @@ out:
 	ofd_object_put(env, fo);
 	if (granted > 0)
 		tgt_grant_commit(exp, granted, old_rc);
+	if (rc)
+		/* dealloc grants, client won't receive them */
+		tgt_grant_dealloc(exp, oa);
 	RETURN(rc);
 }
 
@@ -1485,12 +1498,22 @@ int ofd_commitrw(const struct lu_env *env, int cmd, struct obd_export *exp,
 						       NODEMAP_FS_TO_CLIENT,
 						       oa->o_projid);
 		} else if (old_rc == 0) {
-			old_rc = PTR_ERR(nodemap);
+			/* always allow ECHO client */
+			if (strcmp(obd_uuid2str(&exp->exp_client_uuid),
+				   LUSTRE_ECHO_UUID) != 0 ||
+			    exp->exp_connection)
+				old_rc = PTR_ERR(nodemap);
 		}
 
 		if (!IS_ERR_OR_NULL(nodemap)) {
-			/* do not bypass quota enforcement if squashed uid */
-			if (unlikely(mapped_uid == nodemap->nm_squash_uid)) {
+			/* do not bypass quota enforcement if squashed uid or
+			 * offset root without local_admin RBAC role.
+			 * "mapped_uid == 0" is an optimization to avoid calling
+			 * is_local_root() which returns false for regular users
+			 */
+			if (unlikely(mapped_uid == nodemap->nm_squash_uid ||
+				     (mapped_uid == 0 &&
+				      !is_local_root(oa->o_uid, nodemap)))) {
 				int idx;
 
 				for (idx = 0; idx < npages; idx++)

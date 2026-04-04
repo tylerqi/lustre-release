@@ -28,7 +28,8 @@
 #include <obd_support.h>
 #include <lu_object.h>
 #include <lustre_quota.h>
-#include <libcfs/libcfs.h>
+
+#include <lprocfs_status.h>
 
 struct seq_file;
 struct proc_dir_entry;
@@ -304,6 +305,20 @@ struct dt_device_operations {
 	int   (*dt_reserve_or_free_quota)(const struct lu_env *env,
 					  struct dt_device *dev,
 					  struct lquota_id_info *qi);
+
+	/**
+	 * Return last known sequence number from disk.
+	 *
+	 * \param[in] env	execution environment for this thread
+	 * \param[in] dev	dt device
+	 * \param[out] seq	last known sequence on disk
+	 *
+	 * \retval 0		on success
+	 * \retval negative	negated errno on error
+	 */
+	int   (*dt_last_seq_get)(const struct lu_env *env,
+				 struct dt_device *dev,
+				 __u64 *seq);
 };
 
 struct dt_index_features {
@@ -647,6 +662,7 @@ struct dt_object_operations {
 	 */
 	int   (*do_declare_xattr_set)(const struct lu_env *env,
 				      struct dt_object *dt,
+				      const struct lu_attr *attr,
 				      const struct lu_buf *buf,
 				      const char *name,
 				      int fl,
@@ -1071,7 +1087,9 @@ struct dt_object_operations {
 				struct thandle *th);
 
 	/**
-	 * Check whether the file is in PCC-RO state.
+	 * Perform additional layout checks before
+	 * layout changing op. Currently used for PCC-RO and
+	 * dir migration.
 	 *
 	 * \param[in] env	execution environment
 	 * \param[in] dt	DT object
@@ -1079,12 +1097,11 @@ struct dt_object_operations {
 	 *			the DT object's layout
 	 *
 	 * \retval 0		success
-	 * \retval -ne		-EALREADY if the file is already PCC-RO cached;
+	 * \retval -ne		-EALREADY if the object conforms the layout
 	 *			Otherwise, return error code
 	 */
-	int (*do_layout_pccro_check)(const struct lu_env *env,
-				     struct dt_object *dt,
-				     struct md_layout_change *mlc);
+	int (*do_layout_check)(const struct lu_env *env, struct dt_object *dt,
+			       struct md_layout_change *mlc);
 };
 
 enum dt_bufs_type {
@@ -1092,6 +1109,12 @@ enum dt_bufs_type {
 	DT_BUFS_TYPE_WRITE	= 0x0001,
 	DT_BUFS_TYPE_READAHEAD	= 0x0002,
 	DT_BUFS_TYPE_LOCAL	= 0x0004,
+};
+
+/* supplementary error hint */
+enum dt_fallocate_error_t {
+	DT_FALLOC_ERR_NONE       = 0x0000,
+	DT_FALLOC_ERR_NEED_ZERO  = 0x0001, /* need to fill zero by brw */
 };
 
 /*
@@ -1436,8 +1459,10 @@ struct dt_body_operations {
 	 * Return: 0 on success, negative on error
 	 */
 	int (*dbo_declare_fallocate)(const struct lu_env *env,
-				    struct dt_object *dt, __u64 start,
-				    __u64 end, int mode, struct thandle *th);
+				    struct dt_object *dt, struct lu_attr *attr,
+				    __u64 start, __u64 end, int mode,
+				    struct thandle *th,
+				    enum dt_fallocate_error_t *error_code);
 
 	/**
 	 * dbo_fallocate() - Allocate specified region for an object
@@ -1453,7 +1478,7 @@ struct dt_body_operations {
 	 */
 	int (*dbo_fallocate)(const struct lu_env *env,
 			    struct dt_object *dt,
-			    __u64 start,
+			    __u64 *start,
 			    __u64 end,
 			    int mode,
 			    struct thandle *th);
@@ -1839,6 +1864,8 @@ enum dt_otable_it_flags {
 struct dt_device {
 	struct lu_device                   dd_lu_dev;
 	const struct dt_device_operations *dd_ops;
+
+	/* OSD specific fields */
 	struct lu_client_seq		  *dd_cl_seq;
 
 	/*
@@ -1878,6 +1905,10 @@ struct dt_object {
 	const struct dt_object_operations *do_ops;
 	const struct dt_body_operations   *do_body_ops;
 	const struct dt_index_operations  *do_index_ops;
+
+	/* OSD specific fields */
+	struct rw_semaphore		   dd_sem;
+	struct lu_env			  *dd_owner;
 };
 
 /*
@@ -1936,6 +1967,54 @@ static inline struct dt_object *dt_object_child(struct dt_object *o)
 			    struct dt_object, do_lu);
 }
 
+#define DT_MAX_PATH 1024
+
+struct dt_find_hint {
+	struct lu_fid        *dfh_fid;
+	struct dt_device     *dfh_dt;
+	struct dt_object     *dfh_o;
+};
+
+struct dt_insert_rec {
+	union {
+		const struct lu_fid	*rec_fid;
+		void			*rec_data;
+	};
+	union {
+		struct {
+			__u32		 rec_type;
+			__u32		 rec_padding;
+		};
+		__u64			 rec_misc;
+	};
+};
+
+struct dt_thread_info {
+	char                     dti_buf[DT_MAX_PATH];
+	struct dt_find_hint      dti_dfh;
+	struct lu_attr           dti_attr;
+	struct lu_fid            dti_fid;
+	struct dt_object_format  dti_dof;
+	struct lustre_mdt_attrs  dti_lma;
+	struct lu_buf            dti_lb;
+	struct lu_object_conf	 dti_conf;
+	loff_t                   dti_off;
+	struct dt_insert_rec	 dti_dt_rec;
+	int                      dti_r_locks;
+	int                      dti_w_locks;
+};
+
+extern struct lu_context_key dt_key;
+
+static inline struct dt_thread_info *dt_info(const struct lu_env *env)
+{
+	struct dt_thread_info *dti;
+
+	dti = lu_context_key_get(&env->le_ctx, &dt_key);
+	LASSERT(dti);
+	return dti;
+}
+
 /*
  * This is the general purpose transaction handle.
  * 1. Transaction Life Cycle
@@ -1980,7 +2059,9 @@ struct thandle {
 	/* whether ignore quota */
 				th_ignore_quota:1,
 	/* whether restart transaction */
-				th_restart_tran:1;
+				th_restart_tran:1,
+	/* enforce project quota for root */
+				th_ignore_root_proj_quota:1;
 };
 
 /*
@@ -2012,30 +2093,6 @@ int dt_txn_hook_start(const struct lu_env *env,
 int dt_txn_hook_stop(const struct lu_env *env, struct thandle *txn);
 
 int dt_try_as_dir(const struct lu_env *env, struct dt_object *obj, bool check);
-
-/*
- * Callback function used for parsing path.
- * see llo_store_resolve
- */
-typedef int (*dt_entry_func_t)(const struct lu_env *env,
-			    const char *name,
-			    void *pvt);
-
-#define DT_MAX_PATH 1024
-
-int dt_path_parser(const struct lu_env *env,
-		   char *local, dt_entry_func_t entry_func,
-		   void *data);
-
-struct dt_object *
-dt_store_resolve(const struct lu_env *env, struct dt_device *dt,
-		 const char *path, struct lu_fid *fid);
-
-struct dt_object *dt_store_open(const struct lu_env *env,
-				struct dt_device *dt,
-				const char *dirname,
-				const char *filename,
-				struct lu_fid *fid);
 
 struct dt_object *dt_find_or_create(const struct lu_env *env,
 				    struct dt_device *dt,
@@ -2335,47 +2392,96 @@ static inline void dt_read_lock(const struct lu_env *env,
 				struct dt_object *dt,
 				unsigned int role)
 {
+	struct dt_thread_info *info = dt_info(env);
+
 	LASSERT(dt);
 	LASSERT(dt->do_ops);
-	LASSERT(dt->do_ops->do_read_lock);
-	dt->do_ops->do_read_lock(env, dt, role);
+	LASSERT(dt->dd_owner != env);
+
+	if (dt->do_ops->do_read_lock)
+		dt->do_ops->do_read_lock(env, dt, role);
+	else
+		down_read_nested(&dt->dd_sem, role);
+
+	LASSERT(dt->dd_owner == NULL);
+	info->dti_r_locks++;
 }
 
 static inline void dt_write_lock(const struct lu_env *env,
-				struct dt_object *dt,
-				unsigned int role)
+				 struct dt_object *dt,
+				 unsigned int role)
 {
+	struct dt_thread_info *info = dt_info(env);
+
 	LASSERT(dt);
 	LASSERT(dt->do_ops);
-	LASSERT(dt->do_ops->do_write_lock);
-	dt->do_ops->do_write_lock(env, dt, role);
+	LASSERT(dt->dd_owner != env);
+
+	if (dt->do_ops->do_write_lock)
+		dt->do_ops->do_write_lock(env, dt, role);
+	else
+		down_write_nested(&dt->dd_sem, role);
+
+	LASSERT(dt->dd_owner == NULL);
+	info->dti_w_locks++;
+
+	/* TODO: Cleanup usage of const */
+	dt->dd_owner = (struct lu_env *)env;
 }
 
 static inline void dt_read_unlock(const struct lu_env *env,
-				struct dt_object *dt)
+				  struct dt_object *dt)
 {
+	struct dt_thread_info *info = dt_info(env);
+
 	LASSERT(dt);
 	LASSERT(dt->do_ops);
-	LASSERT(dt->do_ops->do_read_unlock);
-	dt->do_ops->do_read_unlock(env, dt);
+	LASSERT(info->dti_r_locks > 0);
+
+	info->dti_r_locks--;
+
+	if (dt->do_ops->do_read_unlock)
+		dt->do_ops->do_read_unlock(env, dt);
+	else
+		up_read(&dt->dd_sem);
 }
 
 static inline void dt_write_unlock(const struct lu_env *env,
-				struct dt_object *dt)
+				   struct dt_object *dt)
 {
+	struct dt_thread_info *info = dt_info(env);
+
 	LASSERT(dt);
 	LASSERT(dt->do_ops);
-	LASSERT(dt->do_ops->do_write_unlock);
-	dt->do_ops->do_write_unlock(env, dt);
+	LASSERT(dt->dd_owner == env);
+	LASSERT(info->dti_w_locks > 0);
+
+	info->dti_w_locks--;
+	dt->dd_owner = NULL;
+
+	if (dt->do_ops->do_write_unlock)
+		dt->do_ops->do_write_unlock(env, dt);
+	else
+		up_write(&dt->dd_sem);
 }
 
-static inline int dt_write_locked(const struct lu_env *env,
-				  struct dt_object *dt)
+static inline bool dt_write_locked(const struct lu_env *env,
+				   struct dt_object *dt)
 {
 	LASSERT(dt);
 	LASSERT(dt->do_ops);
-	LASSERT(dt->do_ops->do_write_locked);
-	return dt->do_ops->do_write_locked(env, dt);
+
+	if (dt->do_ops->do_write_locked)
+		return dt->do_ops->do_write_locked(env, dt);
+
+	return dt->dd_owner == env;
+}
+
+static inline bool dt_thread_no_locks(const struct lu_env *env)
+{
+	struct dt_thread_info *info = dt_info(env);
+
+	return !info->dti_r_locks && !info->dti_w_locks;
 }
 
 static inline bool dt_object_stale(struct dt_object *dt)
@@ -2625,8 +2731,10 @@ static inline int dt_ladvise(const struct lu_env *env, struct dt_object *dt,
 }
 
 static inline int dt_declare_fallocate(const struct lu_env *env,
-				       struct dt_object *dt, __u64 start,
-				       __u64 end, int mode, struct thandle *th)
+				       struct dt_object *dt,
+				       struct lu_attr *attr, __u64 start,
+				       __u64 end, int mode, struct thandle *th,
+				       enum dt_fallocate_error_t *error_code)
 {
 	LASSERT(dt);
 
@@ -2636,12 +2744,12 @@ static inline int dt_declare_fallocate(const struct lu_env *env,
 	if (!dt->do_body_ops->dbo_declare_fallocate)
 		return -EOPNOTSUPP;
 
-	return dt->do_body_ops->dbo_declare_fallocate(env, dt, start, end,
-						      mode, th);
+	return dt->do_body_ops->dbo_declare_fallocate(env, dt, attr, start, end,
+						      mode, th, error_code);
 }
 
 static inline int dt_falloc(const struct lu_env *env, struct dt_object *dt,
-			      __u64 start, __u64 end, int mode,
+			      __u64 *start, __u64 end, int mode,
 			      struct thandle *th)
 {
 	LASSERT(dt);
@@ -2808,6 +2916,7 @@ static inline int dt_xattr_del(const struct lu_env *env,
 
 static inline int dt_declare_xattr_set(const struct lu_env *env,
 				      struct dt_object *dt,
+				      const struct lu_attr *attr,
 				      const struct lu_buf *buf,
 				      const char *name, int fl,
 				      struct thandle *th)
@@ -2821,7 +2930,8 @@ static inline int dt_declare_xattr_set(const struct lu_env *env,
 	if (!dt->do_ops->do_declare_xattr_set)
 		return 0;
 
-	return dt->do_ops->do_declare_xattr_set(env, dt, buf, name, fl, th);
+	return dt->do_ops->do_declare_xattr_set(env, dt, attr, buf, name,
+						fl, th);
 }
 
 static inline int dt_xattr_set(const struct lu_env *env,
@@ -2944,6 +3054,19 @@ static inline int dt_reserve_or_free_quota(const struct lu_env *env,
 	return dev->dd_ops->dt_reserve_or_free_quota(env, dev, qi);
 }
 
+static inline int dt_last_seq_get(const struct lu_env *env,
+				  struct dt_device *dev,
+				  __u64 *seq)
+{
+	LASSERT(dev);
+	LASSERT(dev->dd_ops);
+
+	if (!dev->dd_ops->dt_last_seq_get)
+		return -EINVAL;
+
+	return dev->dd_ops->dt_last_seq_get(env, dev, seq);
+}
+
 static inline int dt_lookup(const struct lu_env *env,
 			    struct dt_object *dt,
 			    struct dt_rec *rec,
@@ -2990,73 +3113,20 @@ static inline int dt_layout_change(const struct lu_env *env,
 	return o->do_ops->do_layout_change(env, o, mlc, th);
 }
 
-static inline int dt_layout_pccro_check(const struct lu_env *env,
+static inline int dt_layout_check(const struct lu_env *env,
 					struct dt_object *o,
 					struct md_layout_change *mlc)
 {
 	LASSERT(o);
 	LASSERT(o->do_ops);
-	LASSERT(o->do_ops->do_layout_pccro_check);
-	return o->do_ops->do_layout_pccro_check(env, o, mlc);
-}
-
-struct dt_find_hint {
-	struct lu_fid        *dfh_fid;
-	struct dt_device     *dfh_dt;
-	struct dt_object     *dfh_o;
-};
-
-struct dt_insert_rec {
-	union {
-		const struct lu_fid	*rec_fid;
-		void			*rec_data;
-	};
-	union {
-		struct {
-			__u32		 rec_type;
-			__u32		 rec_padding;
-		};
-		__u64			 rec_misc;
-	};
-};
-
-struct dt_thread_info {
-	char                     dti_buf[DT_MAX_PATH];
-	struct dt_find_hint      dti_dfh;
-	struct lu_attr           dti_attr;
-	struct lu_fid            dti_fid;
-	struct dt_object_format  dti_dof;
-	struct lustre_mdt_attrs  dti_lma;
-	struct lu_buf            dti_lb;
-	struct lu_object_conf	 dti_conf;
-	loff_t                   dti_off;
-	struct dt_insert_rec	 dti_dt_rec;
-};
-
-extern struct lu_context_key dt_key;
-
-static inline struct dt_thread_info *dt_info(const struct lu_env *env)
-{
-	struct dt_thread_info *dti;
-
-	dti = lu_context_key_get(&env->le_ctx, &dt_key);
-	LASSERT(dti);
-	return dti;
+	LASSERT(o->do_ops->do_layout_check);
+	return o->do_ops->do_layout_check(env, o, mlc);
 }
 
 int dt_global_init(void);
 void dt_global_fini(void);
 int dt_tunables_init(struct dt_device *dt, struct obd_type *type,
 		     const char *name, struct ldebugfs_vars *list);
-int dt_tunables_fini(struct dt_device *dt);
-
-#ifdef CONFIG_PROC_FS
-int lprocfs_dt_blksize_seq_show(struct seq_file *m, void *v);
-int lprocfs_dt_kbytestotal_seq_show(struct seq_file *m, void *v);
-int lprocfs_dt_kbytesfree_seq_show(struct seq_file *m, void *v);
-int lprocfs_dt_kbytesavail_seq_show(struct seq_file *m, void *v);
-int lprocfs_dt_filestotal_seq_show(struct seq_file *m, void *v);
-int lprocfs_dt_filesfree_seq_show(struct seq_file *m, void *v);
-#endif /* CONFIG_PROC_FS */
+void dt_tunables_fini(struct dt_device *dt);
 
 #endif /* __LUSTRE_DT_OBJECT_H */

@@ -53,9 +53,9 @@ void osc_read_ahead_release(const struct lu_env *env, struct cl_read_ahead *ra)
 }
 EXPORT_SYMBOL(osc_read_ahead_release);
 
-static int osc_io_read_ahead(const struct lu_env *env,
-			     const struct cl_io_slice *ios,
-			     pgoff_t start, struct cl_read_ahead *ra)
+static int osc_io_read_ahead_prep(const struct lu_env *env,
+				  const struct cl_io_slice *ios,
+				  pgoff_t start, struct cl_read_ahead *ra)
 {
 	struct osc_object *osc = cl2osc(ios->cis_obj);
 	struct osc_io *oio = cl2osc_io(env, ios);
@@ -68,26 +68,25 @@ static int osc_io_read_ahead(const struct lu_env *env,
 	dlmlock = osc_dlmlock_at_pgoff(env, osc, start, 0);
 	if (dlmlock != NULL) {
 		struct lov_oinfo *oinfo = osc->oo_oinfo;
+		pgoff_t lock_end_idx;
 
 		LASSERT(dlmlock->l_ast_data == osc);
 		if (dlmlock->l_req_mode != LCK_PR) {
 			struct lustre_handle lockh;
+
 			ldlm_lock2handle(dlmlock, &lockh);
 			ldlm_lock_addref(&lockh, LCK_PR);
 			ldlm_lock_decref(&lockh, dlmlock->l_req_mode);
 		}
 
-		ra->cra_rpc_pages = osc_cli(osc)->cl_max_pages_per_rpc;
-		ra->cra_end_idx =
-			dlmlock->l_policy_data.l_extent.end >> PAGE_SHIFT;
+		ra->cra_rpc_pages = osc_cli(osc)->cl_max_pages_per_rpc_read;
+		lock_end_idx = dlmlock->l_policy_data.l_extent.end >> PAGE_SHIFT;
+		/* restrict RA to lock end or EOF */
+		ra->cra_end_idx = min_t(pgoff_t, lock_end_idx,
+					(oinfo->loi_kms - 1) >> PAGE_SHIFT);
 		ra->cra_release = osc_read_ahead_release;
 		ra->cra_dlmlock = dlmlock;
 		ra->cra_oio = oio;
-		if (ra->cra_end_idx != CL_PAGE_EOF)
-			ra->cra_contention = true;
-		ra->cra_end_idx = min_t(pgoff_t,
-					ra->cra_end_idx,
-					(oinfo->loi_kms - 1) >> PAGE_SHIFT);
 		result = 0;
 	}
 
@@ -130,7 +129,8 @@ int osc_io_submit(const struct lu_env *env, struct cl_io *io,
 
 	osc = cl2osc(ios->cis_obj);
 	cli = osc_cli(osc);
-	max_pages = cli->cl_max_pages_per_rpc;
+	max_pages = crt == CRT_READ ? cli->cl_max_pages_per_rpc_read :
+				      cli->cl_max_pages_per_rpc_write;
 	ppc_bits = cli->cl_chunkbits - PAGE_SHIFT;
 	ppc = 1 << ppc_bits;
 
@@ -241,6 +241,115 @@ int osc_io_submit(const struct lu_env *env, struct cl_io *io,
 }
 EXPORT_SYMBOL(osc_io_submit);
 
+int osc_dio_submit(const struct lu_env *env, struct cl_io *io,
+		   const struct cl_io_slice *ios, enum cl_req_type crt,
+		   struct cl_dio_pages *cdp)
+{
+	struct osc_object *osc  = cl2osc(ios->cis_obj);
+	struct cl_io	  *top_io = cl_io_top(io);
+	struct client_obd *cli  = osc_cli(osc);
+	struct page	  *vmpage;
+	LIST_HEAD(list);
+	/* pages per chunk bits */
+	unsigned int ppc_bits = cli->cl_chunkbits - PAGE_SHIFT;
+	unsigned int max_pages = crt == CRT_READ ?
+				 cli->cl_max_pages_per_rpc_read :
+				 cli->cl_max_pages_per_rpc_write;
+	unsigned int ppc = 1 << ppc_bits;
+	unsigned int total_queued = 0;
+	unsigned int queued = 0;
+	bool sync_queue = false;
+	int result = 0;
+	int brw_flags;
+	int from = -1;
+	int to = -1;
+	int i = 0;
+
+	CDEBUG(D_CACHE|D_READA, "%u %d\n", cdp->cdp_page_count, crt);
+
+	brw_flags = osc_io_srvlock(cl2osc_io(env, ios)) ? OBD_BRW_SRVLOCK : 0;
+	brw_flags |= crt == CRT_WRITE ? OBD_BRW_WRITE : OBD_BRW_READ;
+	if (crt == CRT_READ && ios->cis_io->ci_ndelay)
+		brw_flags |= OBD_BRW_NDELAY;
+
+	vmpage = cdp->cdp_pages[0];
+	brw_flags |= OBD_BRW_NOCACHE;
+	if (lnet_is_rdma_only_page(vmpage))
+		brw_flags |= OBD_BRW_RDMA_ONLY;
+
+	/*
+	 * NOTE: here @page is a top-level page. This is done to avoid
+	 *       creation of sub-page-list.
+	 */
+	for (i = 0; i < cdp->cdp_page_count; i++) {
+		struct cl_page *page = cdp->cdp_cl_pages[i];
+		struct osc_async_page *oap;
+		struct osc_page	  *opg;
+
+		LASSERT(top_io != NULL);
+
+		opg = osc_cl_page_osc(page, osc);
+		oap = &opg->ops_oap;
+		if (from == -1)
+			from = i;
+
+		osc_page_submit(env, opg, crt, brw_flags);
+		list_add_tail(&oap->oap_pending_item, &list);
+
+		queued++;
+		total_queued++;
+		if (queued == max_pages) {
+			sync_queue = true;
+		} else if (crt == CRT_WRITE) {
+			unsigned int next_chunks;
+			unsigned int chunks;
+
+			chunks = (queued + ppc - 1) >> ppc_bits;
+			/* chunk number if add another page */
+			next_chunks = (queued + ppc) >> ppc_bits;
+
+			/* next page will excceed write chunk limit */
+			if (chunks == osc_max_write_chunks(cli) &&
+			    next_chunks > chunks)
+				sync_queue = true;
+		}
+
+		to = i;
+		if (sync_queue) {
+			result = osc_queue_dio_pages(env, top_io, osc, cdp,
+						     &list, from, to,
+						     brw_flags);
+			if (result < 0)
+				break;
+			from = -1;
+			queued = 0;
+			sync_queue = false;
+		}
+	}
+
+	if (queued > 0) {
+		LASSERT(to != -1);
+		result = osc_queue_dio_pages(env, top_io, osc, cdp, &list,
+					     from, to, brw_flags);
+	}
+
+	/* Update c/mtime for sync write. LU-7310 */
+	if (crt == CRT_WRITE && total_queued > 0 && result == 0) {
+		struct cl_attr *attr = &osc_env_info(env)->oti_attr;
+		struct cl_object *obj   = ios->cis_obj;
+
+		cl_object_attr_lock(obj);
+		attr->cat_mtime = attr->cat_ctime = ktime_get_real_seconds();
+		cl_object_attr_update(env, obj, attr, CAT_MTIME | CAT_CTIME);
+		cl_object_attr_unlock(obj);
+	}
+
+	CDEBUG(D_INFO, "%d/%u %d\n", total_queued, cdp->cdp_page_count,
+	       result);
+	return total_queued > 0 ? 0 : result;
+}
+EXPORT_SYMBOL(osc_dio_submit);
+
 /**
  * This is called to update the attributes when modifying a specific page,
  * both when making new pages and when doing updates to existing cached pages.
@@ -252,7 +361,7 @@ void osc_page_touch_at(const struct lu_env *env, struct cl_object *obj,
 {
 	struct lov_oinfo  *loi  = cl2osc(obj)->oo_oinfo;
 	struct cl_attr    *attr = &osc_env_info(env)->oti_attr;
-	int valid;
+	enum cl_attr_valid valid;
 	__u64 kms;
 
 	ENTRY;
@@ -284,7 +393,7 @@ void osc_page_touch_at(const struct lu_env *env, struct cl_object *obj,
 int osc_io_commit_async(const struct lu_env *env,
 			const struct cl_io_slice *ios,
 			struct cl_page_list *qin, int from, int to,
-			cl_commit_cbt cb)
+			cl_commit_cbt cb, enum cl_io_priority prio)
 {
 	struct cl_io *io = ios->cis_io;
 	struct osc_io *oio = cl2osc_io(env, ios);
@@ -312,7 +421,7 @@ int osc_io_commit_async(const struct lu_env *env,
 		}
 	}
 
-	ll_folio_batch_init(fbatch, 0);
+	ll_folio_batch_init(fbatch);
 
 	while (qin->pl_nr > 0) {
 		struct osc_async_page *oap;
@@ -362,8 +471,8 @@ int osc_io_commit_async(const struct lu_env *env,
 	/* for sync write, kernel will wait for this page to be flushed before
 	 * osc_io_end() is called, so release it earlier.
 	 * for mkwrite(), it's known there is no further pages. */
-	if (cl_io_is_sync_write(io) && oio->oi_active != NULL) {
-		osc_extent_release(env, oio->oi_active);
+	if (cl_io_is_sync_write(io) && oio->oi_active) {
+		osc_extent_release(env, oio->oi_active, prio);
 		oio->oi_active = NULL;
 	}
 
@@ -373,12 +482,13 @@ int osc_io_commit_async(const struct lu_env *env,
 EXPORT_SYMBOL(osc_io_commit_async);
 
 void osc_io_extent_release(const struct lu_env *env,
-			   const struct cl_io_slice *ios)
+			   const struct cl_io_slice *ios,
+			   enum cl_io_priority prio)
 {
 	struct osc_io *oio = cl2osc_io(env, ios);
 
 	if (oio->oi_active != NULL) {
-		osc_extent_release(env, oio->oi_active);
+		osc_extent_release(env, oio->oi_active, prio);
 		oio->oi_active = NULL;
 	}
 }
@@ -548,7 +658,8 @@ int osc_punch_start(const struct lu_env *env, struct cl_io *io,
 	int rc;
 
 	ENTRY;
-	rc = osc_cache_writeback_range(env, osc, pg_start, pg_end, 1, 0);
+	rc = osc_cache_writeback_range(env, osc, pg_start, pg_end, 1, 0,
+				       IO_PRIO_NORMAL);
 	if (rc < 0)
 		RETURN(rc);
 
@@ -557,6 +668,13 @@ int osc_punch_start(const struct lu_env *env, struct cl_io *io,
 	RETURN(0);
 }
 EXPORT_SYMBOL(osc_punch_start);
+
+static inline void osc_set_projid_info(const struct lu_env *env,
+				       struct cl_object *obj, struct obdo *oa)
+{
+	if (!(oa->o_valid & OBD_MD_FLPROJID))
+		cl_req_projid_set(env, obj, &oa->o_projid);
+}
 
 static int osc_io_setattr_start(const struct lu_env *env,
                                 const struct cl_io_slice *slice)
@@ -579,9 +697,10 @@ static int osc_io_setattr_start(const struct lu_env *env,
 	if (cl_io_is_trunc(io))
 		result = osc_cache_truncate_start(env, cl2osc(obj), size,
 						  &oio->oi_trunc);
-	/* flush local pages prior punching them on server */
+	/* flush local pages prior punching/zero-range them on server */
 	if (io_is_falloc &&
-	    io->u.ci_setattr.sa_falloc_mode & FALLOC_FL_PUNCH_HOLE)
+	    (io->u.ci_setattr.sa_falloc_mode &
+	     (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE)))
 		result = osc_punch_start(env, io, obj);
 
 	if (result == 0 && oio->oi_lockless == 0) {
@@ -589,7 +708,7 @@ static int osc_io_setattr_start(const struct lu_env *env,
 		result = cl_object_attr_get(env, obj, attr);
 		if (result == 0) {
 			struct ost_lvb *lvb = &io->u.ci_setattr.sa_attr;
-			unsigned int cl_valid = 0;
+			enum cl_attr_valid cl_valid = 0;
 
 			if (ia_avalid & ATTR_SIZE) {
 				attr->cat_size = size;
@@ -616,6 +735,7 @@ static int osc_io_setattr_start(const struct lu_env *env,
 	memset(oa, 0, sizeof(*oa));
 	if (result == 0) {
 		oa->o_oi = loi->loi_oi;
+		osc_set_projid_info(env, obj, oa);
 		obdo_set_parent_fid(oa, io->u.ci_setattr.sa_parent_fid);
 		oa->o_stripe_idx = io->u.ci_setattr.sa_stripe_index;
 		oa->o_layout = io->u.ci_setattr.sa_layout;
@@ -661,9 +781,9 @@ static int osc_io_setattr_start(const struct lu_env *env,
 
 			oa->o_size = io->u.ci_setattr.sa_falloc_offset;
 			oa->o_blocks = io->u.ci_setattr.sa_falloc_end;
-			oa->o_uid = io->u.ci_setattr.sa_falloc_uid;
-			oa->o_gid = io->u.ci_setattr.sa_falloc_gid;
-			oa->o_projid = io->u.ci_setattr.sa_falloc_projid;
+			oa->o_uid = io->u.ci_setattr.sa_attr_uid;
+			oa->o_gid = io->u.ci_setattr.sa_attr_gid;
+			oa->o_projid = io->u.ci_setattr.sa_attr_projid;
 			oa->o_valid |= OBD_MD_FLSIZE | OBD_MD_FLBLOCKS |
 				OBD_MD_FLUID | OBD_MD_FLGID | OBD_MD_FLPROJID;
 
@@ -677,7 +797,12 @@ static int osc_io_setattr_start(const struct lu_env *env,
 		} else if (ia_avalid & ATTR_SIZE) {
 			oa->o_size = size;
 			oa->o_blocks = OBD_OBJECT_EOF;
-			oa->o_valid |= OBD_MD_FLSIZE | OBD_MD_FLBLOCKS;
+			oa->o_uid = io->u.ci_setattr.sa_attr_uid;
+			oa->o_gid = io->u.ci_setattr.sa_attr_gid;
+			oa->o_projid = io->u.ci_setattr.sa_attr_projid;
+			oa->o_valid |= OBD_MD_FLSIZE | OBD_MD_FLBLOCKS |
+				       OBD_MD_FLUID | OBD_MD_FLGID |
+				       OBD_MD_FLPROJID;
 			result = osc_punch_send(osc_export(cl2osc(obj)),
 						oa, osc_async_upcall, cbargs);
 		} else {
@@ -700,7 +825,7 @@ void osc_io_setattr_end(const struct lu_env *env,
 	struct osc_async_cbargs *cbargs = &oio->oi_cbarg;
 	struct cl_attr  *attr = &osc_env_info(env)->oti_attr;
 	struct obdo *oa = &oio->oi_oa;
-	unsigned int cl_valid = 0;
+	enum cl_attr_valid cl_valid = 0;
 	int result = 0;
 
 	if (cbargs->opc_rpc_sent) {
@@ -791,6 +916,7 @@ static int osc_io_data_version_start(const struct lu_env *env,
 	memset(oa, 0, sizeof(*oa));
 	oa->o_oi = loi->loi_oi;
 	oa->o_valid = OBD_MD_FLID | OBD_MD_FLGROUP;
+	osc_set_projid_info(env, slice->cis_obj, oa);
 
 	if (dv->dv_flags & (LL_DV_RD_FLUSH | LL_DV_WR_FLUSH)) {
 		oa->o_valid |= OBD_MD_FLFLAGS;
@@ -833,7 +959,7 @@ static void osc_io_data_version_end(const struct lu_env *env,
 	struct osc_async_cbargs *cbargs = &oio->oi_cbarg;
 	struct cl_attr *attr = &osc_env_info(env)->oti_attr;
 	struct obdo *oa = &oio->oi_oa;
-	unsigned int cl_valid = 0;
+	enum cl_attr_valid cl_valid = 0;
 
 	ENTRY;
 	wait_for_completion(&cbargs->opc_sync);
@@ -921,6 +1047,7 @@ int osc_fsync_ost(const struct lu_env *env, struct osc_object *obj,
 	memset(oa, 0, sizeof(*oa));
 	oa->o_oi = loi->loi_oi;
 	oa->o_valid = OBD_MD_FLID | OBD_MD_FLGROUP;
+	osc_set_projid_info(env, osc2cl(obj), oa);
 
 	/* reload size abd blocks for start and end of sync range */
 	oa->o_size = fio->fi_start;
@@ -952,9 +1079,16 @@ static int osc_io_fsync_start(const struct lu_env *env,
 	if (fio->fi_mode == CL_FSYNC_RECLAIM) {
 		struct client_obd *cli = osc_cli(osc);
 
-		if (!atomic_long_read(&cli->cl_unstable_count)) {
-			/* Stop flush when there are no unstable pages? */
-			CDEBUG(D_CACHE, "unstable count is zero\n");
+		if (!atomic_read(&osc->oo_nr_ios) &&
+		    !atomic_read(&osc->oo_nr_writes) &&
+		    !atomic_long_read(&cli->cl_unstable_count)) {
+			/*
+			 * No active I/O, no dirty pages needing to write and
+			 * no unstable pages needing to commit.
+			 */
+			CDEBUG(D_CACHE,
+			       "%s: unstable/dirty counts are both zero\n",
+			       cli_name(cli));
 			RETURN(0);
 		}
 	}
@@ -963,7 +1097,8 @@ static int osc_io_fsync_start(const struct lu_env *env,
 		end = CL_PAGE_EOF;
 
 	result = osc_cache_writeback_range(env, osc, start, end, 0,
-					   fio->fi_mode == CL_FSYNC_DISCARD);
+					   fio->fi_mode == CL_FSYNC_DISCARD,
+					   fio->fi_prio);
 	if (result < 0 && fio->fi_mode == CL_FSYNC_DISCARD) {
 		CDEBUG(D_CACHE,
 		       "%s: ignore error %d on discarding "DFID":[%lu-%lu]\n",
@@ -1062,6 +1197,7 @@ static int osc_io_ladvise_start(const struct lu_env *env,
 	memset(oa, 0, sizeof(*oa));
 	oa->o_oi = loi->loi_oi;
 	oa->o_valid = OBD_MD_FLID | OBD_MD_FLGROUP;
+	osc_set_projid_info(env, obj, oa);
 	obdo_set_parent_fid(oa, lio->lio_fid);
 
 	ladvise = ladvise_hdr->lah_advise;
@@ -1103,7 +1239,7 @@ void osc_io_end(const struct lu_env *env, const struct cl_io_slice *slice)
 	struct osc_io *oio = cl2osc_io(env, slice);
 
 	if (oio->oi_active) {
-		osc_extent_release(env, oio->oi_active);
+		osc_extent_release(env, oio->oi_active, IO_PRIO_NORMAL);
 		oio->oi_active = NULL;
 	}
 }
@@ -1186,6 +1322,7 @@ int osc_io_lseek_start(const struct lu_env *env,
 	memset(oa, 0, sizeof(*oa));
 	oa->o_oi = loi->loi_oi;
 	oa->o_valid = OBD_MD_FLID | OBD_MD_FLGROUP;
+	osc_set_projid_info(env, obj, oa);
 	oa->o_size = lsio->ls_start;
 	oa->o_mode = lsio->ls_whence;
 	if (oio->oi_lockless) {
@@ -1310,11 +1447,12 @@ static const struct cl_io_operations osc_io_ops = {
 			.cio_fini   = osc_io_fini
 		}
 	},
-	.cio_read_ahead		    = osc_io_read_ahead,
-	.cio_lru_reserve	    = osc_io_lru_reserve,
-	.cio_submit                 = osc_io_submit,
-	.cio_commit_async           = osc_io_commit_async,
-	.cio_extent_release         = osc_io_extent_release
+	.cio_read_ahead_prep	= osc_io_read_ahead_prep,
+	.cio_lru_reserve	= osc_io_lru_reserve,
+	.cio_submit		= osc_io_submit,
+	.cio_dio_submit		= osc_dio_submit,
+	.cio_commit_async	= osc_io_commit_async,
+	.cio_extent_release	= osc_io_extent_release
 };
 
 /*****************************************************************************

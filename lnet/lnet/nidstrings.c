@@ -14,7 +14,7 @@
 #define DEBUG_SUBSYSTEM S_LNET
 
 #include <linux/sunrpc/addr.h>
-#include <libcfs/libcfs.h>
+#include <linux/libcfs/libcfs.h>
 #include <uapi/linux/lnet/nidstr.h>
 #include <lnet/lib-types.h>
 #include <linux/ctype.h>
@@ -88,7 +88,7 @@ EXPORT_SYMBOL(libcfs_next_nidstring);
  * \endverbatim
  */
 
-/**
+/*
  * Structure to represent \<nidrange\> token of the syntax.
  *
  * One of this is created for each \<net\> parsed.
@@ -99,25 +99,15 @@ struct nidrange {
 	 * list parsing.
 	 */
 	struct list_head nr_link;
-	/**
-	 * List head for addrrange::ar_link.
-	 */
+	/* List head for addrrange::ar_link. */
 	struct list_head nr_addrranges;
-	/**
-	 * List head for nidmask::nm_link.
-	 */
+	/* List head for nidmask::nm_link. */
 	struct list_head nr_nidmasks;
-	/**
-	 * Flag indicating that *@<net> is found.
-	 */
+	/* Flag indicating that *@<net> is found. */
 	int nr_all;
-	/**
-	 * Pointer to corresponding element of libcfs_netstrfns.
-	 */
+	/* Pointer to corresponding element of libcfs_netstrfns. */
 	struct netstrfns *nr_netstrfns;
-	/**
-	 * Number of network. E.g. 5 if \<net\> is "elan5".
-	 */
+	/* Number of network. E.g. 5 if \<net\> is "elan5". */
 	int nr_netnum;
 };
 
@@ -150,7 +140,7 @@ struct nidmask {
 	u8 nm_prefix_len;
 };
 
-/**
+/*
  * Structure to represent \<addrrange\> token of the syntax.
  */
 struct addrrange {
@@ -165,17 +155,24 @@ struct addrrange {
 };
 
 /**
- * Parses \<range_expr\> token of the syntax. If \a bracketed is false,
- * \a src should only have a single token which can be \<number\> or  \*
+ * cfs_range_expr_parse() - Parses \<range_expr\> token of the syntax.
+ * @src: contains range expression to be parsed
+ * @min: Min value
+ * @max: Max value
+ * @bracketed: If %False @src must have only single number/range
+ * @expr: After successful parsing this will be populated [out]
+ *
+ * Parses \<range_expr\> token of the syntax. If @bracketed is false,
+ * @src should only have a single token which can be \<number\> or  \*
  *
  * \retval pointer to allocated range_expr and initialized
- * range_expr::re_lo, range_expr::re_hi and range_expr:re_stride if \a
- `* src parses to
+ * range_expr::re_lo, range_expr::re_hi & range_expr:re_stride if @src parses to
  * \<number\> |
  * \<number\> '-' \<number\> |
  * \<number\> '-' \<number\> '/' \<number\>
- * \retval 0 will be returned if it can be parsed, otherwise -EINVAL or
- * -ENOMEM will be returned.
+ *
+ * Returns %0 will be returned if it can be parsed, otherwise %-EINVAL or
+ * %-ENOMEM will be returned.
  */
 static int
 cfs_range_expr_parse(char *src, unsigned int min, unsigned int max,
@@ -241,6 +238,9 @@ cfs_range_expr_parse(char *src, unsigned int min, unsigned int max,
 	re->re_stride = num;
 
 out:
+	if (re->re_lo > re->re_hi)
+		goto failed;
+
 	*expr = re;
 	return 0;
 
@@ -250,10 +250,14 @@ failed:
 }
 
 /**
- * Matches value (\a value) against ranges expression list \a expr_list.
+ * cfs_expr_list_match() - Matches value (@value) against ranges expression
+ *                         list @expr_list.
+ * @value: Value to be checked against the range
+ * @expr_list: list of (struct cfs_range_expr) it defines range
  *
- * \retval 1 if \a value matches
- * \retval 0 otherwise
+ * Return:
+ * * %1 if @value matches
+ * * %0 otherwise
  */
 int
 cfs_expr_list_match(u32 value, struct cfs_expr_list *expr_list)
@@ -270,11 +274,16 @@ cfs_expr_list_match(u32 value, struct cfs_expr_list *expr_list)
 }
 
 /**
- * Convert express list (\a expr_list) to an array of all matched values
+ * cfs_expr_list_values() - Convert express list (@expr_list) to an array of
+ *                          all matched values
+ * @expr_list: list of (struct cfs_range_expr) it defines range
+ * @max: Max array size
+ * @valpp: Array of all matched values [out]
  *
- * \retval N N is total number of all matched values
- * \retval 0 if expression list is empty
- * \retval < 0 for failure
+ * Return:
+ * * %N N is total number of all matched values
+ * * %0 if expression list is empty
+ * * %negative for failure
  */
 int
 cfs_expr_list_values(struct cfs_expr_list *expr_list, int max, u32 **valpp)
@@ -318,9 +327,8 @@ cfs_expr_list_values(struct cfs_expr_list *expr_list, int max, u32 **valpp)
 EXPORT_SYMBOL(cfs_expr_list_values);
 
 /**
- * Frees cfs_range_expr structures of \a expr_list.
- *
- * \retval none
+ * cfs_expr_list_free() - Frees cfs_range_expr structures of @expr_list.
+ * @expr_list: Struct cfs_range_expr to free
  */
 void
 cfs_expr_list_free(struct cfs_expr_list *expr_list)
@@ -339,10 +347,16 @@ cfs_expr_list_free(struct cfs_expr_list *expr_list)
 EXPORT_SYMBOL(cfs_expr_list_free);
 
 /**
- * Parses \<cfs_expr_list\> token of the syntax.
+ * cfs_expr_list_parse() - Parses \<cfs_expr_list\> token of the syntax.
+ * @str: Expression to be parsed
+ * @len: length of @str
+ * @min: Min value of parsed range
+ * @max: Max value of parsed range
+ * @elpp: Parsed range expression [out]
  *
- * \retval 0 if \a str parses to \<number\> | \<expr_list\>
- * \retval -errno otherwise
+ * Return:
+ * * %0 if @str parses to \<number\> | \<expr_list\>
+ * * %-errno otherwise
  */
 int
 cfs_expr_list_parse(char *str, int len, unsigned int min, unsigned int max,
@@ -405,12 +419,11 @@ cfs_expr_list_parse(char *str, int len, unsigned int min, unsigned int max,
 EXPORT_SYMBOL(cfs_expr_list_parse);
 
 /**
- * Frees cfs_expr_list structures of \a list.
+ * cfs_expr_list_free_list() - Frees cfs_expr_list structures of @list.
+ * @list: List to free (struct cfs_expr_list)
  *
- * For each struct cfs_expr_list structure found on \a list it frees
+ * For each struct cfs_expr_list structure found on @list it frees
  * range_expr list attached to it and frees the cfs_expr_list itself.
- *
- * \retval none
  */
 void
 cfs_expr_list_free_list(struct list_head *list)
@@ -426,13 +439,16 @@ cfs_expr_list_free_list(struct list_head *list)
 }
 
 /**
- * Parses \<addrrange\> token on the syntax.
+ * parse_addrange() - Parses \<addrrange\> token on the syntax.
+ * @str: address range
+ * @nidrange: pointer to the struct nidrange
  *
- * Allocates struct addrrange and links to \a nidrange via
+ * Allocates struct addrrange and links to @nidrange via
  * (nidrange::nr_addrranges)
  *
- * \retval 0 if \a src parses to '*' | \<ipaddr_range\> | \<cfs_expr_list\>
- * \retval -errno otherwise
+ * Return:
+ * * %0 if @src parses to '*' | \<ipaddr_range\> | \<cfs_expr_list\>
+ * * %-errno otherwise
  */
 static int
 parse_addrange(char *str, struct nidrange *nidrange)
@@ -551,14 +567,17 @@ parse_nidmask(char *str, struct nidrange *nr)
 }
 
 /**
- * Finds or creates struct nidrange.
+ * add_nidrange() - Finds or creates struct nidrange.
+ * @str: Input string
+ * @nidlist: list of nidranges
  *
- * Checks if \a src is a valid network name, looks for corresponding
- * nidrange on the ist of nidranges (\a nidlist), creates new struct
+ * Checks if @str is a valid network name, looks for corresponding
+ * nidrange on the list of nidranges (@nidlist), creates new struct
  * nidrange if it is not found.
  *
- * \retval pointer to struct nidrange matching network specified via \a src
- * \retval NULL if \a src does not match any network
+ * Return:
+ * * %pointer to struct nidrange matching network specified via @str
+ * * %NULL if @str does not match any network
  */
 static struct nidrange *
 add_nidrange(char *str, struct list_head *nidlist)
@@ -606,10 +625,13 @@ add_nidrange(char *str, struct list_head *nidlist)
 }
 
 /**
- * Parses \<nidrange\> token of the syntax.
+ * parse_nidrange() - Parses \<nidrange\> token of the syntax.
+ * @str: Input string
+ * @nidlist: list of nidranges
  *
- * \retval 0 if \a src parses to \<addrrange\> '@' \<net\>
- * \retval -EINVAL otherwise
+ * Return:
+ * * %0 if @src parses to \<addrrange\> '@' \<net\>
+ * * %-EINVAL otherwise
  */
 static int
 parse_nidrange(char *str, struct list_head *nidlist)
@@ -643,12 +665,11 @@ parse_nidrange(char *str, struct list_head *nidlist)
 }
 
 /**
- * Frees addrrange structures of \a list.
+ * free_addrranges() - Frees addrrange structures of @list.
+ * @list: List to free (struct addrrange)
  *
- * For each struct addrrange structure found on \a list it frees
+ * For each struct addrrange structure found on @list it frees
  * cfs_expr_list list attached to it and frees the addrrange itself.
- *
- * \retval none
  */
 static void
 free_addrranges(struct list_head *list)
@@ -678,12 +699,11 @@ free_nidmasks(struct list_head *list)
 }
 
 /**
- * Frees nidrange strutures of \a list.
+ * cfs_free_nidlist() - Frees nidrange strutures of @list.
+ * @list: List fo free (struct nidrange)
  *
- * For each struct nidrange structure found on \a list it frees
+ * For each struct nidrange structure found on @list it frees
  * addrrange list attached to it and frees the nidrange itself.
- *
- * \retval none
  */
 void
 cfs_free_nidlist(struct list_head *list)
@@ -702,17 +722,20 @@ cfs_free_nidlist(struct list_head *list)
 EXPORT_SYMBOL(cfs_free_nidlist);
 
 /**
- * Parses nid range list.
+ * cfs_parse_nidlist() - Parses nid range list.
+ * @orig: Original string (NID)
+ * @len: length of @orig
+ * @nidlist: Populate after success parse (list of struct nidrange) [out]
  *
- * Parses with rigorous syntax and overflow checking \a str into
- * \<nidrange\> [ ' ' \<nidrange\> ], compiles \a str into set of
- * structures and links that structure to \a nidlist. The resulting
- * list can be used to match a NID againts set of NIDS defined by \a
- * str.
+ * Parses with rigorous syntax and overflow checking @orig into
+ * \<nidrange\> [ ' ' \<nidrange\> ], compiles @orig into set of
+ * structures and links that structure to @nidlist. The resulting
+ * list can be used to match a NID againts set of NIDS defined by @orig.
  * \see cfs_match_nid
  *
- * \retval 0 on success
- * \retval -errno otherwise (-ENOMEM or -EINVAL)
+ * Return:
+ * * %0 on success
+ * * %-errno otherwise (-ENOMEM or -EINVAL)
  */
 int
 cfs_parse_nidlist(char *orig, int len, struct list_head *nidlist)
@@ -737,12 +760,14 @@ cfs_parse_nidlist(char *orig, int len, struct list_head *nidlist)
 		cfs_free_nidlist(nidlist);
 	else if (list_empty(nidlist))
 		rc = -EINVAL;
+
 	return rc;
 }
 EXPORT_SYMBOL(cfs_parse_nidlist);
 
 static int
-match_nidmask(struct lnet_nid *nid, struct nidmask *nm, struct netstrfns *nf)
+match_nidmask(const struct lnet_nid *nid, struct nidmask *nm,
+	      struct netstrfns *nf)
 {
 	__be32 addr[4] = { nid->nid_addr[0], nid->nid_addr[1],
 			   nid->nid_addr[2], nid->nid_addr[3] };
@@ -766,14 +791,18 @@ match_nidmask(struct lnet_nid *nid, struct nidmask *nm, struct netstrfns *nf)
 }
 
 /**
- * Matches a nid (\a nid) against the compiled list of nidranges (\a nidlist).
+ * cfs_match_nid() - Matches a nid (@nid) against the compiled list of
+ *                   nidranges (@nidlist).
+ * @nid: NID to match
+ * @nidlist: Compiled list of nidranges
  *
- * \see cfs_parse_nidlist()
+ * see cfs_parse_nidlist()
  *
- * \retval 1 on match
- * \retval 0  otherwises
+ * Return:
+ * * %1 on match
+ * * %0 otherwises
  */
-int cfs_match_nid(struct lnet_nid *nid, struct list_head *nidlist)
+int cfs_match_nid(const struct lnet_nid *nid, struct list_head *nidlist)
 {
 	struct nidrange *nr;
 	struct nidmask *nm;
@@ -802,9 +831,13 @@ int cfs_match_nid(struct lnet_nid *nid, struct list_head *nidlist)
 EXPORT_SYMBOL(cfs_match_nid);
 
 /**
- * Print the network part of the nidrange \a nr into the specified \a buffer.
+ * cfs_print_network() - Print the network part of the nidrange @nr into the
+ *                       specified @buffer.
+ * @buffer: Buffer holding network part of nidrange [out]
+ * @count: Max lenght to print
+ * @nr: nidrange
  *
- * \retval number of characters written
+ * Return number of characters written
  */
 static int
 cfs_print_network(char *buffer, int count, struct nidrange *nr)
@@ -819,10 +852,17 @@ cfs_print_network(char *buffer, int count, struct nidrange *nr)
 }
 
 /**
- * Print a list of addrrange (\a addrranges) into the specified \a buffer.
- * At max \a count characters can be printed into \a buffer.
+ * cfs_print_addrranges() - Print a list of addrrange (@addrranges) into the
+ *                          specified @buffer.
+ * @buffer: Buffer holding the addrrange
+ * @count: Max length to print
+ * @addrranges: list of addrrange
+ * @nr: nidrange
  *
- * \retval number of characters written
+ * Print a list of addrrange (@addrranges) into the specified @buffer.
+ * At max @count characters can be printed into @buffer.
+ *
+ * Return number of characters written
  */
 static int
 cfs_print_addrranges(char *buffer, int count, struct list_head *addrranges,
@@ -843,47 +883,59 @@ cfs_print_addrranges(char *buffer, int count, struct list_head *addrranges,
 }
 
 static int
+print_nidmask(char *buffer, int count, struct nidmask *nm, struct nidrange *nr,
+	      bool omit_prefix)
+{
+	int i = 0;
+	struct sockaddr_storage sa = {};
+	u8 max;
+
+	/* parse_nidmask() ensures nm_family is set to either AF_INET
+	 * or AF_INET6
+	 */
+	sa.ss_family = nm->nm_family;
+	if (nm->nm_family == AF_INET) {
+		memcpy(&((struct sockaddr_in *)(&sa))->sin_addr.s_addr,
+		       &nm->nm_addr.ipv4, sizeof(struct in_addr));
+		max = 32;
+	} else {
+		memcpy(&((struct sockaddr_in6 *)(&sa))->sin6_addr.s6_addr,
+		       &nm->nm_addr.ipv6, sizeof(struct in6_addr));
+		max = 128;
+	}
+	i += rpc_ntop((struct sockaddr *)&sa, buffer + i, count - i);
+	if (nm->nm_prefix_len < max && !omit_prefix)
+		i += scnprintf(buffer + i, count - i, "/%u",
+			       nm->nm_prefix_len);
+	i += cfs_print_network(buffer + i, count - i, nr);
+
+	return i;
+}
+
+static int
 cfs_print_nidmasks(char *buffer, int count, struct list_head *nidmasks,
 		   struct nidrange *nr)
 {
 	int i = 0;
 	struct nidmask *nm;
-	struct sockaddr_storage sa = {};
-	u8 max;
 
 	list_for_each_entry(nm, nidmasks, nm_link) {
 		if (i != 0)
 			i += scnprintf(buffer + i, count - i, " ");
 
-		/* parse_nidmask() ensures nm_family is set to either AF_INET
-		 * or AF_INET6
-		 */
-		sa.ss_family = nm->nm_family;
-		if (nm->nm_family == AF_INET) {
-			memcpy(&((struct sockaddr_in *)(&sa))->sin_addr.s_addr,
-			       &nm->nm_addr.ipv4, sizeof(struct in_addr));
-			max = 32;
-		} else {
-			memcpy(&((struct sockaddr_in6 *)(&sa))->sin6_addr.s6_addr,
-			       &nm->nm_addr.ipv6, sizeof(struct in6_addr));
-			max = 128;
-		}
-		i += rpc_ntop((struct sockaddr *)&sa, buffer + i, count - i);
-		if (nm->nm_prefix_len < max)
-			i += scnprintf(buffer + i, count - i, "/%u",
-				       nm->nm_prefix_len);
-		i += cfs_print_network(buffer + i, count - i, nr);
+		i += print_nidmask(buffer + i, count - i, nm, nr, false);
 	}
 
 	return i;
 }
 
 /**
- * Print a list of nidranges (\a nidlist) into the specified \a buffer.
- * At max \a count characters can be printed into \a buffer.
- * Nidranges are separated by a space character.
+ * cfs_print_nidlist() - Print list of @nidranges into the specified @buffer.
+ * @buffer: buffer holding list of @nidranges
+ * @count: Max characters can be printed into @buffer.
+ * @nidlist: Nidranges are separated by a space character.
  *
- * \retval number of characters written
+ * Return number of characters written
  */
 int cfs_print_nidlist(char *buffer, int count, struct list_head *nidlist)
 {
@@ -922,6 +974,47 @@ int cfs_print_nidlist(char *buffer, int count, struct list_head *nidlist)
 	return i;
 }
 EXPORT_SYMBOL(cfs_print_nidlist);
+
+/* Caller should provide a nidlist with a single nidmask */
+u8
+cfs_nidmask_get_length(struct list_head *nidlist)
+{
+	struct nidrange *nr;
+	struct nidmask *nm;
+	u8 len = 0;
+
+	list_for_each_entry(nr, nidlist, nr_link) {
+		list_for_each_entry(nm, &nr->nr_nidmasks, nm_link) {
+			if (len)
+				return 0;
+			len = nm->nm_prefix_len;
+		}
+	}
+	return len;
+}
+EXPORT_SYMBOL(cfs_nidmask_get_length);
+
+/* Caller should provide a nidlist with a single nidmask */
+int
+cfs_nidmask_get_base_nidstr(char *buf, int count, struct list_head *nidlist)
+{
+	struct nidrange *nr;
+	struct nidmask *nm;
+	bool found = false;
+
+	list_for_each_entry(nr, nidlist, nr_link) {
+		list_for_each_entry(nm, &nr->nr_nidmasks, nm_link) {
+			if (found)
+				return -EINVAL;
+
+			print_nidmask(buf, count, nm, nr, true);
+			found = true;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(cfs_nidmask_get_base_nidstr);
 
 static int
 libcfs_lo_str2addr(const char *str, int nob, __u32 *addr)
@@ -1051,11 +1144,13 @@ cfs_ip_addr_parse(char *str, int len_ignored, struct list_head *list)
 }
 
 /**
- * Print the range expression \a re into specified \a buffer.
- * If \a bracketed is true, expression does not need additional
- * brackets.
+ * cfs_range_expr_print() - Print range expression @expr into specified @buffer
+ * @buffer: buffer holding list of @expr
+ * @count: Max characters can be printed into @buffer.
+ * @expr: range expression list
+ * @bracketed: if %true, expression does not need additional brackets.
  *
- * \retval number of characters written
+ * Return number of characters written
  */
 static int
 cfs_range_expr_print(char *buffer, int count, struct cfs_range_expr *expr,
@@ -1081,11 +1176,16 @@ cfs_range_expr_print(char *buffer, int count, struct cfs_range_expr *expr,
 }
 
 /**
- * Print a list of range expressions (\a expr_list) into specified \a buffer.
+ * cfs_expr_list_print() - Print a list of range expressions
+ * @buffer: Buffer holding range expression for print
+ * @count: Max length to print
+ * @expr_list: Range expression
+ *
+ * Print a list of range expressions (@expr_list) into specified @buffer.
  * If the list contains several expressions, separate them with comma
  * and surround the list with brackets.
  *
- * \retval number of characters written
+ * Returns number of characters written
  */
 static int
 cfs_expr_list_print(char *buffer, int count, struct cfs_expr_list *expr_list)
@@ -1132,10 +1232,14 @@ libcfs_ip_addr_range_print(char *buffer, int count, struct list_head *list)
 }
 
 /**
- * Matches address (\a addr) against address set encoded in \a list.
+ * cfs_ip_addr_match() - Matches address (@addr) against address set encoded
+ *                       in @list.
+ * @addr: IP address to be checked
+ * @list: List contains parsed IP address
  *
- * \retval 1 if \a addr matches
- * \retval 0 otherwise
+ * Return:
+ * * %1 if @addr matches
+ * * %0 otherwise
  */
 int
 cfs_ip_addr_match(__u32 addr, struct list_head *list)
@@ -1154,11 +1258,16 @@ cfs_ip_addr_match(__u32 addr, struct list_head *list)
 }
 
 /**
- * Matches address (\a addr) against the netmask encoded in \a netmask and
- * \a netaddr.
+ * libcfs_ip_in_netmask() - Matches address (@addr) against the netmask encoded
+ *                          in @netmask and @netaddr.
+ * @addr: IP address to be checked
+ * @asize: Size of @addr
+ * @netmask: Netmask
+ * @netaddr: Network address
  *
- * \retval 1 if \a addr matches
- * \retval 0 otherwise
+ * Return:
+ * * %1 if @addr matches
+ * * %0 otherwise
  */
 int
 libcfs_ip_in_netmask(const __be32 *addr, size_t asize, const __be32 *netmask,
@@ -1191,9 +1300,13 @@ libcfs_ip_in_netmask(const __be32 *addr, size_t asize, const __be32 *netmask,
 }
 
 /**
- * Print the network part of the nidrange \a nr into the specified \a buffer.
+ * libcfs_decnum_addr2str() - Print the network part of the nidrange @nr into
+ *                            the specified buffer(@str)
+ * @addr: numeric address to be converted
+ * @str: Converted decimial string will be stored [out]
+ * @size: length of @str
  *
- * \retval number of characters written
+ * Returns number of characters written
  */
 static void
 libcfs_decnum_addr2str(__u32 addr, char *str, size_t size)
@@ -1222,12 +1335,17 @@ libcfs_num_str2addr(const char *str, int nob, __u32 *addr)
 }
 
 /**
- * Nf_parse_addrlist method for networks using numeric addresses.
+ * libcfs_num_parse() - Nf_parse_addrlist method for networks using numeric
+ *                      addresses.
+ * @str: numeric address information
+ * @len: length of @str
+ * @list: Parsed to numeric address will be added [out]
  *
  * Examples of such networks are gm and elan.
  *
- * \retval 0 if \a str parsed to numeric address
- * \retval errno otherwise
+ * Return:
+ * * %0 if @str parsed to numeric address on success
+ * * %errno otherwise
  */
 int
 libcfs_num_parse(char *str, int len, struct list_head *list)
@@ -1273,14 +1391,15 @@ libcfs_num_match(__u32 addr, struct list_head *numaddr)
 }
 
 static struct netstrfns libcfs_netstrfns[] = {
-	{ .nf_type		= LOLND,
-	  .nf_name		= "lo",
-	  .nf_modname		= "klolnd",
-	  .nf_addr2str		= libcfs_decnum_addr2str,
-	  .nf_str2addr		= libcfs_lo_str2addr,
-	  .nf_parse_addrlist	= libcfs_num_parse,
-	  .nf_print_addrlist	= libcfs_num_addr_range_print,
-	  .nf_match_addr	= libcfs_num_match
+	{
+		.nf_type		= LOLND,
+		.nf_name		= "lo",
+		.nf_modname		= "klolnd",
+		.nf_addr2str		= libcfs_decnum_addr2str,
+		.nf_str2addr		= libcfs_lo_str2addr,
+		.nf_parse_addrlist	= libcfs_num_parse,
+		.nf_print_addrlist	= libcfs_num_addr_range_print,
+		.nf_match_addr		= libcfs_num_match
 	},
 	{ .nf_type		= SOCKLND,
 	  .nf_name		= "tcp",
@@ -1304,27 +1423,40 @@ static struct netstrfns libcfs_netstrfns[] = {
 	  .nf_match_addr	= cfs_ip_addr_match,
 	  .nf_match_netmask	= libcfs_ip_in_netmask
 	},
-	{ .nf_type		= GNILND,
-	  .nf_name		= "gni",
-	  .nf_modname		= "kgnilnd",
-	  .nf_addr2str		= libcfs_decnum_addr2str,
-	  .nf_str2addr		= libcfs_num_str2addr,
-	  .nf_parse_addrlist	= libcfs_num_parse,
-	  .nf_print_addrlist	= libcfs_num_addr_range_print,
-	  .nf_match_addr	= libcfs_num_match
+	{
+		.nf_type		= GNILND,
+		.nf_name		= "gni",
+		.nf_modname		= "kgnilnd",
+		.nf_addr2str		= libcfs_decnum_addr2str,
+		.nf_str2addr		= libcfs_num_str2addr,
+		.nf_parse_addrlist	= libcfs_num_parse,
+		.nf_print_addrlist	= libcfs_num_addr_range_print,
+		.nf_match_addr		= libcfs_num_match
 	},
-	{ .nf_type		= GNIIPLND,
-	  .nf_name		= "gip",
-	  .nf_modname		= "kgnilnd",
-	  .nf_addr2str		= libcfs_ip_addr2str,
-	  .nf_str2addr		= libcfs_ip_str2addr,
-	  .nf_parse_addrlist	= cfs_ip_addr_parse,
-	  .nf_print_addrlist	= libcfs_ip_addr_range_print,
-	  .nf_match_addr	= cfs_ip_addr_match
+	{
+		.nf_type		= GNIIPLND,
+		.nf_name		= "gip",
+		.nf_modname		= "kgnilnd",
+		.nf_addr2str		= libcfs_ip_addr2str,
+		.nf_str2addr		= libcfs_ip_str2addr,
+		.nf_parse_addrlist	= cfs_ip_addr_parse,
+		.nf_print_addrlist	= libcfs_ip_addr_range_print,
+		.nf_match_addr		= cfs_ip_addr_match
 	},
-	{ .nf_type		= PTL4LND,
-	  .nf_name		= "ptlf",
-	  .nf_modname		= "kptl4lnd",
+	{
+		.nf_type		= PTL4LND,
+		.nf_name		= "ptlf",
+		.nf_modname		= "kptl4lnd",
+		.nf_addr2str		= libcfs_decnum_addr2str,
+		.nf_str2addr		= libcfs_num_str2addr,
+		.nf_parse_addrlist	= libcfs_num_parse,
+		.nf_print_addrlist	= libcfs_num_addr_range_print,
+		.nf_match_addr		= libcfs_num_match
+	},
+	{
+	  .nf_type		= KFILND,
+	  .nf_name		= "kfi",
+	  .nf_modname		= "kkfilnd",
 	  .nf_addr2str		= libcfs_decnum_addr2str,
 	  .nf_str2addr		= libcfs_num_str2addr,
 	  .nf_parse_addrlist	= libcfs_num_parse,
@@ -1332,9 +1464,21 @@ static struct netstrfns libcfs_netstrfns[] = {
 	  .nf_match_addr	= libcfs_num_match
 	},
 	{
-	  .nf_type		= KFILND,
-	  .nf_name		= "kfi",
-	  .nf_modname		= "kkfilnd",
+	  .nf_type		= EFALND,
+	  .nf_name		= "efa",
+	  .nf_modname		= "kefalnd",
+	  .nf_addr2str		= libcfs_ip_addr2str,
+	  .nf_addr2str_size	= libcfs_ip_addr2str_size,
+	  .nf_str2addr		= libcfs_ip_str2addr,
+	  .nf_str2addr_size	= libcfs_ip_str2addr_size,
+	  .nf_parse_addrlist	= cfs_ip_addr_parse,
+	  .nf_print_addrlist	= libcfs_ip_addr_range_print,
+	  .nf_match_addr	= cfs_ip_addr_match
+	},
+	{
+	  .nf_type		= BXI3LND,
+	  .nf_name		= "bxi3f",
+	  .nf_modname		= "kbxi3lnd",
 	  .nf_addr2str		= libcfs_decnum_addr2str,
 	  .nf_str2addr		= libcfs_num_str2addr,
 	  .nf_parse_addrlist	= libcfs_num_parse,

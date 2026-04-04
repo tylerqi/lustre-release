@@ -68,7 +68,7 @@ ksocknal_lib_send_hdr(struct ksock_conn *conn, struct ksock_tx *tx,
 	{
 #if SOCKNAL_SINGLE_FRAG_TX
 		struct kvec scratch;
-		struct kvec *scratchiov = &scratch;
+		scratchiov = &scratch;
 		unsigned int niov = 1;
 #else
 		unsigned int niov = tx->tx_niov;
@@ -90,7 +90,8 @@ ksocknal_lib_send_hdr(struct ksock_conn *conn, struct ksock_tx *tx,
 }
 
 static int
-ksocknal_lib_sendpage(struct socket *sock, struct bio_vec *kiov, int msgflg)
+ksocknal_lib_sendpage(struct socket *sock, struct bio_vec *kiov,
+		      int nkiov, int msgflg)
 {
 #ifdef MSG_SPLICE_PAGES
 	struct msghdr msg = {.msg_flags = msgflg | MSG_SPLICE_PAGES};
@@ -132,11 +133,11 @@ ksocknal_lib_send_kiov(struct ksock_conn *conn, struct ksock_tx *tx,
 		    kiov->bv_len < tx->tx_resid)
 			msgflg |= MSG_MORE;
 
-		rc = ksocknal_lib_sendpage(sock, kiov, msgflg);
+		rc = ksocknal_lib_sendpage(sock, kiov, tx->tx_nkiov, msgflg);
 	} else {
 #if SOCKNAL_SINGLE_FRAG_TX || !SOCKNAL_RISK_KMAP_DEADLOCK
 		struct kvec scratch;
-		struct kvec *scratchiov = &scratch;
+		scratchiov = &scratch;
 		unsigned int niov = 1;
 #else
 #ifdef CONFIG_HIGHMEM
@@ -182,7 +183,7 @@ ksocknal_lib_recv_iov(struct ksock_conn *conn, struct kvec *scratchiov)
 {
 #if SOCKNAL_SINGLE_FRAG_RX
 	struct kvec  scratch;
-	struct kvec *scratchiov = &scratch;
+	scratchiov = &scratch;
 	unsigned int niov = 1;
 #else
 	unsigned int niov = conn->ksnc_rx_niov;
@@ -289,8 +290,8 @@ ksocknal_lib_recv_kiov(struct ksock_conn *conn, struct page **pages,
 {
 #if SOCKNAL_SINGLE_FRAG_RX || !SOCKNAL_RISK_KMAP_DEADLOCK
 	struct kvec   scratch;
-	struct kvec  *scratchiov = &scratch;
-	struct page  **pages      = NULL;
+	scratchiov = &scratch;
+	pages      = NULL;
 	unsigned int   niov       = 1;
 #else
 #ifdef CONFIG_HIGHMEM
@@ -381,12 +382,11 @@ ksocknal_lib_csum_tx(struct ksock_tx *tx)
 			     tx->tx_hdr.iov_len);
 
 	for (i = 0; i < tx->tx_nkiov; i++) {
-		base = kmap(tx->tx_kiov[i].bv_page) +
-			tx->tx_kiov[i].bv_offset;
+		void *kaddr = kmap_local_page(tx->tx_kiov[i].bv_page);
 
+		base = kaddr + tx->tx_kiov[i].bv_offset;
 		csum = ksocknal_csum(csum, base, tx->tx_kiov[i].bv_len);
-
-		kunmap(tx->tx_kiov[i].bv_page);
+		kunmap_local(kaddr);
 	}
 
 	if (*ksocknal_tunables.ksnd_inject_csum_error) {
@@ -569,11 +569,7 @@ void ksocknal_write_callback(struct ksock_conn *conn);
  * socket call back in Linux
  */
 static void
-#ifdef HAVE_SK_DATA_READY_ONE_ARG
 ksocknal_data_ready(struct sock *sk)
-#else
-ksocknal_data_ready(struct sock *sk, int n)
-#endif
 {
 	struct ksock_conn  *conn;
 
@@ -584,11 +580,7 @@ ksocknal_data_ready(struct sock *sk, int n)
 	conn = sk->sk_user_data;
 	if (conn == NULL) {	/* raced with ksocknal_terminate_conn */
 		LASSERT(sk->sk_data_ready != &ksocknal_data_ready);
-#ifdef HAVE_SK_DATA_READY_ONE_ARG
 		sk->sk_data_ready(sk);
-#else
-		sk->sk_data_ready(sk, n);
-#endif
 	} else
 		ksocknal_read_callback(conn);
 

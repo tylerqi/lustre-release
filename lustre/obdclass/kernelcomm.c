@@ -1,37 +1,19 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2015, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
- * Author: Nathan Rutman <nathan.rutman@sun.com>
- *
  * Kernel <-> userspace communication routines.
  * Using pipes for all arches.
+ *
+ * Author: Nathan Rutman <nathan.rutman@sun.com>
  */
 
 #define DEBUG_SUBSYSTEM S_CLASS
@@ -39,8 +21,8 @@
 #include <linux/file.h>
 #include <linux/glob.h>
 #include <linux/types.h>
+#include <lustre_compat/net/linux-net.h>
 
-#include <libcfs/linux/linux-net.h>
 #include <obd_class.h>
 #include <obd_support.h>
 #include <lustre_kernelcomm.h>
@@ -93,19 +75,26 @@ device_dump_ctx(struct netlink_callback *cb)
 	return (struct genl_dev_list *)cb->args[0];
 }
 
+/* For 'value' packet it contains
+ *	minor		u16
+ *	status		(2 characters)
+ *	typ_name	(16 for enough space for things like osd-ldiskfs)
+ *	obd_name	MAX_OBD_NAME
+ *	obd_uuid	UUID_MAX
+ *	refcount	u32
+ */
+#define DEVICE_VALUE_PACKET_SIZE	(2 + 2 + 16 + MAX_OBD_NAME + UUID_MAX + 4)
+#define DEVICE_KEY_TABLE_PACKET_SIZE	(44 + 28 + 28 + 28 + 28 + 28 + 32)
+
 /* generic ->start() handler for GET requests */
 static int lustre_device_list_start(struct netlink_callback *cb)
 {
 	struct genlmsghdr *gnlh = nlmsg_data(cb->nlh);
-#ifdef HAVE_NL_PARSE_WITH_EXT_ACK
-	struct netlink_ext_ack *extack = NULL;
-#endif
+	struct netlink_ext_ack *extack = cb->extack;
 	struct genl_dev_list *glist;
+	unsigned long len = 0;
 	int msg_len, rc = 0;
 
-#ifdef HAVE_NL_DUMP_WITH_EXT_ACK
-	extack = cb->extack;
-#endif
 	OBD_ALLOC(glist, sizeof(*glist));
 	if (!glist)
 		return -ENOMEM;
@@ -155,6 +144,17 @@ static int lustre_device_list_start(struct netlink_callback *cb)
 			NL_SET_ERR_MSG(extack, "No devices found");
 			rc = -ENOENT;
 		}
+		len = DEVICE_VALUE_PACKET_SIZE;
+	} else {
+		len = class_obd_devs_count() * DEVICE_VALUE_PACKET_SIZE;
+	}
+
+	len += DEVICE_KEY_TABLE_PACKET_SIZE;
+	if (len > BIT(sizeof(cb->min_dump_alloc) << 3)) {
+		NL_SET_ERR_MSG(extack, "Netlink msg is too large");
+		rc = -EMSGSIZE;
+	} else {
+		cb->min_dump_alloc = len;
 	}
 report_err:
 	if (rc < 0) {
@@ -170,17 +170,12 @@ static int lustre_device_list_dump(struct sk_buff *msg,
 	struct genl_dev_list *glist = device_dump_ctx(cb);
 	struct obd_device *filter = glist->gdl_target;
 	struct obd_device *obd = NULL;
-#ifdef HAVE_NL_PARSE_WITH_EXT_ACK
-	struct netlink_ext_ack *extack = NULL;
-#endif
+	struct netlink_ext_ack *extack = cb->extack;
 	int portid = NETLINK_CB(cb->skb).portid;
 	int seq = cb->nlh->nlmsg_seq;
 	unsigned long idx = 0;
 	int rc = 0;
 
-#ifdef HAVE_NL_DUMP_WITH_EXT_ACK
-	extack = cb->extack;
-#endif
 	if (glist->gdl_start == 0) {
 		const struct ln_key_list *all[] = {
 			&device_list, NULL
@@ -192,7 +187,7 @@ static int lustre_device_list_dump(struct sk_buff *msg,
 						LUSTRE_CMD_DEVICES, all);
 		if (rc < 0) {
 			NL_SET_ERR_MSG(extack, "failed to send key table");
-			return rc;
+			goto send_err;
 		}
 	}
 
@@ -255,25 +250,9 @@ static int lustre_device_list_dump(struct sk_buff *msg,
 	obd_device_unlock();
 
 	glist->gdl_start = idx + 1;
-	rc = lnet_nl_send_error(cb->skb, portid, seq, rc);
-
+send_err:
 	return rc < 0 ? rc : msg->len;
 }
-
-#ifndef HAVE_NETLINK_CALLBACK_START
-int lustre_old_device_list_dump(struct sk_buff *msg,
-				struct netlink_callback *cb)
-{
-	if (!cb->args[0]) {
-		int rc = lustre_device_list_start(cb);
-
-		if (rc < 0)
-			return rc;
-	}
-
-	return lustre_device_list_dump(msg, cb);
-}
-#endif
 
 static int lustre_device_done(struct netlink_callback *cb)
 {
@@ -288,7 +267,297 @@ static int lustre_device_done(struct netlink_callback *cb)
 	return 0;
 }
 
-struct ln_key_list stats_params = {
+/* target_obd handling */
+struct lu_tgt_list {
+	char			ltl_src[MAX_OBD_NAME * 3];
+	struct lu_tgt_descs	*ltl_desc;
+};
+
+struct genl_tgts_list {
+	unsigned int			gol_index;
+	unsigned int			gol_count;
+	GENRADIX(struct lu_tgt_list)	gol_list;
+};
+
+static inline struct genl_tgts_list *
+target_dump_ctx(struct netlink_callback *cb)
+{
+	return (struct genl_tgts_list *)cb->args[0];
+}
+
+static int lustre_targets_done(struct netlink_callback *cb)
+{
+	struct genl_tgts_list *tlist = target_dump_ctx(cb);
+
+	if (tlist) {
+		genradix_free(&tlist->gol_list);
+		LIBCFS_FREE(tlist, sizeof(*tlist));
+		cb->args[0] = 0;
+	}
+
+	return 0;
+}
+
+/* generic ->start() handler for GET requests */
+static int lustre_targets_start(struct netlink_callback *cb)
+{
+	struct genlmsghdr *gnlh = nlmsg_data(cb->nlh);
+	struct netlink_ext_ack *extack = cb->extack;
+	int msg_len = genlmsg_len(gnlh);
+	struct genl_tgts_list *tlist;
+	unsigned long idx = 0;
+	int rc = 0;
+
+	LIBCFS_ALLOC(tlist, sizeof(*tlist));
+	if (!tlist) {
+		NL_SET_ERR_MSG(extack, "failed to setup obd list");
+		return -ENOMEM;
+	}
+	genradix_init(&tlist->gol_list);
+	tlist->gol_index = 0;
+	tlist->gol_count = 0;
+	cb->args[0] = (long)tlist;
+
+	if (msg_len > 0) {
+		struct nlattr *params = genlmsg_data(gnlh);
+		struct nlattr *target;
+		int rem;
+
+		if (!(nla_type(params) & LN_SCALAR_ATTR_LIST)) {
+			NL_SET_ERR_MSG(extack, "no configuration");
+			GOTO(report_err, rc = -EINVAL);
+		}
+
+		nla_for_each_nested(target, params, rem) {
+			struct nlattr *prop;
+			int rem2;
+
+			nla_for_each_nested(prop, target, rem2) {
+				char name[MAX_OBD_NAME * 3], *filter;
+				struct obd_device *obd;
+				char type[5];
+				ssize_t len;
+
+				if (nla_type(prop) != LN_SCALAR_ATTR_VALUE ||
+				    nla_strcmp(prop, "source") != 0)
+					continue;
+
+				prop = nla_next(prop, &rem2);
+				if (nla_type(prop) != LN_SCALAR_ATTR_VALUE)
+					GOTO(report_err, rc = -EINVAL);
+
+				len = nla_strscpy(name, prop, sizeof(name));
+				if (len < 0)
+					GOTO(report_err, rc = (int)len);
+
+				filter = strim(name); /* remove any whitespaces */
+				len = strcspn(filter, ".") + 1;
+				strscpy(type, name, min_t(size_t, len, sizeof(type)));
+
+				obd_device_lock();
+				obd_device_for_each(idx, obd) {
+					struct lu_tgt_descs *ltd = NULL;
+					struct lu_tgt_list *ltl;
+
+					/* Only look at specific obds */
+					if (strncmp(obd->obd_type->typ_name,
+						    LUSTRE_LMV_NAME,
+						    strlen(LUSTRE_LMV_NAME)) == 0)
+						ltd = &obd->u.lmv.lmv_mdt_descs;
+					else if (strncmp(obd->obd_type->typ_name,
+							 LUSTRE_LOV_NAME,
+							 strlen(LUSTRE_LOV_NAME)) == 0)
+						ltd = &obd->u.lov.lov_ost_descs;
+					if (!ltd)
+						continue;
+
+					/* Now filter by obd_type */
+					if (!glob_match(type,
+							obd->obd_type->typ_name))
+						continue;
+
+					/* Filter by obd_name */
+					if (!glob_match(filter + len,
+							obd->obd_name))
+						continue;
+
+					ltl = genradix_ptr_alloc(&tlist->gol_list,
+								 tlist->gol_count++,
+								 GFP_ATOMIC);
+					if (!ltl) {
+						NL_SET_ERR_MSG(extack,
+							       "failed to allocate target desc");
+						obd_device_unlock();
+						GOTO(report_err, rc = -ENOMEM);
+					}
+					scnprintf(ltl->ltl_src,
+						 sizeof(ltl->ltl_src), "%s.%s",
+						 obd->obd_type->typ_name,
+						 obd->obd_name);
+					ltl->ltl_desc = ltd;
+				}
+				obd_device_unlock();
+			}
+		}
+		if (!tlist->gol_count)
+			rc = -ENOENT;
+	} else {
+		struct obd_device *obd;
+
+		obd_device_lock();
+		obd_device_for_each(idx, obd) {
+			struct lu_tgt_descs *ltd = NULL;
+			struct lu_tgt_list *ltl;
+
+			if (strcmp(obd->obd_type->typ_name,
+				   LUSTRE_LMV_NAME) == 0)
+				ltd = &obd->u.lmv.lmv_mdt_descs;
+			else if (strcmp(obd->obd_type->typ_name,
+					LUSTRE_LOV_NAME) == 0)
+				ltd = &obd->u.lov.lov_ost_descs;
+			if (!ltd)
+				continue;
+
+			ltl = genradix_ptr_alloc(&tlist->gol_list,
+						 tlist->gol_count++,
+						 GFP_ATOMIC);
+			if (!ltl) {
+				NL_SET_ERR_MSG(extack,
+					       "failed to allocate target desc");
+				obd_device_unlock();
+				GOTO(report_err, rc = -ENOMEM);
+			}
+
+			ltl->ltl_desc = ltd;
+		}
+		obd_device_unlock();
+	}
+report_err:
+	if (rc < 0)
+		lustre_targets_done(cb);
+
+	return rc;
+}
+
+static struct ln_key_list tgt_keys = {
+	.lkl_maxattr			= LUSTRE_TARGET_ATTR_MAX,
+	.lkl_list			= {
+		[LUSTRE_TARGET_ATTR_HDR]	= {
+			.lkp_value		= "target_obd",
+			.lkp_key_format		= LNKF_SEQUENCE | LNKF_MAPPING,
+			.lkp_data_type		= NLA_NUL_STRING,
+		},
+		[LUSTRE_TARGET_ATTR_SOURCE]	= {
+			.lkp_value		= "source",
+			.lkp_data_type		= NLA_STRING,
+		},
+		[LUSTRE_TARGET_ATTR_PROP_LIST]	= {
+			.lkp_value		= "targets",
+			.lkp_key_format		= LNKF_SEQUENCE | LNKF_MAPPING,
+			.lkp_data_type		= NLA_NESTED,
+		},
+	},
+};
+
+static struct ln_key_list tgt_prop_keys = {
+	.lkl_maxattr			= LUSTRE_TARGET_PROP_ATTR_MAX,
+	.lkl_list			= {
+		[LUSTRE_TARGET_PROP_ATTR_INDEX]	= {
+			.lkp_value		= "index",
+			.lkp_data_type		= NLA_U16
+		},
+		[LUSTRE_TARGET_PROP_ATTR_UUID]	= {
+			.lkp_value		= "uuid",
+			.lkp_data_type		= NLA_STRING
+		},
+		[LUSTRE_TARGET_PROP_ATTR_STATUS] = {
+			.lkp_value		= "status",
+			.lkp_data_type		= NLA_STRING
+		},
+	},
+};
+
+static int lustre_targets_dump(struct sk_buff *msg,
+			       struct netlink_callback *cb)
+{
+	struct genl_tgts_list *tlist = target_dump_ctx(cb);
+	struct genlmsghdr *gnlh = nlmsg_data(cb->nlh);
+	struct netlink_ext_ack *extack = cb->extack;
+	int portid = NETLINK_CB(cb->skb).portid;
+	int seq = cb->nlh->nlmsg_seq;
+	int idx = tlist->gol_index;
+	int rc = 0;
+
+	if (!idx) {
+		const struct ln_key_list *all[] = {
+			&tgt_keys, &tgt_prop_keys, NULL
+		};
+
+		rc = lnet_genl_send_scalar_list(msg, portid, seq,
+						&lustre_family,
+						NLM_F_CREATE | NLM_F_MULTI,
+						LUSTRE_CMD_TARGETS, all);
+		if (rc < 0) {
+			NL_SET_ERR_MSG(extack, "failed to send key table");
+			GOTO(send_error, rc);
+		}
+		rc = 0;
+	}
+
+	while (idx < tlist->gol_count) {
+		struct lu_tgt_list *ltl;
+		struct lu_tgt_desc *tgt;
+		struct nlattr *tgt_list;
+		int j = 1;
+		void *hdr;
+
+		ltl = genradix_ptr(&tlist->gol_list, idx++);
+		if (!ltl)
+			continue;
+
+		hdr = genlmsg_put(msg, portid, seq, &lustre_family,
+				  NLM_F_MULTI, LUSTRE_CMD_TARGETS);
+		if (!hdr) {
+			NL_SET_ERR_MSG(extack, "failed to send values");
+			genlmsg_cancel(msg, hdr);
+			GOTO(send_error, rc = -EMSGSIZE);
+		}
+
+		if (idx == 1)
+			nla_put_string(msg, LUSTRE_TARGET_ATTR_HDR, "");
+
+		nla_put_string(msg, LUSTRE_TARGET_ATTR_SOURCE,
+			       ltl->ltl_src);
+
+		/* We just want the source */
+		if (!gnlh->version)
+			goto skip_details;
+
+		tgt_list = nla_nest_start(msg, LUSTRE_TARGET_ATTR_PROP_LIST);
+		ltd_foreach_tgt(ltl->ltl_desc, tgt) {
+			struct nlattr *tgt_attr;
+
+			tgt_attr = nla_nest_start(msg, j++);
+			nla_put_u16(msg, LUSTRE_TARGET_PROP_ATTR_INDEX, tgt->ltd_index);
+
+			nla_put_string(msg, LUSTRE_TARGET_PROP_ATTR_STATUS,
+				       tgt->ltd_active ? "ACTIVE" : "INACTIVE");
+
+			nla_put_string(msg, LUSTRE_TARGET_PROP_ATTR_UUID,
+				       obd_uuid2str(&tgt->ltd_uuid));
+			nla_nest_end(msg, tgt_attr);
+		}
+		nla_nest_end(msg, tgt_list);
+skip_details:
+		genlmsg_end(msg, hdr);
+	}
+
+	tlist->gol_index = idx;
+send_error:
+	return rc;
+}
+
+static struct ln_key_list stats_params = {
 	.lkl_maxattr	= LUSTRE_PARAM_ATTR_MAX,
 	.lkl_list	= {
 		[LUSTRE_PARAM_ATTR_HDR] = {
@@ -392,16 +661,20 @@ int lustre_stats_done(struct netlink_callback *cb)
 }
 EXPORT_SYMBOL(lustre_stats_done);
 
-/* Min size for key table and its matching values:
+/* Min size for key table and its matching values. Key value
+ * measurements are collected from lnet_genl_parse_list:
+ *
  *	header		strlen("stats")
- *	source		strlen("source") + MAX_OBD_NAME * 2
+ *	source		strlen("source") + MAX_OBD_NAME * 4
  *	timestamp	strlen("snapshot_time") + s64
  *	start time	strlen("start time") + s64
  *	elapsed_time	strlen("elapse time") + s64
  */
-#define STATS_MSG_MIN_SIZE	(267 + 58)
+#define STATS_MSG_MIN_SIZE	(44 + 28 + 36 + 32 + 36 + 536)
 
-/* key table + values for each dataset entry:
+/* key table + values for each dataset entry. Key value
+ * measurements are collected from lnet_genl_parse_list:
+ *
  *	dataset name	25
  *	dataset count	strlen("samples") + u64
  *	dataset units	strlen("units") + 5
@@ -410,22 +683,17 @@ EXPORT_SYMBOL(lustre_stats_done);
  *	dataset sum	strlen("sum") + u64
  *	dataset stdev	strlen("stddev") + u64
  */
-#define STATS_MSG_DATASET_SIZE	(97)
+#define STATS_MSG_DATASET_SIZE	(236 + 25 + 5 + 8 * 5)
 
 static int lustre_stats_start(struct netlink_callback *cb)
 {
 	struct genlmsghdr *gnlh = nlmsg_data(cb->nlh);
 	unsigned long len = STATS_MSG_MIN_SIZE;
-#ifdef HAVE_NL_PARSE_WITH_EXT_ACK
-	struct netlink_ext_ack *extack = NULL;
-#endif
+	struct netlink_ext_ack *extack = cb->extack;
 	struct lustre_stats_list *slist;
 	int msg_len = genlmsg_len(gnlh);
 	int rc = 0;
 
-#ifdef HAVE_NL_DUMP_WITH_EXT_ACK
-	extack = cb->extack;
-#endif
 #ifndef HAVE_GENL_DUMPIT_INFO
 	cb->args[1] = (unsigned long)&service_info;
 #endif
@@ -454,14 +722,15 @@ static int lustre_stats_start(struct netlink_callback *cb)
 			int rem2;
 
 			nla_for_each_nested(item, dev, rem2) {
-				char filter[MAX_OBD_NAME * 2];
+				char filter[MAX_OBD_NAME * 4];
 
 				if (nla_type(item) != LN_SCALAR_ATTR_VALUE ||
 				    nla_strcmp(item, "source") != 0)
 					continue;
 
 				item = nla_next(item, &rem2);
-				if (nla_type(item) != LN_SCALAR_ATTR_VALUE) {
+				if (!nla_ok(item, rem2) ||
+				    nla_type(item) != LN_SCALAR_ATTR_VALUE) {
 					NL_SET_ERR_MSG(extack,
 						       "source has invalid value");
 					GOTO(report_err, rc = -EINVAL);
@@ -471,7 +740,7 @@ static int lustre_stats_start(struct netlink_callback *cb)
 				rc = nla_strscpy(filter, item, sizeof(filter));
 				if (rc < 0) {
 					NL_SET_ERR_MSG(extack,
-						       "source key string is invalud");
+						       "source key string is invalid");
 					GOTO(report_err, rc);
 				}
 
@@ -523,9 +792,7 @@ int lustre_stats_dump(struct sk_buff *msg, struct netlink_callback *cb)
 	const struct cfs_genl_dumpit_info *info = lnet_genl_dumpit_info(cb);
 	struct lustre_stats_list *slist = stats_dump_ctx(cb);
 	struct genlmsghdr *gnlh = nlmsg_data(cb->nlh);
-#ifdef HAVE_NL_PARSE_WITH_EXT_ACK
-	struct netlink_ext_ack *extack = NULL;
-#endif
+	struct netlink_ext_ack *extack = cb->extack;
 	int portid = NETLINK_CB(cb->skb).portid;
 	struct lprocfs_stats *prev = NULL;
 	int seq = cb->nlh->nlmsg_seq;
@@ -533,9 +800,6 @@ int lustre_stats_dump(struct sk_buff *msg, struct netlink_callback *cb)
 	int count, i, rc = 0;
 	bool started = true;
 
-#ifdef HAVE_NL_DUMP_WITH_EXT_ACK
-	extack = cb->extack;
-#endif
 	while (idx < slist->gfl_count) {
 		struct lprocfs_stats **tmp, *stats;
 		struct nlattr *dataset = NULL;
@@ -723,25 +987,6 @@ out_cancel:
 }
 EXPORT_SYMBOL(lustre_stats_dump);
 
-#ifndef HAVE_NETLINK_CALLBACK_START
-int lustre_old_stats_dump(struct sk_buff *msg, struct netlink_callback *cb)
-{
-	struct lustre_stats_list *slist = stats_dump_ctx(cb);
-
-	if (!slist) {
-		int rc = lustre_stats_start(cb);
-
-		if (rc < 0)
-			return lnet_nl_send_error(cb->skb,
-						  NETLINK_CB(cb->skb).portid,
-						  cb->nlh->nlmsg_seq,
-						  rc);
-	}
-
-	return lustre_stats_dump(msg, cb);
-}
-#endif
-
 static int lustre_stats_cmd(struct sk_buff *skb, struct genl_info *info)
 {
 	struct nlmsghdr *nlh = nlmsg_hdr(skb);
@@ -773,14 +1018,15 @@ static int lustre_stats_cmd(struct sk_buff *skb, struct genl_info *info)
 			continue;
 
 		nla_for_each_nested(prop, attr, rem2) {
-			char source[MAX_OBD_NAME * 2];
+			char source[MAX_OBD_NAME * 4];
 
 			if (nla_type(prop) != LN_SCALAR_ATTR_VALUE ||
 			    nla_strcmp(prop, "source") != 0)
 				continue;
 
 			prop = nla_next(prop, &rem2);
-			if (nla_type(prop) != LN_SCALAR_ATTR_VALUE)
+			if (!nla_ok(prop, rem2) ||
+			    nla_type(prop) != LN_SCALAR_ATTR_VALUE)
 				GOTO(report_err, rc = -EINVAL);
 
 			memset(source, 0, sizeof(source));
@@ -813,28 +1059,27 @@ report_err:
 
 static const struct genl_multicast_group lustre_mcast_grps[] = {
 	{ .name		= "devices",		},
+	{ .name		= "target_obd",		},
 	{ .name		= "stats",		},
 };
 
 static const struct genl_ops lustre_genl_ops[] = {
 	{
 		.cmd		= LUSTRE_CMD_DEVICES,
-#ifdef HAVE_NETLINK_CALLBACK_START
 		.start		= lustre_device_list_start,
 		.dumpit		= lustre_device_list_dump,
-#else
-		.dumpit		= lustre_old_device_list_dump,
-#endif
 		.done		= lustre_device_done,
 	},
 	{
+		.cmd		= LUSTRE_CMD_TARGETS,
+		.start		= lustre_targets_start,
+		.dumpit		= lustre_targets_dump,
+		.done		= lustre_targets_done,
+	},
+	{
 		.cmd		= LUSTRE_CMD_STATS,
-#ifdef HAVE_NETLINK_CALLBACK_START
 		.start		= lustre_stats_start,
 		.dumpit		= lustre_stats_dump,
-#else
-		.dumpit		= lustre_old_stats_dump,
-#endif
 		.done		= lustre_stats_done,
 		.doit		= lustre_stats_cmd,
 	},
@@ -854,10 +1099,15 @@ static struct genl_family lustre_family = {
 };
 
 /**
- * libcfs_kkuc_msg_put - send an message from kernel to userspace
- * @param fp to send the message to
- * @param payload Payload data.  First field of payload is always
- *   struct kuc_hdr
+ * libcfs_kkuc_msg_put() - send an message from kernel to userspace
+ * @filp: file pointer to send the message to
+ * @payload: Payload data.
+ *
+ * First field of payload is always struct kuc_hdr
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on error
  */
 int libcfs_kkuc_msg_put(struct file *filp, void *payload)
 {
@@ -875,7 +1125,7 @@ int libcfs_kkuc_msg_put(struct file *filp, void *payload)
 	}
 
 	while (count > 0) {
-		rc = cfs_kernel_write(filp, payload, count, &offset);
+		rc = kernel_write(filp, payload, count, &offset);
 		if (rc < 0)
 			break;
 		count -= rc;
@@ -928,11 +1178,18 @@ void libcfs_kkuc_fini(void)
 	genl_unregister_family(&lustre_family);
 }
 
-/** Add a receiver to a broadcast group
- * @param filp pipe to write into
- * @param uid identifier for this receiver
- * @param group group number
- * @param data user data
+/**
+ * libcfs_kkuc_group_add() - Add a receiver to a broadcast group
+ * @filp: pipe to write into
+ * @uuid: uuid of the device
+ * @uid: identifier for this receiver
+ * @group: group number
+ * @data: user data
+ * @data_len: length of @data
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on error
  */
 int libcfs_kkuc_group_add(struct file *filp, const struct obd_uuid *uuid,
 			  int uid, int group, void *data, size_t data_len)
@@ -1052,10 +1309,16 @@ int libcfs_kkuc_group_put(const struct obd_uuid *uuid, int group, void *payload)
 EXPORT_SYMBOL(libcfs_kkuc_group_put);
 
 /**
- * Calls a callback function for each link of the given kuc group.
- * @param group the group to call the function on.
- * @param cb_func the function to be called.
- * @param cb_arg extra argument to be passed to the callback function.
+ * libcfs_kkuc_group_foreach() - Calls a callback function for each link of the
+ * given kuc group.
+ * @uuid: uuid of the device
+ * @group: the group to call the function on.
+ * @cb_func: the function to be called.
+ * @cb_arg: extra argument to be passed to the callback function.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on error
  */
 int libcfs_kkuc_group_foreach(const struct obd_uuid *uuid, int group,
 			      libcfs_kkuc_cb_t cb_func, void *cb_arg)

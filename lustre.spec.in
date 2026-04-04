@@ -25,6 +25,7 @@
 %bcond_without mpi
 %bcond_with kabi
 %bcond_with multiple_lnds
+%bcond_with coverage
 %bcond_with mofed
 %bcond_without o2ib
 %bcond_with kfi
@@ -152,30 +153,30 @@
 
 %global modules_fs_path /lib/modules/%{_kver}/%{kmoddir}
 # requires want to set a version including epoch
-%global krequires %(echo %{kver} | sed -e 's/\.x86_64$//' -e 's/\.i[3456]86$//' -e 's/-smp$//' -e 's/-bigsmp$//' -e 's/[-.]ppc64$//' -e 's/\.aarch64$//' -e 's/-default$//' -e 's/-%{_flavor}//')
+%global krequires %(echo %{kver} | sed -e 's/\.x86_64$//' -e 's/\.i[3456]86$//' -e 's/-smp$//' -e 's/-bigsmp$//' -e 's/[-.]ppc64$//' -e 's/\.aarch64$//' -e 's/\.riscv64$//' -e 's/-default$//' -e 's/-%{_flavor}//')
 
 %if "%{_vendor}" == "redhat" || "%{_vendor}" == "fedora" || 0%{?openEuler}
-	%global requires_kmod_name kmod-%{lustre_name}
-	%global requires_kmod_osd_zfs_name kmod-%{lustre_name}-osd-zfs
-	%if %{with lustre_tests}
-		%global requires_kmod_tests_name kmod-%{lustre_name}-tests
-	%endif
+	%global kmod_prefix kmod-
+	%global kmod_postfix %{nil}
+	%global kmod_flavor %{nil}
 	%global requires_kmod_version %{version}
-	%global kmod_devel_pkg kmod-%{lustre_name}-devel
 #for Suse
 %else
-	%global requires_kmod_name %{lustre_name}-kmp
-	%global requires_kmod_osd_zfs_name %{lustre_name}-osd-zfs-kmp
-	%if %{with lustre_tests}
-		%global requires_kmod_tests_name %{lustre_name}-tests-kmp
-	%endif
+	%global kmod_prefix %{nil}
+	%global kmod_postfix -kmp
+	%global kmod_flavor -%{_flavor}
 	%if 0%{?suse_version} >= 1200
 		%global requires_kmod_version %{version}_k%(echo %{krequires} | sed -r 'y/-/_/; s/^(2\.6\.[0-9]+)_/\\1.0_/;')
 	%else
 		%global requires_kmod_version %{version}_%(echo %{krequires} | sed -r 'y/-/_/; s/^(2\.6\.[0-9]+)_/\\1.0_/;')
 	%endif
-	%global kmod_devel_pkg %{lustre_name}-kmp-devel
 %endif
+%global requires_kmod_name %{kmod_prefix}%{lustre_name}%{kmod_postfix}
+%global requires_kmod_osd_zfs_name %{kmod_prefix}%{lustre_name}-osd-zfs%{kmod_postfix}
+%if %{with lustre_tests}
+	%global requires_kmod_tests_name %{kmod_prefix}%{lustre_name}-tests%{kmod_postfix}
+%endif
+%global kmod_devel_pkg %{kmod_prefix}%{lustre_name}%{kmod_postfix}-devel
 %global requires_release_major_minor %(echo %version | cut -d. -f1).%(echo %version | cut -d. -f2)
 %endif
 
@@ -212,11 +213,12 @@
 %endif
 
 %{!?mpi_name: %global mpi_name openmpi}
+%{!?release_id: %global release_id @RELEASE_ID@}
 
 Summary: Lustre File System
 Name: %{lustre_name}
 Version: %{version}
-Release: 1%{?dist}
+Release: %{release_id}%{?dist}
 License: GPL-2.0-only AND LGPL-2.1-or-later
 %if 0%{?suse_version} >= 1310
 # SUSE needs Group for the kernel_module_package macro
@@ -243,66 +245,33 @@ Source17: kmp-lnet-kfilnd.preamble
 Source18: kmp-lnet-kfilnd.files
 Source19: kmp-lnet-in-kernel-o2iblnd.preamble
 Source20: kmp-lnet-in-kernel-o2iblnd.files
+Source21: kmp-lustre-osd-wbcfs.preamble
+Source22: kmp-lustre-osd-wbcfs.files
 URL: https://wiki.whamcloud.com/
 BuildRoot: %{_tmppath}/lustre-%{version}-root
+BuildRequires: libtool pkgconfig(yaml-0.1) pkgconfig(zlib) pkgconfig(libnl-3.0) flex bison
+Obsoletes: lustre-client < %{version}
+Provides: lustre-client = %{version}-%{release}
+# Lustre modules
 %if %{with lustre_modules}
+#
 %if 0%{?suse_version} >= 1500 || 0%{?rhel} >= 8 || 0%{?fedora} >= 34
 Requires: (%{lustre_name}-dkms or %{requires_kmod_name} >= %{requires_release_major_minor})
 %else
 Requires: %{requires_kmod_name} >= %{requires_release_major_minor}
 %endif
-%endif
-%if %{with lustre_tests_lutf}
-Requires: python3 >= 3.6.0
-BuildRequires: python3-devel >= 3.6.0, swig
-%endif
-BuildRequires: libtool pkgconfig(yaml-0.1) pkgconfig(zlib) pkgconfig(libnl-3.0) flex bison
-%if "%{_vendor}" == "redhat"
-BuildRequires: redhat-rpm-config
-BuildRequires: pkgconfig
-%if 0%{?rhel} > 7 || 0%{?fedora} > 33 || 0%{?rhel} < 1
-Suggests: bash-completion
-%endif
-%else
-%if 0%{?openEuler}
-BuildRequires: openEuler-rpm-config
-%if %{with ldiskfs}
-BuildRequires: kernel-debugsource
-%endif
-%endif
-BuildRequires: pkg-config
-%endif
-%if %{with gss}
-BuildRequires: krb5-devel openssl-devel
-%endif
-%if %{with lustre_modules}
+#
 # abuild (auto-build) used by SUSE Open Build Service needs kernel-source as
 # a build requirement, but the code which extracts these requirements does not
 # understand the percent-open-close-paren construct aka %%()
 #  [NOTE: a percent abovie is doubled to avoid yet another rpmbuild warning]
 # such occurances as failures.  So the following dance allows the requirements
 # to be seen by abuild, but ignored by lbuild.
-%if "%(echo $USER)" != "abuild"
-%else
+%if "%(echo $USER)" == "abuild"
 BuildRequires: kernel-source
 %endif
-%endif
-%if %{with servers}
-Requires: %{name}-osd
-Requires: %{name}-osd-mount
-Obsoletes: lustre-server < %{version}
-Provides: lustre-server = %{version}-%{release}
-%endif
-Obsoletes: lustre-client < %{version}
-Provides: lustre-client = %{version}-%{release}
-%if "%{_vendor}" == "redhat" || "%{_vendor}" == "fedora" || 0%{?openEuler}
-#suse don't support selinux
-BuildRequires: pkgconfig(libselinux)
-%endif
-%if %{with l_getsepol}
-BuildRequires: pkgconfig(libselinux) openssl-devel
-%endif
-%if %{with lustre_modules}
+#
+# KMP buildreqs
 %if %{defined kernel_module_package_buildreqs}
 BuildRequires: %kernel_module_package_buildreqs
 %else
@@ -313,21 +282,71 @@ BuildRequires: kernel-rpm-macros
 BuildRequires: rpm-build >= 4.14.3
 %endif
 %endif
+# End: KMP buildreqs
+#
 # need to provide a /usr/lib/${uname -r)/build dir
 BuildRequires: kernel >= 3.10
+#
+# RHEL w/KABI
 %if "%{_vendor}" == "redhat"
 %if %{with kabi}
 BuildRequires: kernel-abi-whitelists
 %endif
 %endif
+# End: KABI
 %endif
-
+# End: Lustre modules
+#
+# Options: lutf, gss, servers, systemd
+#
+%if %{with lustre_tests_lutf}
+Requires: python3 >= 3.6.0
+BuildRequires: python3-devel >= 3.6.0, swig
+%endif
+#
+%if %{with gss}
+BuildRequires: krb5-devel openssl-devel
+%endif
+#
+%if %{with servers}
+Requires: %{name}-osd
+Requires: %{name}-osd-mount
+Obsoletes: lustre-server < %{version}
+Provides: lustre-server = %{version}-%{release}
+%endif
+#
 %if %{with systemd}
 Requires(post): systemd
 Requires(preun): systemd
 Requires(postun): systemd
 BuildRequires: pkgconfig(systemd)
 %endif
+#
+%if %{with l_getsepol}
+BuildRequires: pkgconfig(libselinux) openssl-devel
+%endif
+#
+# Vendor specifics:
+#
+%if "%{_vendor}" == "redhat" || "%{_vendor}" == "fedora" || 0%{?openEuler}
+# selinux is used by default
+BuildRequires: pkgconfig(libselinux)
+%if 0%{?rhel} > 7 || 0%{?fedora} > 33 || 0%{?rhel} < 1
+Suggests: bash-completion
+%endif
+%if "%{_vendor}" == "redhat" || "%{_vendor}" == "fedora"
+BuildRequires: redhat-rpm-config
+%endif
+#
+%if 0%{?openEuler}
+%if %{with ldiskfs}
+BuildRequires: kernel-debugsource
+%endif
+BuildRequires: openEuler-rpm-config
+%endif
+
+%endif
+# End: RHEL
 
 %description
 Userspace tools and files for the Lustre file system.
@@ -360,7 +379,7 @@ echo $TMPFILE
 %if %{with lustre_utils}
 %package osd-ldiskfs-mount
 Summary: Lustre mount's ldiskfs-specific helper library
-BuildRequires: e2fsprogs-devel >= 1.44.3 pkgconfig(mount)
+BuildRequires: e2fsprogs-devel >= 1.47.3-wc1 pkgconfig(mount)
 Requires: ldiskfsprogs > 1.45.6
 Provides: lustre-osd-mount = %{version}
 Provides: %{name}-osd-mount = %{version}
@@ -387,7 +406,7 @@ Provides: %{name}-osd-mount = %{version}
 Obsoletes: lustre-osd-mount < %{version}
 %if 0%{confzfsdobjpath} != 0
 %if 0%{?suse_version} >= 1500 || 0%{?rhel} >= 8 || 0%{?fedora} >= 34
-BuildRequires: (libzfs-devel or libzfs4-devel or libzfs5-devel)
+BuildRequires: (libzfs-devel or libzfs4-devel or libzfs5-devel or libzfs6-devel)
 %else
 # 'or' is not available, Use: --define 'zfs 5' or 'zfs 4'
 BuildRequires: libzfs%{?zfs}-devel
@@ -409,7 +428,33 @@ lustre tools (mount/mkfs) to provide support for ZFS.
 %endif
 # with zfs
 %endif
+
+%if 0%{?suse_version:1}
+%else
+%if %{with servers}
+%kernel_module_package -n %{name}-osd-wbcfs -p %SOURCE21 -f %SOURCE22 %{_flavor}
+%if %{with lustre_utils}
+%package osd-wbcfs-mount
+Summary: Lustre mount's wbcfs-specific helper library
+BuildRequires: pkgconfig(mount)
+Provides: %{name}-osd-mount = %{version}
+Obsoletes: lustre-osd-mount < %{version}
+Provides: %{name}-osd-mount = %{version}
+Provides: %{name}-osd-wbcfs-mount = %{version}
+Requires: %{name}-osd-wbcfs = %{version}
+
+%description osd-wbcfs-mount
+Provide a shared library (dso) that can be loaded into various
+lustre tools (mount/mkfs) to provide support for in-memory OSD
+with writeback support.
+
+# with lustre_utils
+%endif
+# with servers
+%endif
 # with lustre_modules
+%endif
+# suse
 %endif
 
 %if %{with servers}
@@ -497,6 +542,19 @@ BuildRequires: openmpi2-devel
 This package contains a set of test binaries and scripts that are intended
 to be used by the Lustre testing framework.
 
+%if %{with coverage}
+%package -n %{lustre_name}-coverage
+Summary: Collection of profiling data for a cluster with the Lustre file system
+%if 0%{?rhel} > 8 || 0%{?fedora} > 40
+# rebuild "--with gcov" or build and install contrib-kernel-coverage.spec
+BuildRequires: kernel-gcov
+%endif
+Requires: lcov
+%description -n %{lustre_name}-coverage
+This package includes a profiling sources for Lustre and script to
+generate converage with lcov and fastcov if available.
+%endif
+
 %if %{with lustre_modules}
 %kernel_module_package -n %{name}-tests -p %SOURCE7 -f %SOURCE8 %{_flavor}
 %endif
@@ -506,21 +564,48 @@ to be used by the Lustre testing framework.
 # begin multiple_lnds
 %kernel_module_package -n %{name}-lnet-socklnd -p %SOURCE11 -f %SOURCE12 %{_flavor}
 %if %{with o2ib}
-## re-write post/preun generated by kmodtool [ls -s and rm -f]
+## in-kernel: re-write post/preun generated by kmodtool [ls -s and rm -f]
 %define inkernmod %{modules_fs_path}/%{lustre_name}/net/in-kernel-ko2iblnd.ko
 %define inkernsym %{modules_fs_path}/%{lustre_name}/net/ko2iblnd.ko
+%if 0%{?rhel} >= 8 || 0%{?fedora} >= 34
+%define inkernpost %%posttrans -n %{kmod_prefix}%{name}-lnet-in-kernel-o2iblnd%{kmod_postfix}%{kmod_flavor}
+%define inkernaction ln -sf %{inkernmod} %{inkernsym}
+%else
+%define inkernpost %{nil}
+%define inkernaction %{nil}
+%endif
 %define ofed_module_package %{expand:%(
 TMPFILE=`mktemp`
 cat <<EOF > $TMPFILE
 %kernel_module_package -n %{name}-lnet-in-kernel-o2iblnd -p %SOURCE19 -f %SOURCE20 %{_flavor}
+%inkernpost
+%inkernaction
 EOF
-sed -i -e '/^%%post.*/a ln -sf %{inkernmod} %{inkernsym}' -e '/^%%preun.*/a rm -f %{inkernsym}' $TMPFILE
+sed -i -e '/^%%post .*/a ln -sf %{inkernmod} %{inkernsym}' -e '/^%%preun.*/a if test -L %{inkernsym}; then rm -f %{inkernsym} ; fi' $TMPFILE
 echo $TMPFILE
 )}
 %{expand:%(cat '%{ofed_module_package}')}
 %endif
+## mofed: add a posttrans rule on el8 and later
 %if %{with mofed}
+%if 0%{?rhel} >= 8 || 0%{?fedora} >= 34
+%define exkernmod %{modules_fs_path}/%{lustre_name}/net/ko2iblnd.ko
+%define exkernpost %%posttrans -n %{kmod_prefix}%{name}-lnet-o2iblnd%{kmod_postfix}%{kmod_flavor}
+%define exkernaction if test -L %{exkernmod}; then rm -f %{exkernmod}; fi
+%else
+%define exkernpost %{nil}
+%define exkernaction %{nil}
+%endif
+%define ext_ofed_module_package %{expand:%(
+TMPEXT=`mktemp`
+cat <<EOF > $TMPEXT
 %kernel_module_package -n %{name}-lnet-o2iblnd -p %SOURCE13 -f %SOURCE14 %{_flavor}
+%exkernpost
+%exkernaction
+EOF
+echo $TMPEXT
+)}
+%{expand:%(cat '%{ext_ofed_module_package}')}
 %endif
 %if %{with gni}
 %kernel_module_package -n %{name}-lnet-gnilnd -p %SOURCE15 -f %SOURCE16 %{_flavor}
@@ -588,8 +673,8 @@ This survey tests LNet performance between a group of clients and servers.
 %endif
 %prep
 %setup -qn lustre-%{version}
-ln lustre/ChangeLog ChangeLog-lustre
-ln lnet/ChangeLog ChangeLog-lnet
+ln lustre/ChangeLog ChangeLog-lustre-%{version}
+ln lnet/ChangeLog ChangeLog-lnet-%{version}
 
 %build
 # Set an explicit path to our Linux tree, if we can.
@@ -645,7 +730,7 @@ fi
 # inside $CONFIGURE_ARGS
 # kmod tools/scripts require "name" directory with kernel modules
 
-%if 0%{?rhel} >= 9
+%if 0%{?rhel} >= 9 || 0%{?fedora} >= 38
 %define _configure eval ./configure
 %define eval_configure %configure
 %else
@@ -697,6 +782,7 @@ WITH_O2IB=""
 	%{?with_lustre_tests:--enable-tests}%{!?with_lustre_tests:--disable-tests} \
 	%{?with_lustre_utils:--enable-utils}%{!?with_lustre_utils:--disable-utils} \
 	%{?with_lustre_modules:--enable-modules}%{!?with_lustre_modules:--disable-modules} \
+	%{?with_coverage:--enable-coverage} \
 	%{!?with_shared:--disable-shared} \
 	%{!?with_static:--disable-static} \
 	%{!?with_lustre_iokit:--disable-iokit} \
@@ -767,10 +853,6 @@ for fname in $(find lnet/include -type f -name \*.h); do
 	target=$(echo ${fname} | sed 's:^lnet/include/::g')
 	%{__install} -D -m 0644 ${fname} %{buildroot}/%{_usrsrc}/lustre-%{version}/${target}
 done
-for fname in $(find libcfs/include/libcfs -type f -name \*.h); do
-	target=$(echo ${fname} | sed -e 's:^libcfs/include/::g')
-	%{__install} -D -m 0644 ${fname} %{buildroot}/%{_usrsrc}/lustre-%{version}/${target}
-done
 %endif
 %if %{with ldiskfs}
 mkdir -p $basemodpath-osd-ldiskfs/fs
@@ -781,12 +863,23 @@ mv $basemodpath/fs/ldiskfs.ko $basemodpath-osd-ldiskfs/fs/ldiskfs.ko
 mkdir -p $basemodpath-osd-zfs/fs
 mv $basemodpath/fs/osd_zfs.ko $basemodpath-osd-zfs/fs/osd_zfs.ko
 %endif
+%if 0%{?suse_version:1}
+%else
+%if %{with servers}
+mkdir -p $basemodpath-osd-wbcfs/fs
+mv $basemodpath/fs/osd_wbcfs.ko $basemodpath-osd-wbcfs/fs/osd_wbcfs.ko
+%endif
+%endif
 %if %{with lustre_tests}
 mkdir -p $basemodpath-tests/fs
-mv $basemodpath/fs/llog_test.ko $basemodpath-tests/fs/llog_test.ko
 mv $basemodpath/fs/obd_test.ko $basemodpath-tests/fs/obd_test.ko
+mv $basemodpath/fs/obd_mod_rpcs_test.ko $basemodpath-tests/fs/obd_mod_rpcs_test.ko
+mv $basemodpath/fs/ec_test.ko $basemodpath-tests/fs/ec_test.ko
 mv $basemodpath/fs/kinode.ko $basemodpath-tests/fs/kinode.ko
-[ -f $basemodpath/fs/ldlm_extent.ko ] && mv $basemodpath/fs/ldlm_extent.ko $basemodpath-tests/fs/ldlm_extent.ko
+%if %{with servers}
+mv $basemodpath/fs/ldlm_extent.ko $basemodpath-tests/fs/ldlm_extent.ko
+mv $basemodpath/fs/llog_test.ko $basemodpath-tests/fs/llog_test.ko
+%endif
 %endif
 %endif
 
@@ -797,6 +890,14 @@ fi
 if [ -d $RPM_BUILD_ROOT%{_libdir}/mpich ] ; then
 	rm -fr $RPM_BUILD_ROOT%{_libdir}/mpich
 fi
+%endif
+
+%if %{with coverage}
+mkdir -p $RPM_BUILD_ROOT/%{_libdir}/lustre/tests
+GCOV_EXTRA=$RPM_BUILD_ROOT/%{_libdir}/lustre/tests/gcov.tar.xz
+export XZ_OPT="--threads=0"
+find %{_builddir} -name '*.[h,c]' -o -name '*.gcno' |
+	tar --files-from=- --absolute-names -cJf ${GCOV_EXTRA}
 %endif
 
 :> lustre.files
@@ -818,6 +919,7 @@ echo '%{_unitdir}/lnet.service' >>lustre.files
 echo '%{_unitdir}/lsvcgss.service' >>lustre.files
 %endif
 
+# vendor is redhat
 %if "%{_vendor}" == "redhat" || 0%{?openEuler}
 # The following scripts are Red Hat specific
 %if %{with servers}
@@ -833,6 +935,8 @@ echo '%config(noreplace) %{_sysconfdir}/sysconfig/lsvcgss' >>lustre.files
 echo '%{_sysconfdir}/init.d/lnet' >>lustre.files
 %endif
 %endif
+# End: vendor is redhat
+
 %if %{with gss_keyring}
 echo '%config(noreplace) %{_sysconfdir}/request-key.d/lgssc.conf' >>lustre.files
 %endif
@@ -892,10 +996,20 @@ fi
 %if %{with lustre_tests_lutf}
 echo '%{_libdir}/lustre/tests/lutf/*' >>lustre-tests.files
 %endif
+echo '%exclude %{_libdir}/lustre/tests/gcov.tar.xz' >> lustre-tests.files
+echo '%exclude %{_libdir}/lustre/tests/lcov-merge.sh*' >> lustre-tests.files
+# with lustre_tests
 %endif
 
 %if %{with lustre_tests_lutf}
 echo '%{_libdir}/lustre/tests/lutf/*' >>lustre-tests.files
+%endif
+
+%if %{with coverage}
+%files -n %{lustre_name}-coverage
+%defattr(-,root,root)
+%{_libdir}/lustre/tests/gcov.tar.xz
+%{_libdir}/lustre/tests/lcov-merge.sh
 %endif
 
 %files devel -f lustre-devel.files
@@ -924,6 +1038,7 @@ echo '%{_libdir}/lustre/tests/lutf/*' >>lustre-tests.files
 
 %files -f lustre.files
 %defattr(-,root,root)
+%exclude %{_sysconfdir}/sysconfig/dkms-lustre
 %{_sbindir}/*
 %if %{with lustre_tests}
 %exclude %{_sbindir}/wirecheck
@@ -953,7 +1068,7 @@ echo '%{_libdir}/lustre/tests/lutf/*' >>lustre-tests.files
 %{_bindir}/lfs_migrate
 /sbin/mount.lustre
 %if %{with servers}
-/sbin/mount.lustre_tgt
+%ghost /sbin/mount.lustre_tgt
 %endif
 @BASH_COMPLETION_DIR@
 %endif
@@ -975,8 +1090,10 @@ echo '%{_libdir}/lustre/tests/lutf/*' >>lustre-tests.files
 %config(noreplace) %{_sysconfdir}/lnet-sysctl.conf
 %config(noreplace) %{_sysconfdir}/lnet.conf
 %config(noreplace) %{_sysconfdir}/modprobe.d/ko2iblnd.conf
+%config(noreplace) %{_sysconfdir}/projid
 %if %{with lustre_utils}
 %config(noreplace) %{_sysconfdir}/lnet_routes.conf
+%config(noreplace) %{_sysconfdir}/lustre/mount.client.params
 %endif
 %if %{with lustre_modules}
 %exclude /Module.symvers
@@ -999,6 +1116,20 @@ echo '%{_libdir}/lustre/tests/lutf/*' >>lustre-tests.files
 %dir %{_libdir}/@PACKAGE@
 %{_libdir}/@PACKAGE@/mount_osd_zfs.so
 %{_sysconfdir}/zfs/zed.d/*
+%endif
+%endif
+%endif
+
+%if %{with shared}
+%if 0%{?suse_version:1}
+%else
+%if %{with servers}
+%if %{with lustre_utils}
+%files osd-wbcfs-mount
+%defattr(-,root,root)
+%dir %{_libdir}/@PACKAGE@
+%{_libdir}/@PACKAGE@/mount_osd_wbcfs.so
+%endif
 %endif
 %endif
 %endif
@@ -1076,3 +1207,9 @@ alternatives --remove lustre %{_usrsrc}/lustre-%{version}
 %clean
 rm -rf $RPM_BUILD_ROOT
 rm -rf %{_tmppath}/kmp
+
+%changelog
+* Wed Dec 10 2025 Minh Diep <mdiep@whamcloud.com>
+- build: allow customizable release ID
+* Tue Jun 12 2007 Jody McIntyre <scjody@clusterfs.com>
+- Add the spec file into Lustre branch b1_6.

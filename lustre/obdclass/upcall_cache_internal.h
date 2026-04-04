@@ -1,30 +1,11 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
  * Copyright (c) 2023, Whamcloud.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
  */
 
 #ifndef _UPCALL_CACHE_INTERNAL_H
@@ -42,7 +23,10 @@ static void free_entry(struct upcall_cache *cache,
 	list_del(&entry->ue_hash);
 	CDEBUG(D_OTHER, "destroy cache entry %p for key %llu\n",
 	       entry, entry->ue_key);
-	LIBCFS_FREE(entry, sizeof(*entry));
+	if (cache->uc_ops->free_delay)
+		cache->uc_ops->free_delay(entry);
+	else
+		OBD_FREE(entry, sizeof(*entry));
 }
 
 static inline void get_entry(struct upcall_cache_entry *entry)
@@ -59,7 +43,7 @@ static inline void put_entry(struct upcall_cache *cache,
 	}
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 void refresh_entry_internal(struct upcall_cache *cache,
 			    struct upcall_cache_entry *entry,
 			    __u32 fsgid, struct group_info **ginfo);
@@ -67,7 +51,7 @@ int upcall_cache_get_entry_internal(struct upcall_cache *cache,
 				    struct upcall_cache_entry *entry,
 				    void *args, gid_t *fsgid,
 				    struct group_info **ginfo);
-#else /* HAVE_SERVER_SUPPORT */
+#else /* CONFIG_LUSTRE_FS_SERVER */
 static inline
 void refresh_entry_internal(struct upcall_cache *cache,
 			    struct upcall_cache_entry *entry,
@@ -81,5 +65,23 @@ static inline int upcall_cache_get_entry_internal(struct upcall_cache *cache,
 	return -EOPNOTSUPP;
 }
 #endif
+
+static inline void upcall_group_usage_inc(struct group_info *group)
+{
+#ifdef HAVE_GROUP_INFO_USAGE_AS_REFCOUNT
+	refcount_inc(&group->usage);
+#else
+	atomic_inc(&group->usage);
+#endif
+}
+
+static inline void upcall_group_usage_dec(struct group_info *group)
+{
+#ifdef HAVE_GROUP_INFO_USAGE_AS_REFCOUNT
+	return refcount_dec(&group->usage);
+#else
+	return atomic_dec(&group->usage);
+#endif
+}
 
 #endif /* _UPCALL_CACHE_INTERNAL_H */

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1
+// SPDX-License-Identifier: LGPL-2.1+
 
 /*
  * Copyright (c) 2014, 2017, Intel Corporation.
@@ -32,11 +32,9 @@ static int jt_config_lnet(int argc, char **argv);
 static int jt_unconfig_lnet(int argc, char **argv);
 static int jt_add_route(int argc, char **argv);
 static int jt_add_ni(int argc, char **argv);
-static int jt_add_fault(int argc, char **argv);
 static int jt_set_routing(int argc, char **argv);
 static int jt_del_route(int argc, char **argv);
 static int jt_del_ni(int argc, char **argv);
-static int jt_del_fault(int argc, char **argv);
 static int jt_show_route(int argc, char **argv);
 static int jt_show_net(int argc, char **argv);
 static int jt_show_routing(int argc, char **argv);
@@ -46,7 +44,6 @@ static int jt_show_recovery(int argc, char **argv);
 static int jt_debug_nidlist(int argc, char **argv);
 static int jt_show_global(int argc, char **argv);
 static int jt_show_udsp(int argc, char **argv);
-static int jt_show_fault(int argc, char **argv);
 static int jt_set_tiny(int argc, char **argv);
 static int jt_set_small(int argc, char **argv);
 static int jt_set_large(int argc, char **argv);
@@ -58,7 +55,6 @@ static int jt_set_rtr_sensitivity(int argc, char **argv);
 static int jt_set_hsensitivity(int argc, char **argv);
 static int jt_set_max_recovery_ping_interval(int argc, char **argv);
 static int jt_reset_stats(int argc, char **argv);
-static int jt_reset_fault(int argc, char **argv);
 static int jt_add_peer_nid(int argc, char **argv);
 static int jt_del_peer_nid(int argc, char **argv);
 static int jt_set_max_intf(int argc, char **argv);
@@ -87,6 +83,16 @@ static int jt_set_response_tracking(int argc, char **argv);
 static int jt_set_recovery_limit(int argc, char **argv);
 static int jt_udsp(int argc, char **argv);
 static int jt_fault(int argc, char **argv);
+static int jt_fault_drop(int argc, char **argv);
+static int jt_fault_drop_add(int argc, char **argv);
+static int jt_fault_drop_del(int argc, char **argv);
+static int jt_fault_drop_reset(int argc, char **argv);
+static int jt_fault_drop_show(int argc, char **argv);
+static int jt_fault_delay(int argc, char **argv);
+static int jt_fault_delay_add(int argc, char **argv);
+static int jt_fault_delay_del(int argc, char **argv);
+static int jt_fault_delay_reset(int argc, char **argv);
+static int jt_fault_delay_show(int argc, char **argv);
 static int jt_setup_mrrouting(int argc, char **argv);
 static int jt_setup_sysctl(int argc, char **argv);
 static int jt_calc_cpt_of_nid(int argc, char **argv);
@@ -113,7 +119,7 @@ command_t cmd_list[] = {
 	{"discover", jt_discover, 0, "discover nid[,nid,...]"},
 	{"service-id", jt_calc_service_id, 0, "Calculate IB Lustre service ID\n"},
 	{"udsp", jt_udsp, 0, "udsp {add | del | help}"},
-	{"fault", jt_fault, 0, "udsp {show | help}"},
+	{"fault", jt_fault, 0, "{drop | delay | help}"},
 	{"setup-mrrouting", jt_setup_mrrouting, 0,
 	 "setup linux routing tables\n"},
 	{"setup-sysctl", jt_setup_sysctl, 0,
@@ -176,7 +182,9 @@ command_t net_cmds[] = {
 	 "\t--verbose: display detailed output per network."
 		       " Optional argument of '2' outputs more stats\n"},
 	{"set", jt_set_ni_value, 0, "set local NI specific parameter\n"
-	 "\t--nid: NI NID to set the\n"
+	 "\t--nid: NI NID to set the value on\n"
+	 "\t--net: network to set the value on (e.g. tcp, o2ib, kfi)\n"
+	 "\t--lnd-timeout: set LND timeout (seconds) for LND used by --net argument\n"
 	 "\t--health: specify health value to set\n"
 	 "\t--conns-per-peer: number of connections per peer\n"
 	 "\t--all: set all NIs value to the one specified\n"},
@@ -307,24 +315,53 @@ command_t udsp_cmds[] = {
 };
 
 command_t fault_cmds[] = {
-	{"add", jt_add_fault, 0, "add LNet fault rule\n"
-	 "\t--rule_type:   Add rules of type t.\n"
-	 "\t--source nid:  Add rule entry with source NID.\n"
-	 "\t--dest nid:	   Add rule entry with destination NID.\n"
-	 "\t--rate:	   Rule entry rate.\n"
-	 "\t--interval:    How long to run the rule.\n"
-	 "\t--portal:	   Rule portal.\n"
-	 "\t--message:	   Type of message <PUT|ACK|GET|REPLY>.\n"
-	 "\t--health_error: Act on a specific health error (drop only).\n"
-	 "\t--latency:	   Delay sending a message (delay only).\n"},
-	{"del", jt_del_fault, 0, "delete LNet fault rule\n"
-	 "\t--rule_type:   Delete all rules of type t.\n"
-	 "\t--source nid:  Delete rule entry with source NID\n"
-	 "\t--dest nid:	   Delete rule entry with destination NID\n"},
-	{"reset", jt_reset_fault, 0, "reset_fault\n"
-	 "\t--rule_type t: Reset the LNet rule t.\n"},
-	{"show", jt_show_fault, 0, "show fault rules\n"
-	 "\t--rule_type t: Show LNet fault rules of type t.\n"},
+	{"drop", jt_fault_drop, 0, "Manage drop rules\n"
+	 "usage: lnetctl fault drop add [<options>] -r <rate>|-i <interval> -s <src> -d <dest>\n"
+	 "   or: lnetctl fault drop del -s <src> -d <dest>\n"
+	 "   or: lnetctl fault drop show\n"
+	 "   or: lnetctl fault drop reset\n" },
+	{"delay", jt_fault_delay, 0, "Manage delay rules\n"
+	 "usage: lnetctl fault delay add [<options>] -r <rate>|-i <interval> -s <src> -d <dest>\n"
+	 "   or: lnetctl fault delay del -s <src> -d <dest>\n"
+	 "   or: lnetctl fault delay show\n"
+	 "   or: lnetctl fault delay reset\n" },
+	{ 0, 0, 0, NULL }
+};
+
+command_t fault_drop_cmds[] = {
+	{"add", jt_fault_drop_add, 0, "add LNet drop rule\n"
+	 "\t--source nid:  Drop messages originating from <nid>.\n"
+	 "\t--dest nid:    Drop messages destined for <nid>.\n"
+	 "\t--rate r:      Drop messages at specified rate (1/<r>).\n"
+	 "\t--interval i:  Drop messages at specified time interval (seconds).\n"
+	 "\t--portal p:    Drop messages on specified portal.\n"
+	 "\t--message m:   Drop messages of specified type <PUT|ACK|GET|REPLY>.\n"
+	 "\t--health_error: Dropped messages simulate the specified health status\n"
+	 "\t                <local_timeout|remote_dropped|network_timeout|...>.\n" },
+	{"del", jt_fault_drop_del, 0, "delete LNet drop rules\n"
+	 "\t--all:         Delete all drop rules\n"
+	 "\t--source nid:  Delete drop rule with specified source NID\n"
+	 "\t--dest nid:    Delete drop rule with specified destination NID\n"},
+	{"reset", jt_fault_drop_reset, 0, "reset counters for all drop rules\n" },
+	{"show", jt_fault_drop_show, 0, "show drop rules\n" },
+	{ 0, 0, 0, NULL }
+};
+
+command_t fault_delay_cmds[] = {
+	{"add", jt_fault_delay_add, 0, "add LNet delay rule\n"
+	 "\t--source nid:  Delay messages originating from <nid>.\n"
+	 "\t--dest nid:    Delay messages destined for <nid>.\n"
+	 "\t--rate r:      Delay messages at specified rate (1/<r>).\n"
+	 "\t--interval i:  Delay messages at specified time interval (seconds).\n"
+	 "\t--portal p:    Delay messages on specified portal.\n"
+	 "\t--message m:   Delay messages of specified type <PUT|ACK|GET|REPLY>.\n"
+	 "\t--latency:     Delay sending a message (delay only).\n"},
+	{"del", jt_fault_delay_del, 0, "delete LNet delay rules\n"
+	 "\t--all:         Delete all delay rules\n"
+	 "\t--source nid:  Delete delay rule with specified source NID\n"
+	 "\t--dest nid:    Delete delay rule with specified destination NID\n"},
+	{"reset", jt_fault_delay_reset, 0, "reset counters for all delay rules\n" },
+	{"show", jt_fault_delay_show, 0, "show delay rules\n" },
 	{ 0, 0, 0, NULL }
 };
 
@@ -390,6 +427,14 @@ static inline void print_help(const command_t cmds[], const char *cmd_type,
 	}
 }
 
+/*
+ * Perform some basic input validation.
+ * Returns:
+ *	LUSTRE_CFG_RC_BAD_PARAM: when minimum number of arguments has not been
+ *				 supplied
+ *	> 0: when '-h' or '--help' has been supplied
+ *	0: when the "check" passes and command can continue execution
+ */
 static int check_cmd(const command_t *cmd_list, const char *cmd,
 		     const char *sub_cmd, const int min_args,
 		     int argc, char **argv)
@@ -884,7 +929,7 @@ static int jt_set_routing(int argc, char **argv)
 		return -1;
 	}
 
-	rc = lustre_lnet_enable_routing(value, -1, &err_rc);
+	rc = lustre_lnet_config_routing(value, -1, &err_rc);
 
 	if (rc != LUSTRE_CFG_RC_NO_ERR)
 		cYAML_print_tree2file(stderr, err_rc);
@@ -1229,7 +1274,7 @@ emitter_error:
 	} else {
 		rc = yaml_lnet_cpt_of_nid_display(&reply);
 	}
-	yaml_emitter_delete(&request);
+	yaml_emitter_cleanup(&request);
 free_reply:
 	if (rc == 0) {
 		yaml_lnet_print_error(NLM_F_DUMP, "cpt-of-nid",
@@ -1237,7 +1282,7 @@ free_reply:
 		rc = -EINVAL;
 	}
 
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
@@ -1364,8 +1409,7 @@ static int jt_unconfig_lnet(int argc, char **argv)
 }
 
 static int yaml_lnet_router_gateways(yaml_emitter_t *output, const char *nw,
-				     const char *gw, int hops, int prio,
-				     int sen)
+				     const char *gw, int hops, int prio)
 {
 	char num[INT_STRING_LEN];
 	yaml_event_t event;
@@ -1460,35 +1504,13 @@ static int yaml_lnet_router_gateways(yaml_emitter_t *output, const char *nw,
 			goto emitter_error;
 	}
 
-	if (sen != -1) {
-		yaml_scalar_event_initialize(&event, NULL,
-					     (yaml_char_t *)YAML_STR_TAG,
-					     (yaml_char_t *)"health_sensitivity",
-					     strlen("health_sensitivity"),
-					     1, 0,
-					     YAML_PLAIN_SCALAR_STYLE);
-		rc = yaml_emitter_emit(output, &event);
-		if (rc == 0)
-			goto emitter_error;
-
-		snprintf(num, sizeof(num), "%d", sen);
-		yaml_scalar_event_initialize(&event, NULL,
-					     (yaml_char_t *)YAML_INT_TAG,
-					     (yaml_char_t *)num,
-					     strlen(num), 1, 0,
-					     YAML_PLAIN_SCALAR_STYLE);
-		rc = yaml_emitter_emit(output, &event);
-		if (rc == 0)
-			goto emitter_error;
-	}
-
 	yaml_mapping_end_event_initialize(&event);
 	rc = yaml_emitter_emit(output, &event);
 emitter_error:
 	return rc;
 }
 
-static int yaml_lnet_route(char *nw, char *gw, int hops, int prio, int sen,
+static int yaml_lnet_route(char *nw, char *gw, int hops, int prio,
 			   int version, int flags, FILE *fp)
 {
 	struct nid_node head, *entry;
@@ -1566,7 +1588,7 @@ static int yaml_lnet_route(char *nw, char *gw, int hops, int prio, int sen,
 			rc = lustre_lnet_parse_nid_range(&head, gw, &msg);
 			if (rc < 0) {
 				lustre_lnet_free_list(&head);
-				yaml_emitter_delete(&output);
+				yaml_emitter_cleanup(&output);
 				errno = rc;
 				rc = 0;
 				goto free_reply;
@@ -1586,13 +1608,13 @@ static int yaml_lnet_route(char *nw, char *gw, int hops, int prio, int sen,
 				const char *nid = entry->nidstr;
 
 				rc = yaml_lnet_router_gateways(&output, nw, nid,
-							       hops, prio, sen);
+							       hops, prio);
 				if (rc == 0)
 					goto emitter_error;
 			}
 		} else {
 			rc = yaml_lnet_router_gateways(&output, nw, NULL, hops,
-						       prio, sen);
+						       prio);
 			if (rc == 0)
 				goto emitter_error;
 		}
@@ -1656,7 +1678,7 @@ free_reply:
 		yaml_lnet_print_error(flags, "route", msg);
 		rc = -EINVAL;
 	}
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
@@ -1665,7 +1687,7 @@ free_reply:
 static int jt_add_route(int argc, char **argv)
 {
 	char *network = NULL, *gateway = NULL;
-	long int hop = -1, prio = -1, sen = -1;
+	long hop = -1, prio = -1;
 	struct cYAML *err_rc = NULL;
 	int rc, opt;
 
@@ -1676,7 +1698,6 @@ static int jt_add_route(int argc, char **argv)
 		{ .name = "hop",       .has_arg = required_argument, .val = 'c' },
 		{ .name = "hop-count", .has_arg = required_argument, .val = 'c' },
 		{ .name = "priority",  .has_arg = required_argument, .val = 'p' },
-		{ .name = "health_sensitivity",  .has_arg = required_argument, .val = 's' },
 		{ .name = NULL }
 	};
 
@@ -1709,15 +1730,6 @@ static int jt_add_route(int argc, char **argv)
 				continue;
 			}
 			break;
-		case 's':
-			rc = parse_long(optarg, &sen);
-			if (rc != 0) {
-				/* ingore option */
-				sen = -1;
-				continue;
-			}
-			break;
-
 		case '?':
 			print_help(route_cmds, "route", "add");
 		default:
@@ -1725,7 +1737,7 @@ static int jt_add_route(int argc, char **argv)
 		}
 	}
 
-	rc = yaml_lnet_route(network, gateway, hop, prio, sen,
+	rc = yaml_lnet_route(network, gateway, hop, prio,
 			     LNET_GENL_VERSION, NLM_F_CREATE, stdout);
 	if (rc <= 0) {
 		if (rc == -EOPNOTSUPP)
@@ -1733,8 +1745,7 @@ static int jt_add_route(int argc, char **argv)
 		return rc;
 	}
 old_api:
-	rc = lustre_lnet_config_route(network, gateway, hop, prio, sen, -1,
-				      &err_rc);
+	rc = lustre_lnet_config_route(network, gateway, hop, prio, -1, &err_rc);
 
 	if (rc != LUSTRE_CFG_RC_NO_ERR)
 		cYAML_print_tree2file(stderr, err_rc);
@@ -1986,7 +1997,7 @@ skip_general_settings:
 				tos = tunables->lt_tun.lnd_tun_u.lnd_sock.lnd_tos;
 			else if (LNET_NETTYP(nw_descr->nw_id) == O2IBLND)
 				tos = tunables->lt_tun.lnd_tun_u.lnd_o2ib.lnd_tos;
-			snprintf(num, sizeof(num), "%u", tos);
+			snprintf(num, sizeof(num), "%d", tos);
 
 			yaml_scalar_event_initialize(&event, NULL,
 						     (yaml_char_t *)YAML_INT_TAG,
@@ -2002,6 +2013,56 @@ skip_general_settings:
 		rc = yaml_emitter_emit(output, &event);
 	}
 error:
+	return rc;
+}
+
+static int
+lnet_yaml_emit_cpt_sequence(yaml_emitter_t *emitter, struct cfs_expr_list *cpts)
+{
+	yaml_event_t event;
+	__u32 *cpt_array;
+	int count, i;
+	int rc = 0;
+
+	yaml_scalar_event_initialize(&event, NULL,
+				     (yaml_char_t *)YAML_STR_TAG,
+				     (yaml_char_t *)"CPT",
+				     strlen("CPT"), 1, 0,
+				     YAML_PLAIN_SCALAR_STYLE);
+	if (!yaml_emitter_emit(emitter, &event))
+		return 0;
+
+	yaml_sequence_start_event_initialize(&event, NULL,
+					     (yaml_char_t *)YAML_SEQ_TAG,
+					     1,
+					     YAML_FLOW_SEQUENCE_STYLE);
+	if (!yaml_emitter_emit(emitter, &event))
+		return 0;
+
+	count = cfs_expr_list_values(cpts, LNET_MAX_SHOW_NUM_CPT, &cpt_array);
+	for (i = 0; i < count; i++) {
+		char core[INT_STRING_LEN];
+
+		snprintf(core, sizeof(core), "%u", cpt_array[i]);
+		yaml_scalar_event_initialize(&event, NULL,
+					     (yaml_char_t *)YAML_STR_TAG,
+					     (yaml_char_t *)core,
+					     strlen(core), 1, 0,
+					     YAML_PLAIN_SCALAR_STYLE);
+		if (!yaml_emitter_emit(emitter, &event))
+			goto out_free_expr;
+	}
+
+	yaml_sequence_end_event_initialize(&event);
+	if (!yaml_emitter_emit(emitter, &event))
+		goto out_free_expr;
+
+	rc = 1;
+
+out_free_expr:
+	if (count > 0)
+		free(cpt_array);
+
 	return rc;
 }
 
@@ -2157,6 +2218,8 @@ static int yaml_lnet_config_ni(char *net_id, char *ip2net,
 
 	list_for_each_entry(intf, &nw_descr->nw_intflist,
 			    intf_on_network) {
+		struct cfs_expr_list *cpt_expr = NULL;
+
 		yaml_mapping_start_event_initialize(&event, NULL,
 						    (yaml_char_t *)YAML_MAP_TAG,
 						    1, YAML_ANY_MAPPING_STYLE);
@@ -2277,51 +2340,15 @@ static int yaml_lnet_config_ni(char *net_id, char *ip2net,
 				goto emitter_error;
 		}
 
-		if (global_cpts) {
-			__u32 *cpt_array;
-			int count, i;
+		if (intf->cpt_expr)
+			cpt_expr = intf->cpt_expr;
+		else if (global_cpts)
+			cpt_expr = global_cpts;
 
-			yaml_scalar_event_initialize(&event, NULL,
-						     (yaml_char_t *)YAML_STR_TAG,
-						     (yaml_char_t *)"CPT",
-						     strlen("CPT"), 1, 0,
-						     YAML_PLAIN_SCALAR_STYLE);
-			rc = yaml_emitter_emit(&output, &event);
+		if (cpt_expr) {
+			rc = lnet_yaml_emit_cpt_sequence(&output, cpt_expr);
 			if (rc == 0)
 				goto emitter_error;
-
-			yaml_sequence_start_event_initialize(&event, NULL,
-							     (yaml_char_t *)YAML_SEQ_TAG,
-							     1,
-							     YAML_FLOW_SEQUENCE_STYLE);
-			rc = yaml_emitter_emit(&output, &event);
-			if (rc == 0)
-				goto emitter_error;
-
-			count = cfs_expr_list_values(global_cpts,
-						     LNET_MAX_SHOW_NUM_CPT,
-						     &cpt_array);
-			for (i = 0; i < count; i++) {
-				char core[INT_STRING_LEN];
-
-				snprintf(core, sizeof(core), "%u", cpt_array[i]);
-				yaml_scalar_event_initialize(&event, NULL,
-							     (yaml_char_t *)YAML_STR_TAG,
-							     (yaml_char_t *)core,
-							     strlen(core), 1, 0,
-							     YAML_PLAIN_SCALAR_STYLE);
-				rc = yaml_emitter_emit(&output, &event);
-				if (rc == 0)
-					goto emitter_error;
-			}
-
-			yaml_sequence_end_event_initialize(&event);
-			rc = yaml_emitter_emit(&output, &event);
-			if (rc == 0)
-				goto emitter_error;
-
-			cfs_expr_list_free(global_cpts);
-			free(cpt_array);
 		}
 
 		yaml_mapping_end_event_initialize(&event);
@@ -2380,16 +2407,32 @@ emitter_error:
 		}
 		yaml_document_delete(&errmsg);
 	}
-	yaml_emitter_delete(&output);
+	yaml_emitter_cleanup(&output);
 free_reply:
 	if (rc == 0) {
 		yaml_lnet_print_error(flags, "net", msg);
 		rc = -EINVAL;
 	}
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
+}
+
+static int kfi_intflist2cxi(struct list_head *nw_intflist)
+{
+	struct lnet_dlc_intf_descr *intf;
+	int rc;
+
+	list_for_each_entry(intf, nw_intflist, intf_on_network) {
+		rc = lustre_lnet_kfi_intf2cxi(intf);
+		if (rc != LUSTRE_CFG_RC_NO_ERR) {
+			fprintf(stderr, "couldn't query kfi intf %s",
+				intf->intf_name);
+			return rc;
+		}
+	}
+	return LUSTRE_CFG_RC_NO_ERR;
 }
 
 static int jt_add_ni(int argc, char **argv)
@@ -2568,6 +2611,13 @@ static int jt_add_ni(int argc, char **argv)
 		       traffic_class);
 		found = true;
 	}
+
+	/* kfi can convert linux network device names to cxi devices */
+	if (LNET_NETTYP(nw_descr.nw_id) == KFILND) {
+		rc = kfi_intflist2cxi(&nw_descr.nw_intflist);
+		if (rc)
+			return rc;
+	}
 #endif
 
 	if (LNET_NETTYP(nw_descr.nw_id) == SOCKLND) {
@@ -2669,7 +2719,7 @@ static int jt_del_route(int argc, char **argv)
 		}
 	}
 
-	rc = yaml_lnet_route(network, gateway, -1, -1, -1, LNET_GENL_VERSION,
+	rc = yaml_lnet_route(network, gateway, -1, -1, LNET_GENL_VERSION,
 			     0, stdout);
 	if (rc <= 0) {
 		if (rc == -EOPNOTSUPP)
@@ -2748,6 +2798,15 @@ static int jt_del_ni(int argc, char **argv)
 		net_id = libcfs_net2str(nw_descr.nw_id);
 	}
 
+#ifdef HAVE_KFILND
+	/* kfi can convert linux network device names to cxi devices */
+	if (LNET_NETTYP(nw_descr.nw_id) == KFILND) {
+		rc = kfi_intflist2cxi(&nw_descr.nw_intflist);
+		if (rc)
+			return rc;
+	}
+#endif
+
 	rc = yaml_lnet_config_ni(net_id, NULL, &nw_descr, NULL, -1, NULL,
 				 LNET_GENL_VERSION, 0, stdout);
 	if (rc <= 0) {
@@ -2821,7 +2880,7 @@ static int jt_show_route(int argc, char **argv)
 		}
 	}
 
-	rc = yaml_lnet_route(network, gateway, hop, prio, -1,
+	rc = yaml_lnet_route(network, gateway, hop, prio,
 			     detail, NLM_F_DUMP, stdout);
 	if (rc <= 0) {
 		if (rc == -EOPNOTSUPP)
@@ -2844,67 +2903,9 @@ old_api:
 	return rc;
 }
 
-static int set_value_helper(int argc, char **argv, int cmd,
-			    int (*cb)(int, bool, char*, int, int, struct cYAML**))
-{
-	char *nidstr = NULL;
-	long int healthv = -1;
-	bool all = false;
-	long int state = -1;
-	long int cpp = -1;
-	int rc, opt;
-	struct cYAML *err_rc = NULL;
-	const char *const short_options = "t:n:m:s:a";
-	static const struct option long_options[] = {
-		{ .name = "nid", .has_arg = required_argument, .val = 'n' },
-		{ .name = "health", .has_arg = required_argument, .val = 't' },
-		{ .name = "conns-per-peer", .has_arg = required_argument, .val = 'm' },
-		{ .name = "state", .has_arg = required_argument, .val = 's' },
-		{ .name = "all", .has_arg = no_argument, .val = 'a' },
-		{ .name = NULL }
-	};
-
-	while ((opt = getopt_long(argc, argv, short_options,
-				  long_options, NULL)) != -1) {
-		switch (opt) {
-		case 'n':
-			nidstr = optarg;
-			break;
-		case 't':
-			if (parse_long(optarg, &healthv) != 0)
-				healthv = -1;
-			break;
-		case 's':
-			if (cmd != LNET_CMD_PEERS ||
-			    parse_long(optarg, &state) != 0)
-				state = -1;
-			break;
-		case 'm':
-			if (cmd != LNET_CMD_NETS ||
-			    parse_long(optarg, &cpp) != 0)
-				cpp = -1;
-			break;
-
-		case 'a':
-			all = true;
-			break;
-		default:
-			return 0;
-		}
-	}
-
-	rc = cb(healthv, all, nidstr, cmd == LNET_CMD_PEERS ? state : cpp, -1,
-		&err_rc);
-	if (rc != LUSTRE_CFG_RC_NO_ERR)
-		cYAML_print_tree2file(stderr, err_rc);
-
-	cYAML_free_tree(err_rc);
-
-	return rc;
-}
-
-int yaml_lnet_config_ni_healthv(int healthv, bool all, char *nidstr, int cpp,
-				int seq_no, struct cYAML **err_rc)
+static int yaml_lnet_config_ni_value(int healthv, bool all, char *nidstr,
+				     int cpp, int lnd_timeout, __u32 net,
+				     int seq_no, struct cYAML **err_rc)
 {
 	struct lnet_ioctl_config_lnd_tunables tunables;
 	struct lnet_dlc_network_descr nw_descr;
@@ -2912,8 +2913,12 @@ int yaml_lnet_config_ni_healthv(int healthv, bool all, char *nidstr, int cpp,
 	int rc = 0;
 
 	/* For NI you can't have both setting all NIDs and a requested NID */
-	if (!all && !nidstr)
+	if (all && nidstr)
 		return -EINVAL;
+
+	if (lnd_timeout > -1)
+		return lustre_lnet_config_lnd_timeout(lnd_timeout, net,
+						      -1, err_rc);
 
 	if (cpp == -1 && healthv == -1)
 		return 0;
@@ -2957,17 +2962,6 @@ old_api:
 		rc = lustre_lnet_config_ni_healthv(healthv, all, nidstr,
 						   -1, err_rc);
 	return rc;
-}
-
-static int jt_set_ni_value(int argc, char **argv)
-{
-	int rc = check_cmd(net_cmds, "net", "set", 0, argc, argv);
-
-	if (rc < 0)
-		return rc;
-
-	return set_value_helper(argc, argv, LNET_CMD_NETS,
-				yaml_lnet_config_ni_healthv);
 }
 
 static int yaml_lnet_peer_display(yaml_parser_t *reply, bool list_only)
@@ -3281,7 +3275,7 @@ static int yaml_lnet_peer(char *prim_nid, char *nidstr, bool disable_mr,
 			if (rc < 0) {
 				fprintf(stdout, "can't parse nidrange: \"%s\"\n", nidstr);
 				lustre_lnet_free_list(&head);
-				yaml_emitter_delete(&output);
+				yaml_emitter_cleanup(&output);
 				errno = rc;
 				rc = 0;
 				goto free_reply;
@@ -3289,7 +3283,7 @@ static int yaml_lnet_peer(char *prim_nid, char *nidstr, bool disable_mr,
 
 			if (nl_list_empty(&head.children)) {
 				lustre_lnet_free_list(&head);
-				yaml_emitter_delete(&output);
+				yaml_emitter_cleanup(&output);
 				msg = "Unable to parse nidlist: did not expand to any nids";
 				errno = -ENOENT;
 				rc = 0;
@@ -3302,7 +3296,7 @@ static int yaml_lnet_peer(char *prim_nid, char *nidstr, bool disable_mr,
 
 				if (count++ > LNET_MAX_NIDS_PER_PEER) {
 					lustre_lnet_free_list(&head);
-					yaml_emitter_delete(&output);
+					yaml_emitter_cleanup(&output);
 					msg = "Unable to parse nidlist: specifies more NIDs than allowed";
 					errno = -E2BIG;
 					rc = 0;
@@ -3451,20 +3445,21 @@ emitter_error:
 				rc = 1;
 		}
 	}
-	yaml_emitter_delete(&output);
+	yaml_emitter_cleanup(&output);
 free_reply:
 	if (rc == 0) {
 		yaml_lnet_print_error(flags, "peer", msg);
 		rc = -EINVAL;
 	}
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
 }
 
-int yaml_lnet_config_peer_ni_healthv(int healthv, bool all, char *lpni_nid,
-				     int state, int seq_no, struct cYAML **err_rc)
+static int yaml_lnet_config_peer_ni_healthv(int healthv, bool all,
+					    char *lpni_nid, int state,
+					    int seq_no, struct cYAML **err_rc)
 {
 	int rc;
 
@@ -3486,15 +3481,129 @@ old_api:
 	return rc;
 }
 
+static int set_value_helper(int argc, char **argv, int cmd)
+{
+	char *nidstr = NULL;
+	long healthv = -1;
+	__u32 net = 0;
+	int lnd_timeout = -1;
+	bool all = false;
+	long state = -1;
+	long cpp = -1;
+	int seq_no = -1;
+	int rc, opt;
+	struct cYAML *err_rc = NULL;
+	char err_str[LNET_MAX_STR_LEN] = "";
+	static const struct option long_options[] = {
+		{ .val = 'a', .name = "all", .has_arg = no_argument },
+		{ .val = 'i', .name = "net", .has_arg = required_argument },
+		{ .val = 'l', .name = "lnd-timeout",
+		  .has_arg = required_argument },
+		{ .val = 'm', .name = "conns-per-peer",
+		  .has_arg = required_argument },
+		{ .val = 'n', .name = "nid", .has_arg = required_argument },
+		{ .val = 's', .name = "state", .has_arg = required_argument },
+		{ .val = 't', .name = "health", .has_arg = required_argument },
+		{ .name = NULL }
+	};
+
+	while ((opt = getopt_long(argc, argv, "ai:l:m:n:s:t:",
+				  long_options, NULL)) != -1) {
+		switch (opt) {
+		case 'a':
+			all = true;
+			break;
+		case 'i':
+			net = libcfs_str2net(optarg);
+			if (net == LNET_NET_ANY) {
+				rc = LUSTRE_CFG_RC_BAD_PARAM;
+				snprintf(err_str, sizeof(err_str),
+					 "\"Invalid network type: %s\"",
+					 optarg);
+				goto out;
+			}
+			break;
+		case 'l':
+			lnd_timeout = atoi(optarg);
+			if (lnd_timeout < 0) {
+				rc = LUSTRE_CFG_RC_BAD_PARAM;
+				snprintf(err_str, sizeof(err_str),
+					 "\"Invalid LND timeout value '%s', must be >= 0\"",
+					 optarg);
+				goto out;
+			}
+			break;
+		case 'm':
+			if (cmd != LNET_CMD_NETS ||
+			    parse_long(optarg, &cpp) != 0)
+				cpp = -1;
+			break;
+		case 'n':
+			nidstr = optarg;
+			break;
+		case 's':
+			if (cmd != LNET_CMD_PEERS ||
+			    parse_long(optarg, &state) != 0)
+				state = -1;
+			break;
+		case 't':
+			if (parse_long(optarg, &healthv) != 0)
+				healthv = -1;
+			break;
+		case '?':
+			rc = LUSTRE_CFG_RC_BAD_PARAM;
+			snprintf(err_str, sizeof(err_str),
+				 "\"Invalid option or missing argument\"");
+			goto out;
+		default:
+			return 0;
+		}
+	}
+
+	if (lnd_timeout >= 0 && net == 0) {
+		rc = LUSTRE_CFG_RC_BAD_PARAM;
+		snprintf(err_str, sizeof(err_str),
+			 "\"Specified --lnd-timeout without --net option\"");
+		goto out;
+	}
+
+	if (cmd == LNET_CMD_PEERS)
+		rc = yaml_lnet_config_peer_ni_healthv(healthv, all, nidstr,
+						      state, seq_no, &err_rc);
+	else
+		rc = yaml_lnet_config_ni_value(healthv, all, nidstr, cpp,
+					       lnd_timeout, net, seq_no,
+					       &err_rc);
+
+out:
+	if (rc != LUSTRE_CFG_RC_NO_ERR) {
+		cYAML_build_error(rc, -1, "net", "set", err_str, &err_rc);
+		cYAML_print_tree2file(stderr, err_rc);
+	}
+
+	cYAML_free_tree(err_rc);
+
+	return rc;
+}
+
+static int jt_set_ni_value(int argc, char **argv)
+{
+	int rc = check_cmd(net_cmds, "net", "set", 0, argc, argv);
+
+	if (rc)
+		return rc;
+
+	return set_value_helper(argc, argv, LNET_CMD_NETS);
+}
+
 static int jt_set_peer_ni_value(int argc, char **argv)
 {
 	int rc = check_cmd(peer_cmds, "peer", "set", 0, argc, argv);
 
-	if (rc < 0)
+	if (rc)
 		return rc;
 
-	return set_value_helper(argc, argv, LNET_CMD_PEERS,
-				yaml_lnet_config_peer_ni_healthv);
+	return set_value_helper(argc, argv, LNET_CMD_PEERS);
 }
 
 static int yaml_debug_recovery(enum lnet_health_type type)
@@ -3590,7 +3699,7 @@ static int yaml_debug_recovery(enum lnet_health_type type)
 		}
 		yaml_document_delete(&errmsg);
 	}
-	yaml_emitter_delete(&output);
+	yaml_emitter_cleanup(&output);
 free_reply:
 	if (rc == 0) {
 		if (!msg)
@@ -3598,7 +3707,7 @@ free_reply:
 
 		fprintf(stdout, "Operation failed: %s\n", msg);
 	}
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
@@ -3742,13 +3851,11 @@ static int jt_show_net(int argc, char **argv)
 			network = optarg;
 			break;
 		case 'v':
-			if ((!optarg) && (argv[optind] != NULL) &&
-			    (argv[optind][0] != '-')) {
-				if (parse_long(argv[optind++], &detail) != 0)
-					detail = 1;
-			} else {
+			/* '-v' has an optional argument. Default is 1. */
+			if (optarg || optind >= argc ||
+			    argv[optind] == NULL || argv[optind][0] == '-' ||
+			    parse_long(argv[optind++], &detail))
 				detail = 1;
-			}
 			break;
 		case '?':
 			print_help(net_cmds, "net", "show");
@@ -4086,6 +4193,28 @@ static int jt_fault(int argc, char **argv)
 	return cfs_parser(argc, argv, fault_cmds);
 }
 
+static int jt_fault_drop(int argc, char **argv)
+{
+	int rc;
+
+	rc = check_cmd(fault_drop_cmds, "drop", NULL, 2, argc, argv);
+	if (rc)
+		return rc;
+
+	return cfs_parser(argc, argv, fault_drop_cmds);
+}
+
+static int jt_fault_delay(int argc, char **argv)
+{
+	int rc;
+
+	rc = check_cmd(fault_delay_cmds, "delay", NULL, 2, argc, argv);
+	if (rc)
+		return rc;
+
+	return cfs_parser(argc, argv, fault_delay_cmds);
+}
+
 static int yaml_import_global_settings(char *key, unsigned long value,
 				       char cmd, struct cYAML *show_rc,
 				       struct cYAML *err_rc)
@@ -4235,6 +4364,966 @@ static bool key_is_global_param(const char *key)
 	return false;
 }
 
+struct command_mapping {
+	const char *cm_name;
+	int cm_operation;
+	int cm_flags;
+	bool cm_exec_only;
+};
+
+static const struct command_mapping cmd_mappings[] = {
+	{"peer", LNET_CMD_PEERS, 0, false},
+	{"route", LNET_CMD_ROUTES, 0, false},
+	{"discover", LNET_CMD_PING, 0, true},
+	{"ping", LNET_CMD_PING, NLM_F_DUMP, true},
+	{"routing", LNET_CMD_ROUTING, 0, false},
+	{"buffers", LNET_CMD_BUFFERS, 0, false},
+	{"numa", LNET_CMD_NUMA, 0, false},
+	{NULL, 0, 0, false}
+};
+
+static int complete_and_setup_emitter(yaml_emitter_t *output,
+				      struct nl_sock *sk, int flags, int new_op,
+				      int *current_op)
+{
+	if (*current_op != LNET_CMD_UNSPEC) {
+		if (!yaml_netlink_complete_emitter(output))
+			return 0;
+	}
+
+	*current_op = new_op;
+	return yaml_netlink_setup_emitter(output, sk, LNET_GENL_NAME,
+					  LNET_GENL_VERSION, flags, new_op,
+					  true);
+}
+
+static const struct command_mapping *find_command_mapping(const char *value,
+							  char cmd,
+							  int current_op)
+{
+	const struct command_mapping *mapping = cmd_mappings;
+
+	/* The "route" yaml block can contain a "net" key */
+	if (current_op == LNET_CMD_ROUTES && !strcmp(value, "net"))
+		return NULL;
+
+	for (; mapping->cm_name; mapping++) {
+		if (!strcmp(value, mapping->cm_name)) {
+			// Check execute command restriction
+			if (cmd == 'e' && !mapping->cm_exec_only)
+				return NULL;
+
+			if (cmd != 'e' && mapping->cm_exec_only)
+				return NULL;
+
+			return mapping;
+		}
+	}
+
+	return NULL;
+}
+
+static int
+yaml_lnet_extract_long(yaml_parser_t *setup, yaml_event_t *event, char *key,
+		       long *value, int flags)
+{
+	char *valstr;
+	char errmsg[LNET_MAX_STR_LEN];
+	int rc;
+
+	valstr = (char *)event->data.scalar.value;
+	if (!strlen(valstr)) {
+		snprintf(errmsg, LNET_MAX_STR_LEN,
+			 "no value specified for key '%s'", key);
+		goto print_error;
+	}
+
+	rc = parse_long(valstr, value);
+	if (rc) {
+		snprintf(errmsg, LNET_MAX_STR_LEN,
+			 "invalid value '%s' for key '%s'", valstr, key);
+		goto print_error;
+	}
+
+	return 0;
+
+print_error:
+	errno = rc = -EINVAL;
+	yaml_lnet_print_error(flags, "import", errmsg);
+	return rc;
+}
+
+static int handle_udsp_sequences(yaml_parser_t *setup, char cmd, int flags,
+				 struct cYAML *show_rc)
+{
+	char *src = NULL, *dst = NULL, *rte = NULL;
+	long seq_no = -1, idx = -1, prio = -1;
+	union lnet_udsp_action action;
+	struct cYAML *err_rc = NULL;
+	yaml_event_t event;
+	bool done = false;
+	int rc = 1;
+
+	while (!done) {
+		char *value;
+
+		rc = yaml_parser_parse(setup, &event);
+		if (rc == 0)
+			goto failed;
+
+		/* Finished one of the UDSP rules. */
+		if (event.type == YAML_MAPPING_END_EVENT && idx != -1) {
+			switch (flags) {
+			case 0: /* delete */
+				rc = lustre_lnet_del_udsp(idx, seq_no,
+							  &err_rc);
+				break;
+			case NLM_F_DUMP:
+				rc = lustre_lnet_show_udsp(idx, seq_no,
+							   &show_rc, &err_rc);
+				break;
+			case NLM_F_CREATE:
+			default:
+				action.udsp_priority = prio;
+				rc = lustre_lnet_add_udsp(src, dst, rte,
+							  prio ? "priority" : "",
+							  &action, idx,
+							  seq_no, &err_rc);
+				break;
+			}
+
+			/* reset values */
+			idx = -1;
+			if (src) {
+				free(src);
+				src = NULL;
+			}
+			if (dst) {
+				free(dst);
+				dst = NULL;
+			}
+			if (rte) {
+				free(rte);
+				rte = NULL;
+			}
+
+			if (rc < 0)
+				goto failed;
+		}
+
+		if (event.type != YAML_SCALAR_EVENT) {
+			if (event.type == YAML_SEQUENCE_END_EVENT)
+				done = true;
+
+			yaml_event_delete(&event);
+			continue;
+		}
+
+		value = (char *)event.data.scalar.value;
+		if (!strcmp(value, "idx") ||
+		    !strcmp(value, "priority")) {
+			char *key = strdup(value);
+			long value;
+
+			yaml_event_delete(&event);
+			rc = yaml_parser_parse(setup, &event);
+			if (rc == 0) {
+				free(key);
+				goto failed;
+			}
+
+			rc = yaml_lnet_extract_long(setup, &event,
+						    key, &value, flags);
+			if (rc) {
+				free(key);
+				goto failed;
+			}
+
+			if (!strcmp(key, "priority"))
+				prio = value;
+			else
+				idx = value;
+			free(key);
+		} else if (!strcmp(value, "src") ||
+			   !strcmp(value, "dst") ||
+			   !strcmp(value, "rte")) {
+			char *key = strdup(value);
+
+			yaml_event_delete(&event);
+			rc = yaml_parser_parse(setup, &event);
+			if (rc == 0) {
+				free(key);
+				goto failed;
+			}
+
+			value = (char *)event.data.scalar.value;
+			if (!strcmp(key, "src"))
+				src = strdup(value);
+			else if (!strcmp(key, "dst"))
+				dst = strdup(value);
+			else if (!strcmp(key, "rte"))
+				rte = strdup(value);
+		}
+
+		yaml_event_delete(&event);
+	}
+failed:
+	return rc;
+}
+
+static int handle_global_parameter(yaml_parser_t *setup, yaml_event_t *event,
+				   char cmd, int flags, struct cYAML *show_rc)
+{
+	struct cYAML *err_rc = NULL;
+	long value;
+	char *key;
+	char errmsg[LNET_MAX_STR_LEN];
+	int rc;
+
+	key = strdup((char *)event->data.scalar.value);
+
+	if (!key_is_global_param(key)) {
+		snprintf(errmsg, LNET_MAX_STR_LEN, "invalid key '%s'", key);
+		errno = rc = -EINVAL;
+		yaml_lnet_print_error(flags, "import", errmsg);
+		goto out_free_key;
+	}
+
+	rc = yaml_parser_parse(setup, event);
+	if (rc == 0) {
+		yaml_parser_log_error(setup, stderr, "import: ");
+		goto out_free_key;
+	}
+
+	rc = yaml_lnet_extract_long(setup, event, key, &value, flags);
+	if (rc)
+		goto out_free_key;
+
+	rc = yaml_import_global_settings(key, value, cmd, show_rc, err_rc);
+	if (rc != LUSTRE_CFG_RC_NO_ERR)
+		cYAML_print_tree2file(stderr, err_rc);
+	else
+		rc = 1;
+
+out_free_key:
+	free(key);
+	return rc;
+}
+
+static void
+free_ip2nets_lists(struct lustre_lnet_ip2nets *ip2nets)
+{
+	struct lustre_lnet_ip_range_descr *ip_range_descr = NULL,
+					  *tmp = NULL;
+	struct lnet_dlc_intf_descr *intf_descr, *intf_tmp;
+
+	list_for_each_entry_safe(intf_descr, intf_tmp,
+				 &ip2nets->ip2nets_net.nw_intflist,
+				 intf_on_network) {
+		list_del(&intf_descr->intf_on_network);
+		free_intf_descr(intf_descr);
+	}
+
+	list_for_each_entry_safe(ip_range_descr, tmp,
+				 &ip2nets->ip2nets_ip_ranges,
+				 ipr_entry) {
+		struct cfs_expr_list *el, *el_tmp;
+
+		list_del(&ip_range_descr->ipr_entry);
+		list_for_each_entry_safe(el, el_tmp, &ip_range_descr->ipr_expr,
+					 el_link) {
+			list_del(&el->el_link);
+			cfs_expr_list_free(el);
+		}
+		free(ip_range_descr);
+	}
+}
+
+/* Handles ip2nets "tunables" and "lnd tunables" */
+static int
+parse_yaml_tunables(__u32 net_id,
+		    struct lnet_ioctl_config_lnd_tunables *tunables,
+		    yaml_parser_t *setup, int flags,
+		    int (*set_tunable)(__u32 net_id,
+				struct lnet_ioctl_config_lnd_tunables *tunables,
+				yaml_parser_t *, yaml_event_t  *, int))
+{
+	yaml_event_t event;
+	int rc;
+
+	if (!yaml_parser_parse(setup, &event))
+		return 0;
+
+	if (event.type != YAML_MAPPING_START_EVENT)
+		return -EINVAL;
+
+	yaml_event_delete(&event);
+
+	/* Parse the "key" event */
+	if (!yaml_parser_parse(setup, &event))
+		return 0;
+
+	while (event.type == YAML_SCALAR_EVENT) {
+		/* Consumes the "key" and "value" events */
+		rc = set_tunable(net_id, tunables, setup, &event, flags);
+		if (rc < 0)
+			return rc;
+
+		/* Parse the next "key" event" */
+		if (!yaml_parser_parse(setup, &event))
+			return 0;
+	}
+
+	return 1;
+}
+
+/* Handles ip2nets "interfaces" and "ip-range" */
+static int parse_yaml_list(yaml_parser_t *setup, struct list_head *list,
+			   int (*add_item)(struct list_head *, char *))
+{
+	yaml_event_t event;
+	char *value;
+	int rc;
+
+	if (!yaml_parser_parse(setup, &event))
+		return 0;
+
+	if (event.type != YAML_MAPPING_START_EVENT)
+		return -EINVAL;
+
+	yaml_event_delete(&event);
+
+	/* Parse the "key" event */
+	if (!yaml_parser_parse(setup, &event))
+		return 0;
+
+	while (event.type == YAML_SCALAR_EVENT) {
+		/* Delete the "key" event */
+		yaml_event_delete(&event);
+
+		/* Parse the "value" event */
+		if (!yaml_parser_parse(setup, &event))
+			return 0;
+
+		if (event.type != YAML_SCALAR_EVENT)
+			return -EINVAL;
+
+		value = (char *)event.data.scalar.value;
+
+		rc = add_item(list, value);
+		if (rc != LUSTRE_CFG_RC_NO_ERR)
+			return rc;
+
+		/* Delete the "value" event */
+		yaml_event_delete(&event);
+
+		/* Parse the next "key" event */
+		if (!yaml_parser_parse(setup, &event))
+			return 0;
+	}
+
+	return 1;
+}
+
+static int
+handle_cmn_tunable(__u32 net_id,
+		   struct lnet_ioctl_config_lnd_tunables *tunables,
+		   yaml_parser_t *setup, yaml_event_t *event, int flags)
+{
+	struct lnet_ioctl_config_lnd_cmn_tunables *cmn_tun = &tunables->lt_cmn;
+	char *key;
+	long value;
+	int rc;
+
+	key = strdup((char *)event->data.scalar.value);
+
+	yaml_event_delete(event);
+
+	rc = yaml_parser_parse(setup, event);
+	if (!rc) {
+		yaml_parser_log_error(setup, stderr, "import: ");
+		goto out_free_key;
+	}
+
+	rc = yaml_lnet_extract_long(setup, event, key, &value, flags);
+	if (rc)
+		goto out_free_key;
+
+	if (!strcmp(key, "peer_timeout")) {
+		cmn_tun->lct_peer_timeout = value;
+	} else if (!strcmp(key, "peer_credits")) {
+		cmn_tun->lct_peer_tx_credits = value;
+	} else if (!strcmp(key, "peer_buffer_credits")) {
+		cmn_tun->lct_peer_rtr_credits = value;
+	} else if (!strcmp(key, "credits")) {
+		cmn_tun->lct_max_tx_credits = value;
+	} else {
+		fprintf(stderr,
+			"Ignoring unrecognized key '%s' for 'tunables'\n",
+			key);
+	}
+
+	yaml_event_delete(event);
+
+	rc = 1;
+
+out_free_key:
+	free(key);
+	return rc;
+}
+
+static int
+handle_lnd_tunable(__u32 net_id,
+		   struct lnet_ioctl_config_lnd_tunables *tunables,
+		   yaml_parser_t *setup, yaml_event_t *event, int flags)
+{
+	struct lnet_lnd_tunables *lnd_tun = &tunables->lt_tun;
+	char *key, *valstr;
+	long value;
+	char errmsg[LNET_MAX_STR_LEN];
+	int rc;
+
+	key = strdup((char *)event->data.scalar.value);
+
+	yaml_event_delete(event);
+
+	rc = yaml_parser_parse(setup, event);
+	if (!rc) {
+		yaml_parser_log_error(setup, stderr, "import: ");
+		goto out_free_key;
+	}
+
+#ifdef HAVE_KFILND
+	if (!strcmp(key, "traffic_class") && LNET_NETTYP(net_id) == KFILND) {
+		char *tc = &lnd_tun->lnd_tun_u.lnd_kfi.lnd_traffic_class_str[0];
+
+		valstr = (char *)event->data.scalar.value;
+		if (!strlen(valstr)) {
+			snprintf(errmsg, LNET_MAX_STR_LEN,
+				 "no value specified for key '%s'", key);
+			errno = rc = -EINVAL;
+			yaml_lnet_print_error(flags, "import", errmsg);
+			goto out_free_key;
+		} else if (strlen(valstr) < LNET_MAX_STR_LEN) {
+			strcpy(tc, valstr);
+		}
+		goto out_free_key;
+	}
+#endif
+
+	rc = yaml_lnet_extract_long(setup, event, key, &value, flags);
+	if (rc)
+		goto out_free_key;
+
+#ifdef HAVE_KFILND
+	if (!strcmp(key, "auth_key") && LNET_NETTYP(net_id) == KFILND) {
+		lnd_tun->lnd_tun_u.lnd_kfi.lnd_auth_key = value;
+		goto out_free_key;
+	}
+#endif
+
+	if (!strcmp(key, "conns_per_peer")) {
+		if (LNET_NETTYP(net_id) == SOCKLND)
+			lnd_tun->lnd_tun_u.lnd_sock.lnd_conns_per_peer = value;
+		else if (LNET_NETTYP(net_id) == O2IBLND)
+			lnd_tun->lnd_tun_u.lnd_o2ib.lnd_conns_per_peer = value;
+	} else if (!strcmp(key, "tos")) {
+		if (LNET_NETTYP(net_id) == SOCKLND)
+			lnd_tun->lnd_tun_u.lnd_sock.lnd_tos = value;
+		else if (LNET_NETTYP(net_id) == O2IBLND)
+			lnd_tun->lnd_tun_u.lnd_o2ib.lnd_tos = value;
+	} else {
+		fprintf(stderr,
+			"Ignoring unrecognized key '%s' for 'lnd tunables'\n",
+			key);
+	}
+
+	yaml_event_delete(event);
+
+	rc = 1;
+
+out_free_key:
+	free(key);
+	return rc;
+}
+
+static void
+init_ip2nets_tunables(struct lustre_lnet_ip2nets *ip2nets,
+		      struct lnet_ioctl_config_lnd_tunables *tunables)
+{
+	INIT_LIST_HEAD(&ip2nets->ip2nets_ip_ranges);
+	INIT_LIST_HEAD(&ip2nets->ip2nets_net.network_on_rule);
+	INIT_LIST_HEAD(&ip2nets->ip2nets_net.nw_intflist);
+
+	ip2nets->ip2nets_net.nw_id = LNET_NET_ANY;
+
+	memset(tunables, 0, sizeof(*tunables));
+	tunables->lt_cmn.lct_peer_timeout = -1;
+	tunables->lt_cmn.lct_peer_tx_credits = -1;
+	tunables->lt_cmn.lct_peer_rtr_credits = -1;
+	tunables->lt_cmn.lct_max_tx_credits = -1;
+}
+
+static void
+init_lnd_tunables(__u32 net_type,
+		  struct lnet_ioctl_config_lnd_tunables *tunables,
+		  bool *tunables_set)
+{
+	if (net_type == SOCKLND) {
+		tunables->lt_tun.lnd_tun_u.lnd_sock.lnd_tos = -1;
+		*tunables_set = true;
+	} else if (net_type == O2IBLND) {
+		tunables->lt_tun.lnd_tun_u.lnd_o2ib.lnd_tos = -1;
+		*tunables_set = true;
+	}
+}
+
+static int
+add_intf_helper(struct list_head *list, char *intf)
+{
+	return lustre_lnet_add_intf_descr(list, intf, strlen(intf));
+}
+
+static int
+handle_cpt_sequence(yaml_parser_t *setup, yaml_event_t *event,
+		    struct cfs_expr_list **global_cpts, int flags)
+{
+	int rc;
+	char errmsg[LNET_MAX_STR_LEN];
+	char *value;
+
+	yaml_event_delete(event);
+
+	rc = yaml_parser_parse(setup, event);
+	if (!rc)
+		goto yaml_parser_error;
+
+	if (event->type == YAML_SCALAR_EVENT) {
+		value = (char *)event->data.scalar.value;
+		rc = cfs_expr_list_parse(value, strlen(value), 0, UINT_MAX,
+					 global_cpts);
+		if (rc) {
+			snprintf(errmsg, LNET_MAX_STR_LEN,
+				 "Unable to parse CPT '%s'", value);
+			goto print_error;
+		}
+		return 1;
+	}
+
+	if (event->type != YAML_SEQUENCE_START_EVENT) {
+		snprintf(errmsg, sizeof(errmsg),
+			 "Unable to parse CPT configuration");
+		rc = -EINVAL;
+		goto print_error;
+	}
+
+	yaml_event_delete(event);
+
+	rc = yaml_parser_parse(setup, event);
+	if (!rc)
+		goto yaml_parser_error;
+
+	if (event->type != YAML_SCALAR_EVENT) {
+		snprintf(errmsg, LNET_MAX_STR_LEN,
+			 "Missing CPT configuration");
+		rc = -ENODATA;
+		goto print_error;
+	}
+
+	while (event->type != YAML_SEQUENCE_END_EVENT) {
+		struct cfs_expr_list *expr_list;
+		char *value;
+		char *tmp;
+		size_t tmpsize;
+
+		if (event->type != YAML_SCALAR_EVENT) {
+			snprintf(errmsg, sizeof(errmsg),
+				 "Malformed CPT configuration");
+			rc = -EINVAL;
+			goto print_error;
+		}
+
+		value = (char *)event->data.scalar.value;
+		tmpsize = strlen(value) + 3;
+		tmp = malloc(tmpsize);
+		if (!tmp) {
+			snprintf(errmsg, LNET_MAX_STR_LEN,
+				 "No memory for CPT configuration");
+			rc = -ENOMEM;
+			goto print_error;
+		}
+
+		snprintf(tmp, tmpsize, "[%s]", value);
+		rc = cfs_expr_list_parse(tmp, strlen(tmp), 0, UINT_MAX,
+					 &expr_list);
+		free(tmp);
+		if (rc) {
+			snprintf(errmsg, LNET_MAX_STR_LEN,
+				 "Unable to parse CPT '%s'", value);
+			goto print_error;
+		}
+
+		if (*global_cpts) {
+			list_splice_tail(&expr_list->el_exprs,
+					 &global_cpts[0]->el_exprs);
+			free(expr_list);
+		} else {
+			*global_cpts = expr_list;
+		}
+
+		yaml_event_delete(event);
+
+		rc = yaml_parser_parse(setup, event);
+		if (!rc)
+			goto yaml_parser_error;
+	}
+
+print_error:
+	yaml_event_delete(event);
+
+	if (rc < 0) {
+		errno = rc;
+		yaml_lnet_print_error(flags, "import", errmsg);
+	}
+
+yaml_parser_error:
+	if (rc == 0) {
+		yaml_parser_log_error(setup, stderr, "import: ");
+		rc = -EINVAL;
+	}
+	return rc;
+}
+
+/*
+ * ip2nets:
+ *  - net-spec: <net>[NUM]
+ *    interfaces:
+ *        0: <intf name>['['<expr>']']
+ *        1: <intf name>['['<expr>']']
+ *    ip-range:
+ *        0: <expr.expr.expr.expr>
+ *        1: <expr.expr.expr.expr>
+ *    tunables:
+ *          peer_timeout: <NUM>
+ *          peer_credits: <NUM>
+ *          peer_buffer_credits: <NUM>
+ *          credits: <NUM>
+ *    lnd tunables:
+ *          <lnd_param1>: <val>
+ *          <lnd_param2>: <val>
+ *          <...>
+ *    CPT: "[<expr]"
+ *
+ * or
+ *
+ * net:
+ *  - net type: <net>[NUM]
+ *    interfaces:
+ *        0: <intf name>['['<expr>']']
+ *        1: <intf name>['['<expr>']']
+ *    tunables:
+ *          peer_timeout: <NUM>
+ *          peer_credits: <NUM>
+ *          peer_buffer_credits: <NUM>
+ *          credits: <NUM>
+ *    lnd tunables:
+ *          <lnd_param1>: <val>
+ *          <lnd_param2>: <val>
+ *          <...>
+ *    CPT: "[<expr]"
+ */
+static int
+handle_net_config_sequence(yaml_parser_t *setup, int flags,
+			   bool is_ip2nets_sequence)
+{
+	struct lustre_lnet_ip2nets ip2nets;
+	struct lnet_dlc_network_descr *nw_descr = &ip2nets.ip2nets_net;
+	struct lnet_ioctl_config_lnd_tunables tunables;
+	struct cfs_expr_list *global_cpts = NULL;
+	yaml_event_t event;
+	int rc = 1;
+	char errmsg[LNET_MAX_STR_LEN];
+	bool tunables_set = false;
+	bool lnd_tunables_set = false;
+	/* Track configured networks to ensure uniqueness for ip2nets */
+	__u32 *configured_nets = NULL;
+	size_t nets_cnt = 0;
+	unsigned int seq_depth = 0;
+	unsigned int map_depth = 0;
+
+	init_ip2nets_tunables(&ip2nets, &tunables);
+
+	while (1) {
+		char *value;
+
+		rc = yaml_parser_parse(setup, &event);
+		if (!rc)
+			goto yaml_parser_error;
+
+		switch (event.type) {
+		case YAML_SEQUENCE_START_EVENT:
+			seq_depth++;
+			break;
+		case YAML_SEQUENCE_END_EVENT:
+			seq_depth--;
+			break;
+		case YAML_MAPPING_START_EVENT:
+			map_depth++;
+			break;
+		case YAML_MAPPING_END_EVENT:
+			map_depth--;
+			break;
+		default:
+			break;
+		}
+
+		/* Reached the end of the ip2nets/net sequence */
+		if (event.type == YAML_SEQUENCE_END_EVENT && seq_depth == 0) {
+			yaml_event_delete(&event);
+			if (is_ip2nets_sequence && nets_cnt == 0) {
+				/* If none of the rules applied then return an
+				 * error
+				 */
+				rc = -EINVAL;
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "No ip2nets rules applied");
+				goto print_error;
+			}
+
+			goto out;
+		}
+
+		/* Reached the end of a network specification block */
+		if (event.type == YAML_MAPPING_END_EVENT && map_depth == 0) {
+			struct lnet_ioctl_config_lnd_tunables *tun = NULL;
+			char *net;
+			lnet_nid_t *nids = NULL;
+			__u32 nnids = 0;
+			bool duplicate_net = false;
+			size_t i;
+			__u32 *tmp;
+
+			rc = lustre_lnet_resolve_ip2nets_rule(&ip2nets, &nids,
+							      &nnids, errmsg,
+							      sizeof(errmsg));
+			if (nids)
+				free(nids);
+
+			/* NO_MATCH is okay for ip2nets, but anything else is
+			 * an error
+			 */
+			if (rc != LUSTRE_CFG_RC_NO_ERR &&
+			    !(is_ip2nets_sequence &&
+			      rc == LUSTRE_CFG_RC_NO_MATCH))
+				goto print_error;
+
+			/* Skip configuration if resolution failed */
+			if (rc != LUSTRE_CFG_RC_NO_ERR)
+				goto cleanup_block;
+
+			/* Check for duplicate networks in ip2nets sequences */
+			for (i = 0; i < nets_cnt; i++) {
+				if (configured_nets[i] ==
+				    ip2nets.ip2nets_net.nw_id) {
+					duplicate_net = true;
+					break;
+				}
+			}
+
+			/* Skip configuration for ip2nets if duplicate */
+			if (duplicate_net && is_ip2nets_sequence)
+				goto cleanup_block;
+
+			/* Configure the network interface */
+			net = libcfs_net2str(ip2nets.ip2nets_net.nw_id);
+			if (tunables_set || lnd_tunables_set)
+				tun = &tunables;
+
+			rc = yaml_lnet_config_ni(net, NULL,
+						 &ip2nets.ip2nets_net, tun, -1,
+						 global_cpts, LNET_GENL_VERSION,
+						 flags, stdout);
+			if (rc < 0) {
+				snprintf(errmsg, sizeof(errmsg),
+					 "Failed to configure NI on net '%s' rc = %d",
+					 net, rc);
+				goto print_error;
+			}
+
+			/* Record successfully configured network for ip2nets */
+			tmp = realloc(configured_nets, (nets_cnt + 1) *
+				      sizeof(*configured_nets));
+
+			if (!tmp) {
+				rc = -ENOMEM;
+				snprintf(errmsg, sizeof(errmsg),
+					 "Out of memory tracking configured nets");
+				goto print_error;
+			}
+			configured_nets = tmp;
+			configured_nets[nets_cnt] = ip2nets.ip2nets_net.nw_id;
+			nets_cnt++;
+
+cleanup_block:
+			free_ip2nets_lists(&ip2nets);
+			init_ip2nets_tunables(&ip2nets, &tunables);
+			if (global_cpts)
+				cfs_expr_list_free(global_cpts);
+			global_cpts = NULL;
+			tunables_set = lnd_tunables_set = false;
+		}
+
+		/* Skip other events we do not care about */
+		if (event.type != YAML_SCALAR_EVENT) {
+			yaml_event_delete(&event);
+			continue;
+		}
+
+		value = (char *)event.data.scalar.value;
+
+		/* "net-spec" must be the first scalar for an ip2nets sequence,
+		 * and "net type" must be the first in a net sequence
+		 */
+		if (ip2nets.ip2nets_net.nw_id == LNET_NET_ANY) {
+			if (is_ip2nets_sequence && strcmp(value, "net-spec")) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Malformed input. Expect 'net-spec' found '%s'",
+					 value);
+				rc = -EINVAL;
+				goto print_error;
+			} else if (!is_ip2nets_sequence &&
+				 strcmp(value, "net type")) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Malformed input. Expect 'net type' found '%s'",
+					 value);
+				rc = -EINVAL;
+				goto print_error;
+			}
+		}
+
+		if (!strcmp(value, "net-spec") || !strcmp(value, "net type")) {
+			yaml_event_delete(&event);
+
+			rc = yaml_parser_parse(setup, &event);
+			if (!rc)
+				goto yaml_parser_error;
+
+			value = (char *)event.data.scalar.value;
+			ip2nets.ip2nets_net.nw_id = libcfs_str2net(value);
+			if (ip2nets.ip2nets_net.nw_id == LNET_NET_ANY) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Invalid network ID '%s'",
+					 value);
+				rc = -EINVAL;
+				goto print_error;
+			}
+			init_lnd_tunables(LNET_NETTYP(ip2nets.ip2nets_net.nw_id),
+					  &tunables, &lnd_tunables_set);
+		} else if (!strcmp(value, "interfaces")) {
+			yaml_event_delete(&event);
+
+			rc = parse_yaml_list(setup, &nw_descr->nw_intflist,
+					     add_intf_helper);
+			if (rc < 0) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Failed to parse interfaces list rc = %d",
+					 rc);
+				goto print_error;
+			} else if (!rc) {
+				goto yaml_parser_error;
+			}
+		} else if (!strcmp(value, "local NI(s)")) {
+			if (is_ip2nets_sequence) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "local NI(s)' not valid for ip2nets");
+				rc = -EINVAL;
+				goto print_error;
+			}
+		} else if (!strcmp(value, "ip-range")) {
+			if (!is_ip2nets_sequence) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "'ip-range' only valid for ip2nets");
+				rc = -EINVAL;
+				goto print_error;
+			}
+
+			yaml_event_delete(&event);
+
+			rc = parse_yaml_list(setup, &ip2nets.ip2nets_ip_ranges,
+					     lustre_lnet_add_ip_range);
+			if (rc < 0) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Failed to parse ip-range list rc = %d",
+					 rc);
+				goto print_error;
+			} else if (!rc) {
+				goto yaml_parser_error;
+			}
+		} else if (!strcmp(value, "tunables")) {
+			yaml_event_delete(&event);
+
+			rc = parse_yaml_tunables(ip2nets.ip2nets_net.nw_id,
+						 &tunables, setup, flags,
+						 handle_cmn_tunable);
+			if (rc < 0) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Failed to parse tunables rc = %d",
+					 rc);
+				goto print_error;
+			} else if (!rc) {
+				goto yaml_parser_error;
+			}
+			tunables_set = true;
+		} else if (!strcmp(value, "lnd tunables")) {
+			yaml_event_delete(&event);
+
+			rc = parse_yaml_tunables(ip2nets.ip2nets_net.nw_id,
+						 &tunables, setup, flags,
+						 handle_lnd_tunable);
+			if (rc < 0) {
+				snprintf(errmsg, LNET_MAX_STR_LEN,
+					 "Failed to parse lnd tunables rc = %d",
+					 rc);
+				goto print_error;
+			} else if (!rc) {
+				goto yaml_parser_error;
+			}
+			lnd_tunables_set = true;
+		} else if (!strcmp(value, "CPT")) {
+			rc = handle_cpt_sequence(setup, &event,
+						 &global_cpts, flags);
+			if (rc < 0 || !global_cpts)
+				goto out;
+
+			/* handle_cpt_sequence() deletes the last event that
+			 * it parsed
+			 */
+			continue;
+		}
+		yaml_event_delete(&event);
+	}
+
+print_error:
+	if (rc < 0) {
+		errno = rc;
+		yaml_lnet_print_error(flags, "import", errmsg);
+	}
+
+yaml_parser_error:
+	if (rc == 0) {
+		yaml_parser_log_error(setup, stderr, "ip2nets: ");
+		rc = -EINVAL;
+	}
+out:
+	free_ip2nets_lists(&ip2nets);
+	if (configured_nets)
+		free(configured_nets);
+	if (global_cpts)
+		cfs_expr_list_free(global_cpts);
+
+	return (rc < 0) ? rc : 1;
+}
+
 static int jt_import(int argc, char **argv)
 {
 	char *file = NULL;
@@ -4264,6 +5353,7 @@ static int jt_import(int argc, char **argv)
 	const char *msg = NULL;
 	yaml_emitter_t output;
 	yaml_event_t event;
+	struct cfs_expr_list *global_cpts = NULL;
 
 	while ((opt = getopt_long(argc, argv, short_options,
 				   long_options, NULL)) != -1) {
@@ -4354,7 +5444,11 @@ static int jt_import(int argc, char **argv)
 	yaml_parser_set_input_file(&setup, input);
 
 	while (!done) {
-		if (!yaml_parser_parse(&setup, &event)) {
+		const char *scalar_value;
+		const struct command_mapping *mapping;
+
+		rc = yaml_parser_parse(&setup, &event);
+		if (rc == 0) {
 			yaml_parser_log_error(&setup, stderr, "import: ");
 			break;
 		}
@@ -4362,79 +5456,69 @@ static int jt_import(int argc, char **argv)
 		if (event.type != YAML_SCALAR_EVENT)
 			goto skip_test;
 
-		if (!strcmp((char *)event.data.scalar.value, "net") &&
-		    op != LNET_CMD_ROUTES && cmd != 'e') {
+		scalar_value = (char *)event.data.scalar.value;
+		mapping = find_command_mapping(scalar_value, cmd, op);
+		if (mapping) {
+			int emitter_flags = mapping->cm_flags ?: flags;
+
+			rc = complete_and_setup_emitter(&output, sk,
+							emitter_flags,
+							mapping->cm_operation,
+							&op);
+			if (rc == 0)
+				goto emitter_error;
+			unspec = false;
+		} else if (!strcmp(scalar_value, "udsp")) {
 			if (op != LNET_CMD_UNSPEC) {
 				rc = yaml_netlink_complete_emitter(&output);
 				if (rc == 0)
 					goto emitter_error;
 			}
-			op = LNET_CMD_NETS;
+			op = LNET_CMD_UNSPEC;
 
-			rc = yaml_netlink_setup_emitter(&output, sk,
-							LNET_GENL_NAME,
-							LNET_GENL_VERSION,
-							flags, op, true);
-			if (rc == 0)
+			rc = handle_udsp_sequences(&setup, cmd, flags,
+						   show_rc);
+			if (rc < 0)
+				goto free_reply;
+			else if (rc == 0)
 				goto emitter_error;
+		} else if (!strcmp(scalar_value, "ip2nets") ||
+			   !strcmp(scalar_value, "net")) {
+			bool is_ip2nets = strcmp(scalar_value, "ip2nets") == 0;
 
-			unspec = false;
-		} else if (!strcmp((char *)event.data.scalar.value, "peer") &&
-			   cmd != 'e') {
+			/* The "route" yaml block can contain a "net" key */
+			if (!is_ip2nets && op == LNET_CMD_ROUTES)
+				goto skip_test;
+
 			if (op != LNET_CMD_UNSPEC) {
 				rc = yaml_netlink_complete_emitter(&output);
 				if (rc == 0)
 					goto emitter_error;
 			}
-			op = LNET_CMD_PEERS;
+			op = LNET_CMD_UNSPEC;
 
-			rc = yaml_netlink_setup_emitter(&output, sk,
-							LNET_GENL_NAME,
-							LNET_GENL_VERSION,
-							flags, op, true);
+			rc = handle_net_config_sequence(&setup, flags,
+							is_ip2nets);
+			if (rc < 0)
+				goto free_reply;
+			else if (rc == 0)
+				goto emitter_error;
+		} else if (op == LNET_CMD_NETS &&
+			   !strcmp(scalar_value, "CPT")) {
+			rc = handle_cpt_sequence(&setup, &event, &global_cpts,
+						 flags);
+
+			if (rc < 0 || !global_cpts)
+				goto free_reply;
+
+			rc = lnet_yaml_emit_cpt_sequence(&output, global_cpts);
 			if (rc == 0)
 				goto emitter_error;
 
-			unspec = false;
-		} else if (!strcmp((char *)event.data.scalar.value, "route") &&
-			   cmd != 'e') {
-			if (op != LNET_CMD_UNSPEC) {
-				rc = yaml_netlink_complete_emitter(&output);
-				if (rc == 0)
-					goto emitter_error;
-			}
-			op = LNET_CMD_ROUTES;
-
-			rc = yaml_netlink_setup_emitter(&output, sk,
-							LNET_GENL_NAME,
-							LNET_GENL_VERSION,
-							flags, op, true);
-			if (rc == 0)
-				goto emitter_error;
-
-			unspec = false;
-		} else if ((!strcmp((char *)event.data.scalar.value, "discover") ||
-			    !strcmp((char *)event.data.scalar.value, "ping")) &&
-			   cmd == 'e') {
-			if (op != LNET_CMD_UNSPEC) {
-				rc = yaml_netlink_complete_emitter(&output);
-				if (rc == 0)
-					goto emitter_error;
-			}
-			op = LNET_CMD_PING;
-
-			if (!strcmp((char *)event.data.scalar.value, "ping"))
-				flags = NLM_F_DUMP;
-
-			rc = yaml_netlink_setup_emitter(&output, sk,
-							LNET_GENL_NAME,
-							LNET_GENL_VERSION,
-							flags, op, true);
-			if (rc == 0)
-				goto emitter_error;
-
-			unspec = false;
-		} else if (!strcmp((char *)event.data.scalar.value, "global")) {
+			cfs_expr_list_free(global_cpts);
+			global_cpts = NULL;
+			continue;
+		} else if (!strcmp(scalar_value, "global")) {
 			if (op != LNET_CMD_UNSPEC) {
 				rc = yaml_netlink_complete_emitter(&output);
 				if (rc == 0)
@@ -4442,53 +5526,12 @@ static int jt_import(int argc, char **argv)
 			}
 			op = LNET_CMD_UNSPEC;
 		} else if (op == LNET_CMD_UNSPEC) {
-			struct cYAML *err_rc = NULL;
-			long int value;
-			char *key;
-			char errmsg[LNET_MAX_STR_LEN];
-
-			key = strdup((char *)event.data.scalar.value);
-			if (!key_is_global_param(key)) {
-				snprintf(errmsg, LNET_MAX_STR_LEN,
-					 "invalid key '%s'", key);
-				errno = rc = -EINVAL;
-				yaml_lnet_print_error(flags, "import", errmsg);
+			rc = handle_global_parameter(&setup, &event, cmd, flags,
+						     show_rc);
+			if (rc < 0)
 				goto free_reply;
-			}
-
-			rc = yaml_parser_parse(&setup, &event);
-			if (rc == 0) {
-				yaml_parser_log_error(&setup, stderr,
-						      "import: ");
+			else if (rc == 0)
 				goto emitter_error;
-			}
-
-			if (!strlen((char *)event.data.scalar.value)) {
-				snprintf(errmsg, LNET_MAX_STR_LEN,
-					 "no value specified for key '%s'",
-					 key);
-				errno = rc = -EINVAL;
-				yaml_lnet_print_error(flags, "import", errmsg);
-				goto free_reply;
-			}
-
-			rc = parse_long((char *)event.data.scalar.value,
-					&value);
-			if (rc != 0) {
-				snprintf(errmsg, LNET_MAX_STR_LEN,
-					 "invalid value '%s' for key '%s'",
-					 (char *)event.data.scalar.value, key);
-				errno = rc = -EINVAL;
-				yaml_lnet_print_error(flags, "import", errmsg);
-				goto free_reply;
-			}
-
-			rc = yaml_import_global_settings(key, value, cmd,
-							 show_rc, err_rc);
-			if (rc != LUSTRE_CFG_RC_NO_ERR)
-				cYAML_print_tree2file(stderr, err_rc);
-			else
-				rc = 1;
 		}
 skip_test:
 		if (op != LNET_CMD_UNSPEC) {
@@ -4502,7 +5545,7 @@ skip_test:
 emitter_error:
 	if (rc == 0) {
 		yaml_emitter_log_error(&output, stderr);
-		yaml_emitter_delete(&output);
+		yaml_emitter_cleanup(&output);
 		rc = -EINVAL;
 	} else if (!unspec) {
 		yaml_document_t errmsg;
@@ -4531,7 +5574,7 @@ free_reply:
 		yaml_lnet_print_error(flags, "import", msg);
 		rc = -EINVAL;
 	}
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	yaml_parser_delete(&setup);
 	nl_socket_free(sk);
 	if (input)
@@ -4674,7 +5717,7 @@ static int jt_export(int argc, char **argv)
 			goto old_api;
 	}
 
-	rc = yaml_lnet_route(NULL, NULL, -1, -1, -1, LNET_GENL_VERSION,
+	rc = yaml_lnet_route(NULL, NULL, -1, -1, LNET_GENL_VERSION,
 			     flags, f);
 	if (rc < 0) {
 		if (rc == -EOPNOTSUPP)
@@ -4959,13 +6002,11 @@ static int jt_show_peer(int argc, char **argv)
 			nid = optarg;
 			break;
 		case 'v':
-			if ((!optarg) && (argv[optind] != NULL) &&
-			    (argv[optind][0] != '-')) {
-				if (parse_long(argv[optind++], &detail) != 0)
-					detail = 1;
-			} else {
+			/* '-v' has an optional argument. Default is 1. */
+			if (optarg || optind >= argc ||
+			    argv[optind] == NULL || argv[optind][0] == '-' ||
+			    parse_long(argv[optind++], &detail))
 				detail = 1;
-			}
 			break;
 		case '?':
 			print_help(peer_cmds, "peer", "show");
@@ -5189,51 +6230,49 @@ static int yaml_lnet_ping(char *group, int timeout, struct lnet_nid *src_nid,
 	if (rc == 0)
 		goto emitter_error;
 
-	if (timeout != 1000 || (src_nid && nid_addr_is_set(src_nid))) {
-		if (src_nid) {
-			char *src_nidstr = libcfs_nidstr(src_nid);
+	if (src_nid) {
+		char *src_nidstr = libcfs_nidstr(src_nid);
 
-			yaml_scalar_event_initialize(&event, NULL,
-						     (yaml_char_t *)YAML_STR_TAG,
-						     (yaml_char_t *)"source",
-						     strlen("source"), 1, 0,
-						     YAML_PLAIN_SCALAR_STYLE);
-			rc = yaml_emitter_emit(&output, &event);
-			if (rc == 0)
-				goto emitter_error;
+		yaml_scalar_event_initialize(&event, NULL,
+					     (yaml_char_t *)YAML_STR_TAG,
+					     (yaml_char_t *)"source",
+					     strlen("source"), 1, 0,
+					     YAML_PLAIN_SCALAR_STYLE);
+		rc = yaml_emitter_emit(&output, &event);
+		if (rc == 0)
+			goto emitter_error;
 
-			yaml_scalar_event_initialize(&event, NULL,
-						     (yaml_char_t *)YAML_STR_TAG,
-						     (yaml_char_t *)src_nidstr,
-						     strlen(src_nidstr), 1, 0,
-						     YAML_PLAIN_SCALAR_STYLE);
-			rc = yaml_emitter_emit(&output, &event);
-			if (rc == 0)
-				goto emitter_error;
-		}
+		yaml_scalar_event_initialize(&event, NULL,
+					     (yaml_char_t *)YAML_STR_TAG,
+					     (yaml_char_t *)src_nidstr,
+					     strlen(src_nidstr), 1, 0,
+					     YAML_PLAIN_SCALAR_STYLE);
+		rc = yaml_emitter_emit(&output, &event);
+		if (rc == 0)
+			goto emitter_error;
+	}
 
-		if (timeout != 1000) {
-			char time[23];
+	if (timeout != 1000) {
+		char time[23];
 
-			yaml_scalar_event_initialize(&event, NULL,
-						     (yaml_char_t *)YAML_STR_TAG,
-						     (yaml_char_t *)"timeout",
-						     strlen("timeout"), 1, 0,
-						     YAML_PLAIN_SCALAR_STYLE);
-			rc = yaml_emitter_emit(&output, &event);
-			if (rc == 0)
-				goto emitter_error;
+		yaml_scalar_event_initialize(&event, NULL,
+					     (yaml_char_t *)YAML_STR_TAG,
+					     (yaml_char_t *)"timeout",
+					     strlen("timeout"), 1, 0,
+					     YAML_PLAIN_SCALAR_STYLE);
+		rc = yaml_emitter_emit(&output, &event);
+		if (rc == 0)
+			goto emitter_error;
 
-			snprintf(time, sizeof(time), "%u", timeout);
-			yaml_scalar_event_initialize(&event, NULL,
-						     (yaml_char_t *)YAML_INT_TAG,
-						     (yaml_char_t *)time,
-						     strlen(time), 1, 0,
-						     YAML_PLAIN_SCALAR_STYLE);
-			rc = yaml_emitter_emit(&output, &event);
-			if (rc == 0)
-				goto emitter_error;
-		}
+		snprintf(time, sizeof(time), "%u", timeout);
+		yaml_scalar_event_initialize(&event, NULL,
+					     (yaml_char_t *)YAML_INT_TAG,
+					     (yaml_char_t *)time,
+					     strlen(time), 1, 0,
+					     YAML_PLAIN_SCALAR_STYLE);
+		rc = yaml_emitter_emit(&output, &event);
+		if (rc == 0)
+			goto emitter_error;
 	}
 
 	yaml_scalar_event_initialize(&event, NULL,
@@ -5258,7 +6297,7 @@ static int yaml_lnet_ping(char *group, int timeout, struct lnet_nid *src_nid,
 		rc = lustre_lnet_parse_nid_range(&head, nids[i], &msg);
 		if (rc < 0) {
 			lustre_lnet_free_list(&head);
-			yaml_emitter_delete(&output);
+			yaml_emitter_cleanup(&output);
 			errno = rc;
 			rc = 0;
 			goto free_reply;
@@ -5309,14 +6348,14 @@ emitter_error:
 		if (rc == 0)
 			msg = yaml_parser_get_reader_error(&reply);
 	}
-	yaml_emitter_delete(&output);
+	yaml_emitter_cleanup(&output);
 free_reply:
 	if (rc == 0) {
 		yaml_lnet_print_error(-1, group, msg);
 		rc = -EINVAL;
 	}
 
-	yaml_parser_delete(&reply);
+	yaml_parser_cleanup(&reply);
 	nl_socket_free(sk);
 
 	return rc == 1 ? 0 : rc;
@@ -5361,16 +6400,21 @@ static int jt_ping(int argc, char **argv)
 	if (rc < 0)
 		return rc;
 
-	rc = yaml_lnet_ping("ping", timeout, &src, optind, argc, argv,
-			    NLM_F_DUMP);
+	rc = yaml_lnet_ping("ping", timeout, src_nidstr ? &src : NULL, optind,
+			    argc, argv, NLM_F_DUMP);
 	if (rc <= 0) {
 		if (rc != -EOPNOTSUPP)
 			return rc;
 	}
 
-	for (; optind < argc; optind++)
-		rc = lustre_lnet_ping_nid(argv[optind], src_nidstr, timeout, -1,
-					  &show_rc, &err_rc);
+	for (; optind < argc; optind++) {
+		int rc2;
+
+		rc2 = lustre_lnet_ping_nid(argv[optind], src_nidstr, timeout,
+					   -1, &show_rc, &err_rc);
+		if (rc2 != 0 && (rc > 0 || rc == -EOPNOTSUPP))
+			rc = rc2;
+	}
 
 	if (show_rc)
 		cYAML_print_tree(show_rc);
@@ -5574,33 +6618,6 @@ static int jt_del_udsp(int argc, char **argv)
 }
 
 static int
-fault_attr_nid_parse(char *str, lnet_nid_t *nid_p)
-{
-	lnet_nid_t nid;
-	__u32 net;
-	int rc = 0;
-
-	/* NB: can't support range ipaddress except * and *@net */
-	if (strlen(str) > 2 && str[0] == '*' && str[1] == '@') {
-		net = libcfs_str2net(str + 2);
-		if (net == LNET_NET_ANY)
-			goto failed;
-
-		nid = LNET_MKNID(net, LNET_NIDADDR(LNET_NID_ANY));
-	} else {
-		rc = libcfs_str2anynid(&nid, str);
-		if (!rc)
-			goto failed;
-	}
-
-	*nid_p = nid;
-	return 0;
-failed:
-	fprintf(stderr, "Invalid NID : %s\n", str);
-	return -1;
-}
-
-static int
 fault_attr_health_error_parse(char *error, __u32 *mask)
 {
 	if (!strcasecmp(error, "local_interrupt")) {
@@ -5651,91 +6668,96 @@ fault_attr_health_error_parse(char *error, __u32 *mask)
 	return -1;
 }
 
-static int jt_add_fault(int argc, char **argv)
+static int
+fault_attr_msg_parse(char *msg_str, __u32 *mask_p)
 {
-	const char *const short_options = "r:s:d:o:r:i:l:p:m:e:nx";
+	if (!strcasecmp(msg_str, "put")) {
+		*mask_p |= LNET_PUT_BIT;
+		return 0;
+
+	} else if (!strcasecmp(msg_str, "ack")) {
+		*mask_p |= LNET_ACK_BIT;
+		return 0;
+
+	} else if (!strcasecmp(msg_str, "get")) {
+		*mask_p |= LNET_GET_BIT;
+		return 0;
+
+	} else if (!strcasecmp(msg_str, "reply")) {
+		*mask_p |= LNET_REPLY_BIT;
+		return 0;
+	}
+
+	fprintf(stderr, "unknown message type %s\n", msg_str);
+	return -1;
+}
+
+static int
+fault_attr_ptl_parse(char *ptl_str, __u64 *mask_p)
+{
+	unsigned long rc = strtoul(optarg, NULL, 0);
+
+	if (rc >= 64) {
+		fprintf(stderr, "invalid portal: %lu\n", rc);
+		return -1;
+	}
+
+	*mask_p |= (1ULL << rc);
+	return 0;
+}
+
+static int jt_fault_add(__u32 opc, int argc, char **argv)
+{
 	static const struct option long_options[] = {
-		{ .name = "rule_type",	.has_arg = required_argument, .val = 't' },
-		{ .name = "source",	.has_arg = required_argument, .val = 's' },
-		{ .name = "dest",	.has_arg = required_argument, .val = 'd' },
-		{ .name = "rate",	.has_arg = required_argument, .val = 'r' },
-		{ .name = "interval",	.has_arg = required_argument, .val = 'i' },
-		{ .name = "random",	.has_arg = no_argument,       .val = 'n' },
-		{ .name = "latency",	.has_arg = required_argument, .val = 'l' },
-		{ .name = "portal",	.has_arg = required_argument, .val = 'p' },
-		{ .name = "message",	.has_arg = required_argument, .val = 'm' },
-		{ .name = "health_error", .has_arg = required_argument, .val = 'e' },
-		{ .name = "local_nid",	.has_arg = required_argument, .val = 'o' },
-		{ .name = "drop_all",	.has_arg = no_argument, .val = 'x' },
-		{ .name = NULL }
+	{ .name = "dest",	.has_arg = required_argument, .val = 'd' },
+	{ .name = "health_error", .has_arg = required_argument, .val = 'e' },
+	{ .name = "interval",	.has_arg = required_argument, .val = 'i' },
+	{ .name = "latency",	.has_arg = required_argument, .val = 'l' },
+	{ .name = "message",	.has_arg = required_argument, .val = 'm' },
+	{ .name = "random",	.has_arg = no_argument,       .val = 'n' },
+	{ .name = "local_nid",	.has_arg = required_argument, .val = 'o' },
+	{ .name = "portal",	.has_arg = required_argument, .val = 'p' },
+	{ .name = "rate",	.has_arg = required_argument, .val = 'r' },
+	{ .name = "source",	.has_arg = required_argument, .val = 's' },
+	{ .name = "rule_type",	.has_arg = required_argument, .val = 't' },
+	{ .name = "drop_all",	.has_arg = no_argument, .val = 'x' },
+	{ .name = NULL }
 	};
-	int opc = 0, opt, rc2, rc = 0;
+	char *optstr, *cmd;
+	char *fa_src = NULL, *fa_dst = NULL, *fa_local_nid = NULL;
+	int opt, rc = 0;
 	struct lnet_fault_attr attr;
 	yaml_document_t results;
 	yaml_emitter_t debug;
 
-	rc = check_cmd(fault_cmds, "fault", "add", 2, argc, argv);
-	if (rc < 0)
+	if (opc == LNET_CTL_DROP_ADD) {
+		optstr = "d:e:i:m:no:p:r:s:t:x";
+		cmd = "drop";
+		rc = check_cmd(fault_drop_cmds, "drop", "add", 2, argc, argv);
+	} else {
+		optstr = "d:l:m:o:p:r:s:";
+		cmd = "delay";
+		rc = check_cmd(fault_delay_cmds, "delay", "add", 2, argc, argv);
+	}
+
+	if (rc)
 		return rc;
 
-	attr.fa_local_nid = LNET_NID_ANY;
-
-	while ((opt = getopt_long(argc, argv, short_options,
+	memset(&attr, 0, sizeof(attr));
+	while ((opt = getopt_long(argc, argv, optstr,
 				  long_options, NULL)) != -1) {
 		switch (opt) {
-		case 't':
-			if (strcmp(optarg, "delay") == 0)
-				opc = LNET_CTL_DELAY_ADD;
-			else if (strcmp(optarg, "drop") == 0)
-				opc = LNET_CTL_DROP_ADD;
-			else
-				rc = -EINVAL;
-			break;
-
-		case 'o':
-			rc2 = fault_attr_nid_parse(optarg, &attr.fa_local_nid);
-			if (rc2 < 0 && !rc)
-				rc = rc2;
-			break;
-
-		case 's': /* source NID/NET */
-			rc2 = fault_attr_nid_parse(optarg, &attr.fa_src);
-			if (rc2 < 0 && !rc)
-				rc = rc2;
-			break;
-
 		case 'd': /* dest NID/NET */
-			rc2 = fault_attr_nid_parse(optarg, &attr.fa_dst);
-			if (rc2 < 0 && !rc)
-				rc = rc2;
+			fa_dst = optarg;
 			break;
-
-		case 'r': /* drop rate */
-			if (opc == LNET_CTL_DROP_ADD)
-				attr.u.drop.da_rate = strtoul(optarg, NULL, 0);
-			else
-				attr.u.delay.la_rate = strtoul(optarg, NULL, 0);
-			break;
-
 		case 'e':
 			if (opc == LNET_CTL_DROP_ADD) {
-				rc2 = fault_attr_health_error_parse(optarg,
-								    &attr.u.drop.da_health_error_mask);
-				if (rc2 < 0 && !rc)
-					rc = rc2;
+				rc = fault_attr_health_error_parse(optarg,
+					     &attr.u.drop.da_health_error_mask);
+				if (rc)
+					goto getopt_failed;
 			}
 			break;
-
-		case 'x':
-			if (opc == LNET_CTL_DROP_ADD)
-				attr.u.drop.da_drop_all = true;
-			break;
-
-		case 'n':
-			if (opc == LNET_CTL_DROP_ADD)
-				attr.u.drop.da_random = true;
-			break;
-
 		case 'i': /* time interval (# seconds) for message drop */
 			if (opc == LNET_CTL_DROP_ADD)
 				attr.u.drop.da_interval = strtoul(optarg,
@@ -5744,72 +6766,207 @@ static int jt_add_fault(int argc, char **argv)
 				attr.u.delay.la_interval = strtoul(optarg,
 								   NULL, 0);
 			break;
-		default:
-			return 0;
-		}
-	}
-	if (rc < 0)
-		return rc;
-
-	rc = yaml_lnet_fault_rule(&results, opc, NULL, NULL, NULL, NULL);
-	if (rc < 0)
-		return rc;
-
-	rc = yaml_emitter_initialize(&debug);
-	if (rc == 0)
-		return -EINVAL;
-
-	yaml_emitter_set_indent(&debug, LNET_DEFAULT_INDENT);
-	yaml_emitter_set_output_file(&debug, stdout);
-	rc = yaml_emitter_dump(&debug, &results);
-
-	yaml_emitter_delete(&debug);
-	yaml_document_delete(&results);
-
-	return rc == 0 ? -EINVAL : 0;
-}
-
-static int jt_del_fault(int argc, char **argv)
-{
-	const char *const short_options = "t:";
-	static const struct option long_options[] = {
-		{ .name = "rule_type",	.has_arg = required_argument, .val = 't' },
-		{ .name = "source", .has_arg = required_argument, .val = 's' },
-		{ .name = "dest",   .has_arg = required_argument, .val = 'd' },
-		{ .name = NULL }
-	};
-	struct lnet_fault_attr attr;
-	yaml_document_t results;
-	yaml_emitter_t debug;
-	int opc = 0, opt, rc;
-
-	rc = check_cmd(fault_cmds, "fault", "del", 2, argc, argv);
-	if (rc < 0)
-		return rc;
-
-	while ((opt = getopt_long(argc, argv, short_options,
-				  long_options, NULL)) != -1) {
-		switch (opt) {
-		case 't':
-			if (strcmp(optarg, "delay") == 0)
-				opc = LNET_CTL_DELAY_DEL;
-			else if (strcmp(optarg, "drop") == 0)
-				opc = LNET_CTL_DROP_DEL;
+		case 'l': /* seconds to wait before activating rule */
+			attr.u.delay.la_latency = strtoul(optarg, NULL, 0);
+			break;
+		case 'm': /* message types to filter */
+			rc = fault_attr_msg_parse(optarg, &attr.fa_msg_mask);
+			if (rc != 0)
+				goto getopt_failed;
+			break;
+		case 'n':
+			if (opc == LNET_CTL_DROP_ADD)
+				attr.u.drop.da_random = true;
+			break;
+		case 'o':
+			fa_local_nid = optarg;
+			break;
+		case 'p': /* portal to filter */
+			rc = fault_attr_ptl_parse(optarg, &attr.fa_ptl_mask);
+			if (rc != 0)
+				goto getopt_failed;
+			break;
+		case 'r': /* drop rate */
+			if (opc == LNET_CTL_DROP_ADD)
+				attr.u.drop.da_rate = strtoul(optarg, NULL, 0);
 			else
-				rc = -EINVAL;
+				attr.u.delay.la_rate = strtoul(optarg, NULL, 0);
 			break;
 		case 's': /* source NID/NET */
-			rc = fault_attr_nid_parse(optarg, &attr.fa_src);
+			fa_src = optarg;
 			break;
+		case 't':
+			/* Handled by our caller */
+			break;
+		case 'x':
+			if (opc == LNET_CTL_DROP_ADD)
+				attr.u.drop.da_drop_all = true;
+			break;
+		case '?':
+			fprintf(stderr, "Unrecognized option %c\n", opt);
+			break;
+		default:
+			fprintf(stderr, "Unrecognized character %c\n", opt);
+			return 0;
+		}
+	}
 
+	if (opc == LNET_CTL_DROP_ADD) {
+		/* NB: drop rate and interval are exclusive to each other */
+		if (!((attr.u.drop.da_rate == 0) ^
+		      (attr.u.drop.da_interval == 0))) {
+			fprintf(stderr,
+				"please provide either drop rate or interval but not both at the same time.\n");
+			return -1;
+		}
+
+		if (attr.u.drop.da_random &&
+		    attr.u.drop.da_interval == 0) {
+			fprintf(stderr,
+				"please provide an interval to randomize\n");
+			return -1;
+		}
+	} else if (opc == LNET_CTL_DELAY_ADD) {
+		if (!((attr.u.delay.la_rate == 0) ^
+		      (attr.u.delay.la_interval == 0))) {
+			fprintf(stderr,
+				"please provide either delay rate or interval but not both at the same time.\n");
+			return -1;
+		}
+
+		if (attr.u.delay.la_latency == 0) {
+			fprintf(stderr, "latency cannot be zero\n");
+			return -1;
+		}
+	}
+
+	if (!(fa_src && fa_dst)) {
+		fprintf(stderr,
+			"Please provide both source and destination of %s rule\n",
+			cmd);
+		return -1;
+	}
+
+	rc = yaml_lnet_fault_rule(&results, opc, fa_src, fa_dst, fa_local_nid,
+				  &attr);
+	if (rc < 0)
+		return rc;
+
+	rc = yaml_emitter_initialize(&debug);
+	if (rc == 0)
+		return -EINVAL;
+
+	yaml_emitter_set_indent(&debug, LNET_DEFAULT_INDENT);
+	yaml_emitter_set_output_file(&debug, stdout);
+	rc = yaml_emitter_dump(&debug, &results);
+
+	yaml_emitter_delete(&debug);
+	yaml_document_delete(&results);
+
+	return rc == 0 ? -EINVAL : 0;
+
+getopt_failed:
+	optind = 1;
+	return -1;
+}
+
+static int jt_fault_drop_add(int argc, char **argv)
+{
+	return jt_fault_add(LNET_CTL_DROP_ADD, argc, argv);
+}
+
+static int jt_fault_delay_add(int argc, char **argv)
+{
+	return jt_fault_add(LNET_CTL_DELAY_ADD, argc, argv);
+}
+
+static int jt_fault_del_common(__u32 opc, int argc, char **argv)
+{
+	const char *const short_options = "ad:s:";
+	static const struct option long_options[] = {
+	{ .name = "all",   .has_arg = no_argument, .val = 'a' },
+	{ .name = "dest",   .has_arg = required_argument, .val = 'd' },
+	{ .name = "source", .has_arg = required_argument, .val = 's' },
+	{ .name = NULL }
+	};
+	yaml_document_t results;
+	yaml_emitter_t debug;
+	char *fa_src = NULL, *fa_dst = NULL;
+	bool all = false;
+	int opt, rc;
+
+	if (opc == LNET_CTL_DROP_DEL)
+		rc = check_cmd(fault_drop_cmds, "drop", "del", 2, argc, argv);
+	else
+		rc = check_cmd(fault_delay_cmds, "delay", "del", 2, argc, argv);
+
+	if (rc)
+		return rc;
+
+	while ((opt = getopt_long(argc, argv, short_options,
+				  long_options, NULL)) != -1) {
+		switch (opt) {
+		case 'a':
+			all = true;
 		case 'd': /* dest NID/NET */
-			rc = fault_attr_nid_parse(optarg, &attr.fa_dst);
+			fa_dst = optarg;
+			break;
+		case 's': /* source NID/NET */
+			fa_src = optarg;
 			break;
 		default:
 			return 0;
 		}
 	}
+
+	if (!all && !(fa_src && fa_dst)) {
+		fprintf(stderr,
+			"Failed, please provide source and destination of rule\n");
+		return -1;
+	} else if (all && (fa_src || fa_dst)) {
+		fprintf(stderr, "'-s' or '-d' cannot be combined with '-a'\n");
+		return -1;
+	}
+
+	rc = yaml_lnet_fault_rule(&results, opc, fa_src, fa_dst, NULL, NULL);
 	if (rc < 0)
+		return rc;
+
+	rc = yaml_emitter_initialize(&debug);
+	if (rc == 0)
+		return -EINVAL;
+
+	yaml_emitter_set_indent(&debug, LNET_DEFAULT_INDENT);
+	yaml_emitter_set_output_file(&debug, stdout);
+	rc = yaml_emitter_dump(&debug, &results);
+	yaml_emitter_delete(&debug);
+	yaml_document_delete(&results);
+
+	return rc == 0 ? -EINVAL : 0;
+}
+
+static int jt_fault_drop_del(int argc, char **argv)
+{
+	return jt_fault_del_common(LNET_CTL_DROP_DEL, argc, argv);
+}
+
+static int jt_fault_delay_del(int argc, char **argv)
+{
+	return jt_fault_del_common(LNET_CTL_DELAY_DEL, argc, argv);
+}
+
+static int jt_fault_reset_common(__u32 opc, int argc, char **argv)
+{
+	yaml_document_t results;
+	yaml_emitter_t debug;
+	int rc;
+
+	if (opc == LNET_CTL_DROP_RESET)
+		rc = check_cmd(fault_drop_cmds, "drop", "reset", 2, argc, argv);
+	else
+		rc = check_cmd(fault_delay_cmds, "delay", "reset", 2, argc,
+			       argv);
+	if (rc)
 		return rc;
 
 	rc = yaml_lnet_fault_rule(&results, opc, NULL, NULL, NULL, NULL);
@@ -5829,37 +6986,28 @@ static int jt_del_fault(int argc, char **argv)
 	return rc == 0 ? -EINVAL : 0;
 }
 
-static int jt_reset_fault(int argc, char **argv)
+static int jt_fault_drop_reset(int argc, char **argv)
 {
-	const char *const short_options = "r:";
-	static const struct option long_options[] = {
-		{ .name = "rule_type",	.has_arg = required_argument, .val = 't' },
-		{ .name = NULL }
-	};
+	return jt_fault_reset_common(LNET_CTL_DROP_RESET, argc, argv);
+}
+
+static int jt_fault_delay_reset(int argc, char **argv)
+{
+	return jt_fault_reset_common(LNET_CTL_DELAY_RESET, argc, argv);
+}
+
+static int jt_fault_show_common(__u32 opc, int argc, char **argv)
+{
 	yaml_document_t results;
 	yaml_emitter_t debug;
-	int opc = 0, opt, rc;
+	int rc;
 
-	rc = check_cmd(fault_cmds, "fault", "reset", 2, argc, argv);
-	if (rc < 0)
-		return rc;
-
-	while ((opt = getopt_long(argc, argv, short_options,
-				  long_options, NULL)) != -1) {
-		switch (opt) {
-		case 't':
-			if (strcmp(optarg, "delay") == 0)
-				opc = LNET_CTL_DELAY_RESET;
-			else if (strcmp(optarg, "drop") == 0)
-				opc = LNET_CTL_DROP_RESET;
-			else
-				rc = -EINVAL;
-			break;
-		default:
-			return 0;
-		}
-	}
-	if (rc < 0)
+	if (opc == LNET_CTL_DROP_LIST)
+		rc = check_cmd(fault_drop_cmds, "drop", "show", 1, argc, argv);
+	else
+		rc = check_cmd(fault_delay_cmds, "delay", "show", 1, argc,
+			       argv);
+	if (rc)
 		return rc;
 
 	rc = yaml_lnet_fault_rule(&results, opc, NULL, NULL, NULL, NULL);
@@ -5873,61 +7021,21 @@ static int jt_reset_fault(int argc, char **argv)
 	yaml_emitter_set_indent(&debug, LNET_DEFAULT_INDENT);
 	yaml_emitter_set_output_file(&debug, stdout);
 	rc = yaml_emitter_dump(&debug, &results);
-	yaml_emitter_delete(&debug);
+
+	yaml_emitter_cleanup(&debug);
 	yaml_document_delete(&results);
 
 	return rc == 0 ? -EINVAL : 0;
 }
 
-int jt_show_fault(int argc, char **argv)
+static int jt_fault_drop_show(int argc, char **argv)
 {
-	const char *const short_options = "t:";
-	static const struct option long_options[] = {
-		{ .name = "rule_type",	.has_arg = required_argument, .val = 't' },
-		{ .name = NULL }
-	};
-	yaml_document_t results;
-	yaml_emitter_t debug;
-	int opc = 0, opt, rc;
+	return jt_fault_show_common(LNET_CTL_DROP_LIST, argc, argv);
+}
 
-	rc = check_cmd(fault_cmds, "fault", "show", 2, argc, argv);
-	if (rc < 0)
-		return rc;
-
-	while ((opt = getopt_long(argc, argv, short_options,
-				  long_options, NULL)) != -1) {
-		switch (opt) {
-		case 't':
-			if (strcmp(optarg, "delay") == 0)
-				opc = LNET_CTL_DELAY_LIST;
-			else if (strcmp(optarg, "drop") == 0)
-				opc = LNET_CTL_DROP_LIST;
-			else
-				rc = -EINVAL;
-			break;
-		default:
-			rc = -EINVAL;
-		}
-	}
-	if (rc < 0)
-		return rc;
-
-	rc = yaml_lnet_fault_rule(&results, opc, NULL, NULL, NULL, NULL);
-	if (rc < 0)
-		return rc;
-
-	rc = yaml_emitter_initialize(&debug);
-	if (rc == 0)
-		return -EINVAL;
-
-	yaml_emitter_set_indent(&debug, LNET_DEFAULT_INDENT);
-	yaml_emitter_set_output_file(&debug, stdout);
-	rc = yaml_emitter_dump(&debug, &results);
-
-	yaml_emitter_delete(&debug);
-	yaml_document_delete(&results);
-
-	return rc == 0 ? -EINVAL : 0;
+static int jt_fault_delay_show(int argc, char **argv)
+{
+	return jt_fault_show_common(LNET_CTL_DELAY_LIST, argc, argv);
 }
 
 int main(int argc, char **argv)

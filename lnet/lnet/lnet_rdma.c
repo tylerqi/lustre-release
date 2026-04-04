@@ -2,28 +2,19 @@
 
 /* This file is part of Lustre, http://www.lustre.org/ */
 
-#ifdef WITH_GDS
-#include "nvfs-dma.h"
-#else
-#include <lnet/lnet_gds.h>
-#endif
-
 #include <lnet/lnet_rdma.h>
-#include <libcfs/libcfs.h>
+#include <linux/libcfs/libcfs.h>
 
 /* MAX / MIN conflict */
 #include <lnet/lib-lnet.h>
-
-#define NVFS_IO_ERR			-1
-#define NVFS_CPU_REQ			-2
 
 #define NVFS_HOLD_TIME_MS 1000
 
 #define ERROR_PRINT_DEADLINE 3600
 
-atomic_t nvfs_shutdown = ATOMIC_INIT(1);
-struct nvfs_dma_rw_ops *nvfs_ops = NULL;
-struct percpu_counter nvfs_n_ops;
+static atomic_t nvfs_shutdown = ATOMIC_INIT(1);
+static struct nvfs_dma_rw_ops *nvfs_ops;
+static struct percpu_counter nvfs_n_ops;
 
 static inline long nvfs_count_ops(void)
 {

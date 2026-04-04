@@ -1,41 +1,22 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/obdclass/page_pools.c
  *
  * Author: Eric Mei <ericm@clusterfs.com>
  */
 
 #define DEBUG_SUBSYSTEM S_SEC
 
-#include <libcfs/linux/linux-mem.h>
+#include <lustre_compat/linux/shrinker.h>
+#include <lustre_compat/linux/linux-mem.h>
 
 #include <obd.h>
 #include <obd_class.h>
@@ -46,13 +27,10 @@
 #include <lustre_sec.h>
 
 /* We have a pool for every power of 2 number of pages. Each pool must
- * be able to provide at least one object of PTLRPC_MAX_BRW_SIZE * 2.
- * Multiplying MAX_BRW_SIZE by 2 is a hack required to successfully
- * compress and uncompress chunks in decompress/compress_request(ask
- * Artem(ablagodarenko@ddn.com) for details why it failed). Most pools
- * will be unused, but that's OK - unused pools are very cheap.
+ * be able to provide at least one object of PTLRPC_MAX_BRW_SIZE.
+ * Most pools will be unused, but that's OK - unused pools are very cheap.
  */
-#define POOLS_COUNT (PTLRPC_MAX_BRW_BITS - PAGE_SHIFT + 1)
+#define POOLS_COUNT (PTLRPC_MAX_BRW_BITS - PAGE_SHIFT)
 #define PAGES_TO_MiB(pages)	((pages) >> (20 - PAGE_SHIFT))
 #define MiB_TO_PAGES(mb)	((mb) << (20 - PAGE_SHIFT))
 /* deprecated - see pool_max_memory_mb below */
@@ -127,7 +105,6 @@ static struct obd_page_pool {
 	/*
 	 * memory shrinker
 	 */
-	struct ll_shrinker_ops opp_shops;
 	struct shrinker *pool_shrinker;
 	struct mutex add_pages_mutex;
 } **page_pools;
@@ -190,7 +167,7 @@ int encrypt_page_pools_seq_show(struct seq_file *m, void *v)
 		"max waitqueue depth:     %u\n"
 		"max wait time ms:        %lld\n"
 		"out of mem:              %lu\n",
-		cfs_totalram_pages(), PTRS_PER_PAGE,
+		compat_totalram_pages(), PTRS_PER_PAGE,
 		pool->opp_max_objects,
 		pool->opp_max_ptr_pages,
 		pool->opp_total_objects,
@@ -224,7 +201,7 @@ int page_pools_seq_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "physical_pages: %lu\n"
 		      "pools:\n",
-		      cfs_totalram_pages());
+		      compat_totalram_pages());
 
 	for (pool_order = 0; pool_order < pools_count; pool_order++) {
 		pool = page_pools[pool_order];
@@ -396,19 +373,6 @@ static unsigned long pool_shrink_scan(struct shrinker *s,
 	return sc->nr_to_scan;
 }
 
-#ifndef HAVE_SHRINKER_COUNT
-/*
- * could be called frequently for query (@nr_to_scan == 0).
- * we try to keep at least PTLRPC_MAX_BRW_PAGES pages in the pool.
- */
-static int pool_shrink(struct shrinker *shrinker, struct shrink_control *sc)
-{
-	pool_shrink_scan(shrinker, sc);
-
-	return pool_shrink_count(shrinker, sc);
-}
-#endif /* HAVE_SHRINKER_COUNT */
-
 static inline
 int nobjects_to_nptr_pages(unsigned long nobjects)
 {
@@ -552,10 +516,11 @@ static void pool_insert_ptrs(void ***ptr_pages, int nptr_pages, int nobjects,
 #define POOL_INIT_SIZE (PTLRPC_MAX_BRW_SIZE / 4)
 static int pool_add_objects(int nobjects, struct obd_page_pool *page_pool)
 {
-	void ***ptr_pages;
+	unsigned int pool_order = page_pool->opp_order;
 	int nptr_pages, alloced = 0;
 	int i, j, rc = -ENOMEM;
-	unsigned int pool_order = page_pool->opp_order;
+	unsigned long clean;
+	void ***ptr_pages;
 
 	if (nobjects < POOL_INIT_SIZE / object_size(page_pool))
 		nobjects = POOL_INIT_SIZE / object_size(page_pool);
@@ -588,6 +553,18 @@ static int pool_add_objects(int nobjects, struct obd_page_pool *page_pool)
 			else {
 				OBD_ALLOC_LARGE(ptr_pages[i][j],
 					object_size(page_pool));
+				/*
+				 * It is possible that at some moment kmalloc
+				 * will start to return non-page aligned memory,
+				 * so leave this assort for quicker problem
+				 * detection
+				 */
+				LASSERTF(IS_ALIGNED((unsigned long)
+						    (ptr_pages[i][j]),
+						    PAGE_SIZE),
+				    "Page %p (order %i) is not aligned to PAGE_SIZE",
+				    ptr_pages[i][j], page_pool->opp_order);
+
 			}
 			if (ptr_pages[i][j] == NULL)
 				goto out_ptr_pages;
@@ -604,12 +581,15 @@ static int pool_add_objects(int nobjects, struct obd_page_pool *page_pool)
 
 out_ptr_pages:
 	if (rc) {
-		pool_cleanup(ptr_pages, nptr_pages, page_pool);
+		clean = pool_cleanup(ptr_pages, nptr_pages, page_pool);
+		CDEBUG(D_SEC, "cleaned %lu elements from pool\n", clean);
+		OBD_FREE_PTR_ARRAY(ptr_pages, nptr_pages);
 	}
 out:
 	if (rc) {
 		page_pool->opp_st_grow_fails++;
-		CERROR("Failed to allocate %d objects: rc = %d\n", nobjects, rc);
+		CERROR("Failed to allocate %d objects: rc = %d\n", nobjects,
+		       rc);
 	}
 
 	mutex_unlock(&page_pool->add_pages_mutex);
@@ -686,6 +666,13 @@ static inline void **page_from_pagearray(void *array, int index)
 	return (void **)&pa[index];
 }
 
+static inline void **folio_from_folioarray(void *array, int index)
+{
+	struct folio **pa = (struct folio **)array;
+
+	return (void **)&pa[index];
+}
+
 static inline void **object_from_bufarray(void *array, int index)
 {
 	return (void **)array;
@@ -700,15 +687,12 @@ static inline int __obd_pool_get_objects(void *array, unsigned int count,
 				       unsigned int order,
 				       void **(*object_from)(void *, int))
 {
-	struct obd_page_pool *page_pool = page_pools[order];
+	struct obd_page_pool *page_pool;
 	wait_queue_entry_t waitlink;
 	unsigned long this_idle = -1;
 	u64 tick_ns = 0;
 	int p_idx, g_idx;
 	int i, rc = 0;
-
-	if (!array || count <= 0 || count > page_pool->opp_max_objects)
-		return -EINVAL;
 
 	if (order >= pools_count) {
 		CDEBUG(D_SEC,
@@ -718,6 +702,10 @@ static inline int __obd_pool_get_objects(void *array, unsigned int count,
 		return -EINVAL;
 	}
 
+	if (!array || count <= 0 || count > page_pools[order]->opp_max_objects)
+		return -EINVAL;
+
+	page_pool = page_pools[order];
 	spin_lock(&page_pool->opp_lock);
 
 	page_pool->opp_st_access++;
@@ -862,6 +850,13 @@ int obd_pool_get_pages_array(struct page **pa, unsigned int count)
 }
 EXPORT_SYMBOL(obd_pool_get_pages_array);
 
+int obd_pool_get_folios_array(struct folio **pa, unsigned int count)
+{
+	return __obd_pool_get_objects((void *)pa, count, 0,
+					folio_from_folioarray);
+}
+EXPORT_SYMBOL(obd_pool_get_folios_array);
+
 /* get 2^order pages region */
 int obd_pool_get_objects(void **pages, unsigned int order)
 {
@@ -966,6 +961,17 @@ void obd_pool_put_pages_array(struct page **pa, unsigned int count)
 }
 EXPORT_SYMBOL(obd_pool_put_pages_array);
 
+void obd_pool_put_folios_array(struct folio **pa, unsigned int count)
+{
+	int rc;
+
+	rc = __obd_pool_put_objects((void *)pa, count, 0,
+				    folio_from_folioarray);
+	if (rc)
+		CDEBUG(D_SEC, "error putting pages in pool: %d\n", rc);
+}
+EXPORT_SYMBOL(obd_pool_put_folios_array);
+
 /* put 2^order pages region */
 void obd_pool_put_objects(void *buf, unsigned int order)
 {
@@ -1063,7 +1069,8 @@ static inline void pool_ptrs_free(struct obd_page_pool *pool)
 int obd_pool_init(void)
 {
 	struct obd_page_pool *pool;
-	int pool_max_pages = cfs_totalram_pages() / POOLS_COUNT;
+	int pool_max_pages = compat_totalram_pages() / POOLS_COUNT;
+	struct dentry *parent;
 	int pool_order = 0;
 	int to_revert;
 	int rc = 0;
@@ -1073,7 +1080,7 @@ int obd_pool_init(void)
 	if (pool_max_memory_mb == 0 && enc_pool_max_memory_mb > 0)
 		pool_max_memory_mb = enc_pool_max_memory_mb;
 	if (pool_max_memory_mb > 0 &&
-		pool_max_memory_mb <= PAGES_TO_MiB(cfs_totalram_pages()))
+		pool_max_memory_mb <= PAGES_TO_MiB(compat_totalram_pages()))
 		pool_max_pages = MiB_TO_PAGES(pool_max_memory_mb);
 
 	OBD_ALLOC(page_pools, POOLS_COUNT * sizeof(*page_pools));
@@ -1083,6 +1090,8 @@ int obd_pool_init(void)
 	OBD_ALLOC(pool_shrinkers, POOLS_COUNT * sizeof(*pool_shrinkers));
 	if (pool_shrinkers == NULL)
 		GOTO(fail2, rc = -ENOMEM);
+
+	parent = debugfs_create_dir("page_pools", debugfs_lustre_root);
 
 	for (pool_order = 0; pool_order < POOLS_COUNT; pool_order++) {
 		OBD_ALLOC(page_pools[pool_order], sizeof(**page_pools));
@@ -1100,7 +1109,8 @@ int obd_pool_init(void)
 		 */
 		if (!pool->opp_max_ptr_pages) {
 			CWARN("Cannot allocate pool %i, not enough memory. Max available compression chunk is %lu.\n",
-			      pool_order, PAGE_SIZE << (pool_order - 1));
+			      pool_order,
+			      pool_order ? PAGE_SIZE << (pool_order - 1) : 0);
 			pools_count = pool_order;
 			OBD_FREE(pool, sizeof(**page_pools));
 			break;
@@ -1118,19 +1128,26 @@ int obd_pool_init(void)
 		CDEBUG(D_SEC, "Allocated pool %i\n", pool_order);
 		if (pool->opp_ptr_pages == NULL)
 			GOTO(fail, rc = -ENOMEM);
+
 		/* Pass pool number as part of pool_shrinker_seeks value */
-#ifdef HAVE_SHRINKER_COUNT
-		pool->opp_shops.count_objects = pool_shrink_count;
-		pool->opp_shops.scan_objects = pool_shrink_scan;
-#else
-		pool->opp_shops.shrink = pool_shrink;
-		pool->opp_shops.seeks = DEFAULT_SEEKS;
-#endif
-		pool->pool_shrinker = ll_shrinker_create(&pool->opp_shops, 0,
-							 "obd_pool");
+		pool->pool_shrinker = ll_shrinker_alloc(0, "obd_pool");
 		if (IS_ERR(pool->pool_shrinker))
 			GOTO(fail, rc = PTR_ERR(pool->pool_shrinker));
 
+		pool->pool_shrinker->count_objects = pool_shrink_count;
+		pool->pool_shrinker->scan_objects = pool_shrink_scan;
+
+		ll_shrinker_register(pool->pool_shrinker);
+
+		if (parent) {
+			char path[MAX_OBD_NAME];
+
+			scnprintf(path, sizeof(path), "obd_pool-%d",
+				  pool_order);
+			ldebugfs_add_symlink(path, parent->d_name.name,
+					     "../../shrinker/%s",
+					     shrinker_debugfs_path(pool->pool_shrinker));
+		}
 		pool_shrinkers[pool_order] = pool->pool_shrinker;
 		mutex_init(&pool->add_pages_mutex);
 	}
@@ -1163,7 +1180,7 @@ void obd_pool_fini(void)
 
 	for (pool_order = 0; pool_order < pools_count; pool_order++) {
 		pool = page_pools[pool_order];
-		shrinker_free(pool->pool_shrinker);
+		ll_shrinker_free(pool->pool_shrinker);
 		LASSERT(pool->opp_ptr_pages);
 		LASSERT(pool->opp_total_objects == pool->opp_free_objects);
 

@@ -16,9 +16,14 @@
 #include "kfilnd_dom.h"
 #include "kfilnd_peer.h"
 #include <asm/checksum.h>
+#include <linux/mempool.h>
 
 static struct kmem_cache *tn_cache;
 static struct kmem_cache *imm_buf_cache;
+
+/* Mempool for guaranteed allocation under memory pressure */
+static mempool_t *tn_cache_mp;
+static mempool_t *imm_buf_cache_mp;
 
 static __sum16 kfilnd_tn_cksum(void *ptr, int nob)
 {
@@ -153,13 +158,6 @@ static void kfilnd_tn_pack_immed_msg(struct kfilnd_transaction *tn)
 
 	/* Pack the protocol header and payload. */
 	lnet_hdr_to_nid4(&tn->tn_lntmsg->msg_hdr, &msg->proto.immed.hdr);
-
-	lnet_copy_kiov2flat(KFILND_IMMEDIATE_MSG_SIZE,
-			    msg,
-			    offsetof(struct kfilnd_msg,
-				     proto.immed.payload),
-			    tn->tn_num_iovec, tn->tn_kiov, 0,
-			    tn->tn_nob);
 
 	/* Pack the transport header. */
 	msg->magic = KFILND_MSG_MAGIC;
@@ -447,6 +445,26 @@ static void kfilnd_tn_finalize(struct kfilnd_transaction *tn, bool *tn_released)
 	if (tn->tn_posted_buf)
 		kfilnd_ep_imm_buffer_put(tn->tn_posted_buf);
 
+#ifdef HAVE_KFI_SGL
+	if (tn->tn_sgt_mapped) {
+		struct device *device = tn->tn_ep->end_dev->device;
+		enum dma_data_direction dmadir = tn->tn_dmadir;
+		int rc = 0;
+
+		if (tn->tn_gpu)
+			rc = lnet_rdma_unmap_sg(device, tn->tn_sgt.sgl,
+						tn->tn_sgt.nents, dmadir);
+		else
+			dma_unmap_sgtable(device, &tn->tn_sgt, dmadir, 0);
+
+		CDEBUG(D_NET,
+		       "tn %p tn_sgt %p sgl %p dir %u orig_nents %u nents %u gpu %s rc %d\n",
+		       tn, &tn->tn_sgt, tn->tn_sgt.sgl, tn->tn_dmadir,
+		       tn->tn_sgt.orig_nents, tn->tn_sgt.nents,
+		       tn->tn_gpu ? "y" : "n", rc);
+	}
+#endif
+
 	/* Finalize LNet operation. */
 	if (tn->tn_lntmsg) {
 		tn->tn_lntmsg->msg_health_status = tn->hstatus;
@@ -567,12 +585,14 @@ static int kfilnd_tn_state_send_failed(struct kfilnd_transaction *tn,
 					"Unexpected error during cancel tagged receive: rc=%d",
 					rc);
 			LBUG();
+			return -EINVAL;
 		}
 		break;
 
 	default:
 		KFILND_TN_ERROR(tn, "Invalid %s event", tn_event_to_str(event));
 		LBUG();
+		return -EINVAL;
 	}
 }
 
@@ -633,7 +653,23 @@ static int kfilnd_tn_state_tagged_recv_posted(struct kfilnd_transaction *tn,
 	default:
 		KFILND_TN_ERROR(tn, "Invalid %s event", tn_event_to_str(event));
 		LBUG();
+		return -EINVAL;
 	}
+}
+
+static bool kfilnd_tn_can_replay(struct kfilnd_transaction *tn,
+				 enum tn_events event)
+{
+	if (event == TN_EVENT_INIT_IMMEDIATE)
+		return true;
+
+	if (event == TN_EVENT_INIT_BULK)
+		return true;
+
+	if (event == TN_EVENT_RX_OK && tn->tn_early_rx)
+		return true;
+
+	return false;
 }
 
 static int kfilnd_tn_state_idle(struct kfilnd_transaction *tn,
@@ -653,7 +689,7 @@ static int kfilnd_tn_state_idle(struct kfilnd_transaction *tn,
 	 * message for replay.
 	 */
 	if (kfilnd_peer_needs_throttle(tn->tn_kp) &&
-	    (event == TN_EVENT_INIT_IMMEDIATE || event == TN_EVENT_INIT_BULK)) {
+	    kfilnd_tn_can_replay(tn, event)) {
 		if (kfilnd_peer_deleted(tn->tn_kp)) {
 			/* We'll assign a NETWORK_TIMEOUT message health status
 			 * below because we don't know why this peer was marked
@@ -789,10 +825,15 @@ static int kfilnd_tn_state_idle(struct kfilnd_transaction *tn,
 			rc = 0;
 		}
 
-		/* If this is a new peer then we cannot progress the transaction
-		 * and must drop it
-		 */
+		msg = tn->tn_rx_msg.msg;
+
 		if (kfilnd_peer_is_new_peer(tn->tn_kp)) {
+			if (msg->type == KFILND_MSG_IMMEDIATE ||
+			    msg->version == KFILND_MSG_VERSION_2) {
+				tn->tn_early_rx = true;
+				KFILND_TN_DEBUG(tn, "Replay early rx\n");
+				return -EAGAIN;
+			}
 			KFILND_TN_ERROR(tn,
 					"Dropping message from %s due to stale peer",
 					libcfs_nid2str(tn->tn_kp->kp_nid));
@@ -803,9 +844,7 @@ static int kfilnd_tn_state_idle(struct kfilnd_transaction *tn,
 		}
 
 		LASSERT(kfilnd_peer_is_new_peer(tn->tn_kp) == false);
-		msg = tn->tn_rx_msg.msg;
 
-		/* Update the NID address with the new preferred RX context. */
 		kfilnd_peer_alive(tn->tn_kp);
 
 		/* Pass message up to LNet
@@ -1525,6 +1564,15 @@ void kfilnd_tn_event_handler(struct kfilnd_transaction *tn,
 		mutex_unlock(&tn->tn_lock);
 }
 
+#ifdef HAVE_KFI_SGL
+static void kfilnd_tn_sgt_free(struct kfilnd_transaction *tn)
+{
+	/* Restore orig_nents before free */
+	tn->tn_sgt.orig_nents = tn->tn_sgt_alloc_nents;
+	sg_free_table(&tn->tn_sgt);
+}
+#endif
+
 /**
  * kfilnd_tn_free() - Free a transaction.
  */
@@ -1539,11 +1587,16 @@ void kfilnd_tn_free(struct kfilnd_transaction *tn)
 	if (tn->tn_mr_key)
 		kfilnd_ep_put_key(tn->tn_ep, tn->tn_mr_key);
 
+#ifdef HAVE_KFI_SGL
+	if (tn->tn_sgt_mapped)
+		kfilnd_tn_sgt_free(tn);
+#endif
+
 	/* Free send message buffer if needed. */
 	if (tn->tn_tx_msg.msg)
-		kmem_cache_free(imm_buf_cache, tn->tn_tx_msg.msg);
+		mempool_free(tn->tn_tx_msg.msg, imm_buf_cache_mp);
 
-	kmem_cache_free(tn_cache, tn);
+	mempool_free(tn, tn_cache_mp);
 }
 
 /*
@@ -1565,14 +1618,16 @@ static struct kfilnd_transaction *kfilnd_tn_alloc_common(struct kfilnd_ep *ep,
 
 	tn_alloc_ts = ktime_get();
 
-	tn = kmem_cache_zalloc(tn_cache, GFP_KERNEL);
+	tn = mempool_alloc(tn_cache_mp, GFP_NOFS);
 	if (!tn) {
 		rc = -ENOMEM;
 		goto err;
 	}
+	/* mempool_alloc doesn't zero, so manually zero the structure */
+	memset(tn, 0, sizeof(*tn));
 
 	if (alloc_msg) {
-		tn->tn_tx_msg.msg = kmem_cache_alloc(imm_buf_cache, GFP_KERNEL);
+		tn->tn_tx_msg.msg = mempool_alloc(imm_buf_cache_mp, GFP_NOFS);
 		if (!tn->tn_tx_msg.msg) {
 			rc = -ENOMEM;
 			goto err_free_tn;
@@ -1588,9 +1643,9 @@ static struct kfilnd_transaction *kfilnd_tn_alloc_common(struct kfilnd_ep *ep,
 	tn->tn_response_rx = ep->end_context_id;
 	tn->tn_state = TN_STATE_IDLE;
 	tn->hstatus = LNET_MSG_STATUS_OK;
-	tn->deadline = ktime_get_seconds() + lnet_get_lnd_timeout();
+	tn->deadline = ktime_get_seconds() + kfilnd_timeout();
 	tn->tn_replay_deadline = ktime_sub(tn->deadline,
-					   (lnet_get_lnd_timeout() / 2));
+					   (kfilnd_timeout() / 2));
 	tn->is_initiator = is_initiator;
 	INIT_WORK(&tn->timeout_work, kfilnd_tn_timeout_work);
 
@@ -1609,9 +1664,7 @@ static struct kfilnd_transaction *kfilnd_tn_alloc_common(struct kfilnd_ep *ep,
 	return tn;
 
 err_free_tn:
-	if (tn->tn_tx_msg.msg)
-		kmem_cache_free(imm_buf_cache, tn->tn_tx_msg.msg);
-	kmem_cache_free(tn_cache, tn);
+	mempool_free(tn, tn_cache_mp);
 err:
 	return ERR_PTR(rc);
 }
@@ -1744,8 +1797,33 @@ err:
  */
 void kfilnd_tn_cleanup(void)
 {
+	mempool_destroy(imm_buf_cache_mp);
+	mempool_destroy(tn_cache_mp);
 	kmem_cache_destroy(imm_buf_cache);
 	kmem_cache_destroy(tn_cache);
+}
+
+/**
+ * kfilnd_tn_get_mempool_stats() - Get mempool statistics.
+ * @tn_min: Pointer to store transaction mempool min_nr
+ * @tn_curr: Pointer to store transaction mempool curr_nr
+ * @msg_min: Pointer to store message buffer mempool min_nr
+ * @msg_curr: Pointer to store message buffer mempool curr_nr
+ *
+ * Return: 0 if mempools are initialized, -EINVAL otherwise.
+ */
+int kfilnd_tn_get_mempool_stats(int *tn_min, int *tn_curr,
+				int *msg_min, int *msg_curr)
+{
+	if (!tn_cache_mp || !imm_buf_cache_mp)
+		return -EINVAL;
+
+	*tn_min = tn_cache_mp->min_nr;
+	*tn_curr = tn_cache_mp->curr_nr;
+	*msg_min = imm_buf_cache_mp->min_nr;
+	*msg_curr = imm_buf_cache_mp->curr_nr;
+
+	return 0;
 }
 
 /**
@@ -1755,6 +1833,31 @@ void kfilnd_tn_cleanup(void)
  */
 int kfilnd_tn_init(void)
 {
+	int num_cpts = cfs_cpt_number(lnet_cpt_table());
+	int min_tn, min_msg;
+	int reserve_min, msg_min, credits;
+
+#define KFILND_RESERVE_SAFETY_FACTOR 2
+
+	/* Calculate reserves: peer_credits * num_cpts * safety_factor */
+	reserve_min = kfilnd_get_tn_reserve_min();
+	msg_min = kfilnd_get_msg_reserve_min();
+	credits = kfilnd_get_peer_credits();
+
+	if (reserve_min < 0)
+		min_tn = credits * num_cpts * KFILND_RESERVE_SAFETY_FACTOR;
+	else
+		min_tn = reserve_min;
+
+	if (msg_min < 0)
+		min_msg = credits * num_cpts * KFILND_RESERVE_SAFETY_FACTOR;
+	else
+		min_msg = msg_min;
+
+	CDEBUG(D_NET, "kfilnd: mempool reserves: %d transactions, %d buffers (peer_credits=%d, num_cpts=%d, safety=%d)\n",
+	       min_tn, min_msg, credits, num_cpts,
+	       KFILND_RESERVE_SAFETY_FACTOR);
+
 	tn_cache = kmem_cache_create("kfilnd_tn",
 				     sizeof(struct kfilnd_transaction), 0,
 				     SLAB_HWCACHE_ALIGN, NULL);
@@ -1767,31 +1870,149 @@ int kfilnd_tn_init(void)
 	if (!imm_buf_cache)
 		goto err_tn_cache_destroy;
 
+	tn_cache_mp = mempool_create_slab_pool(min_tn, tn_cache);
+	if (!tn_cache_mp)
+		goto err_imm_buf_cache_destroy;
+
+	CDEBUG(D_NET, "Created tn_cache_mp with %d reserves\n", min_tn);
+
+	imm_buf_cache_mp = mempool_create_slab_pool(min_msg, imm_buf_cache);
+	if (!imm_buf_cache_mp)
+		goto err_tn_cache_mp_destroy;
+
+	CDEBUG(D_NET, "Created imm_buf_cache_mp with %d reserves\n", min_msg);
+
+	/* Initialize debugfs mempool stats */
+	debugfs_create_file("mempool_stats", 0444, kfilnd_debug_dir, NULL,
+			    &kfilnd_mempool_stats_file_ops);
+
 	return 0;
 
+err_tn_cache_mp_destroy:
+	mempool_destroy(tn_cache_mp);
+err_imm_buf_cache_destroy:
+	kmem_cache_destroy(imm_buf_cache);
 err_tn_cache_destroy:
 	kmem_cache_destroy(tn_cache);
 err:
 	return -ENOMEM;
 }
 
+#ifdef HAVE_KFI_SGL
 /**
- * kfilnd_tn_set_kiov_buf() - Set the buffer used for a transaction.
- * @tn: Transaction to have buffer set.
- * @kiov: LNet KIOV buffer.
- * @num_iov: Number of IOVs.
- * @offset: Offset into IOVs where the buffer starts.
- * @len: Length of the buffer.
+ * kfilnd_tn_set_sgl_buf - Set up scatter-gather list for transaction
+ * @ni: LNet network interface
+ * @tn: Transaction structure to configure
+ * @kiov: Array of bio_vec structures describing the buffer
+ * @num_iov: Number of elements in kiov array
+ * @offset: Byte offset into the kiov array where data starts
+ * @nob: Number of bytes to map
  *
- * This function takes the user provided IOV, offset, and len, and sets the
- * transaction buffer. The user provided IOV is an LNet KIOV. When the
- * transaction buffer is configured, the user provided offset is applied
- * when the transaction buffer is configured (i.e. the transaction buffer
- * offset is zero).
+ * This function creates and maps a scatter-gather table for DMA operations.
+ * It handles both GPU and non-GPU buffers differently.
+ *
+ * Return: 0 on success, negative errno on failure
  */
-int kfilnd_tn_set_kiov_buf(struct kfilnd_transaction *tn,
-			   struct bio_vec *kiov, size_t num_iov,
-			   size_t offset, size_t len)
+static int kfilnd_tn_set_sgl_buf(struct lnet_ni *ni,
+				 struct kfilnd_transaction *tn,
+				 struct bio_vec *kiov, int num_iov, int offset,
+				 int nob)
+{
+	struct kfilnd_dev *dev = ni->ni_data;
+	struct scatterlist *sg;
+	int fragnob;
+	int max_nkiov;
+	int sg_count = 0;
+	int rc = 0;
+
+	tn->tn_nob = nob;
+
+	while (offset >= kiov->bv_len) {
+		offset -= kiov->bv_len;
+		num_iov--;
+		kiov++;
+		LASSERT(num_iov > 0);
+	}
+
+	max_nkiov = num_iov;
+	rc = sg_alloc_table(&tn->tn_sgt, max_nkiov, GFP_NOFS);
+	if (rc) {
+		CERROR("%s: sg_alloc_table failed rc = %d\n",
+		       ni->ni_interface, rc);
+		return rc;
+	}
+
+	sg = tn->tn_sgt.sgl;
+	do {
+		LASSERT(num_iov > 0);
+
+		if (!sg) {
+			CERROR("%s: lacking enough sg entries to map tx: rc = %d\n",
+			       ni->ni_interface, -EFAULT);
+			sg_free_table(&tn->tn_sgt);
+			return -EFAULT;
+		}
+
+		sg_count++;
+
+		fragnob = min_t(int, (kiov->bv_len - offset), nob);
+
+		sg_set_page(sg, kiov->bv_page, fragnob,
+			    kiov->bv_offset + offset);
+		sg = sg_next(sg);
+
+		offset = 0;
+		kiov++;
+		num_iov--;
+		nob -= fragnob;
+	} while (nob > 0);
+
+	tn->tn_dmadir = tn->sink_buffer ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
+
+	/* Save orig_nents so it can be restored prior to sg_free_table() */
+	tn->tn_sgt_alloc_nents = tn->tn_sgt.orig_nents;
+
+	/* dma_[un]map_sgtable() expects all orig_nents segments to be
+	 * populated, but only sg_count of them are actually populated.
+	 */
+	tn->tn_sgt.orig_nents = sg_count;
+
+	if (tn->tn_gpu) {
+		rc = lnet_rdma_map_sg_attrs(dev->device, tn->tn_sgt.sgl,
+					    sg_count, tn->tn_dmadir);
+		if (rc > 0)
+			tn->tn_sgt.nents = rc;
+	} else {
+		rc = dma_map_sgtable(dev->device, &tn->tn_sgt, tn->tn_dmadir,
+				     0);
+	}
+
+	if (rc < 0) {
+		CERROR("%s: %s failed rc = %d\n", ni->ni_interface,
+		       tn->tn_gpu ? "lnet_rdma_map_sg_attrs" :
+		       "dma_map_sgtable", rc);
+		kfilnd_tn_sgt_free(tn);
+		return rc;
+	}
+
+	/* Set tn_sgt_mapped so kfilnd_tn_free() will free tn_sgt */
+	tn->tn_sgt_mapped = true;
+
+	CDEBUG(D_NET,
+	       "tn %p tn_sgt %p sgl %p dir %u nob %d alloc_nents %u orig_nents %u nents %u gpu %s\n",
+	       tn, &tn->tn_sgt, tn->tn_sgt.sgl, tn->tn_dmadir, tn->tn_nob,
+	       tn->tn_sgt_alloc_nents, tn->tn_sgt.orig_nents, tn->tn_sgt.nents,
+	       tn->tn_gpu ? "y" : "n");
+
+	return 0;
+}
+
+#else
+
+static int kfilnd_tn_set_kiov_buf(struct lnet_ni *ni,
+				  struct kfilnd_transaction *tn,
+				  struct bio_vec *kiov, size_t num_iov,
+				  size_t offset, size_t len)
 {
 	size_t i;
 	size_t cur_len = 0;
@@ -1832,4 +2053,29 @@ int kfilnd_tn_set_kiov_buf(struct kfilnd_transaction *tn,
 	tn->tn_nob = cur_len;
 
 	return 0;
+}
+#endif /* HAVE_KFI_SGL */
+
+/**
+ * kfilnd_tn_set_buf() - Set the buffer used for a transaction.
+ * @tn: Transaction to have buffer set.
+ * @kiov: LNet KIOV buffer.
+ * @num_iov: Number of IOVs.
+ * @offset: Offset into IOVs where the buffer starts.
+ * @len: Length of the buffer.
+ *
+ * This function takes the user provided IOV, offset, and len, and sets the
+ * transaction buffer. The user provided IOV is an LNet KIOV. When the
+ * transaction buffer is configured, the user provided offset is applied
+ * when the transaction buffer is configured (i.e. the transaction buffer
+ * offset is zero).
+ */
+int kfilnd_tn_set_buf(struct lnet_ni *ni, struct kfilnd_transaction *tn,
+		      struct bio_vec *kiov, int num_iov, int offset, int nob)
+{
+#ifdef HAVE_KFI_SGL
+	return kfilnd_tn_set_sgl_buf(ni, tn, kiov, num_iov, offset, nob);
+#else
+	return kfilnd_tn_set_kiov_buf(ni, tn, kiov, num_iov, offset, nob);
+#endif
 }

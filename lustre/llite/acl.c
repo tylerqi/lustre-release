@@ -1,35 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- * Lustre is a trademark of Sun Microsystems, Inc.
- *
- * lustre/llite/acl.c
  *
  * Author: Peter Braam <braam@clusterfs.com>
  * Author: Phil Schwan <phil@clusterfs.com>
@@ -132,7 +111,6 @@ struct posix_acl *ll_get_acl(
 	return ll_get_acl_common(inode, type, rcu);
 }
 
-#ifdef HAVE_IOP_SET_ACL
 int ll_set_acl(struct mnt_idmap *map,
 #ifdef HAVE_ACL_WITH_DENTRY
 	       struct dentry *dentry,
@@ -183,7 +161,9 @@ int ll_set_acl(struct mnt_idmap *map,
 
 	rc = md_setxattr(sbi->ll_md_exp, ll_inode2fid(inode),
 			 value ? OBD_MD_FLXATTR : OBD_MD_FLXATTRRM,
-			 name, value, value_size, 0, 0, &req);
+			 name, value, value_size, 0, 0, ll_i2projid(inode),
+			 &req);
+
 	if (!rc)
 		ll_i2info(inode)->lli_synced_to_mds = false;
 
@@ -197,4 +177,3 @@ out:
 		set_cached_acl(inode, type, acl);
 	RETURN(rc);
 }
-#endif /* HAVE_IOP_SET_ACL */

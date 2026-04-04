@@ -75,7 +75,7 @@ int osd_scrub_refresh_mapping(const struct lu_env *env,
 				   sizeof(info->oti_str), &dn);
 	osd_tx_hold_zap(tx, zapid, dn,
 			ops == DTO_INDEX_INSERT ? TRUE : FALSE, NULL);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc) {
 		dmu_tx_abort(tx);
 		GOTO(log, rc);
@@ -1873,6 +1873,11 @@ static int osd_scan_dir(const struct lu_env *env, struct osd_device *dev,
 
 	za = &it->ozi_za;
 	zde = &it->ozi_zde;
+
+#ifdef ZAP_MAXNAMELEN_NEW
+	za->za_name_len = MAXNAMELEN;
+#endif
+
 	while (1) {
 		rc = -zap_cursor_retrieve(it->ozi_zc, za);
 		if (unlikely(rc)) {
@@ -1958,7 +1963,7 @@ static int osd_remove_ml_file(const struct lu_env *env, struct osd_device *dev,
 	}
 
 	dmu_tx_hold_zap(tx, dir, FALSE, NULL);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc)
 		GOTO(abort, rc);
 
@@ -2093,7 +2098,7 @@ static int osd_create_lastid(const struct lu_env *env, struct osd_device *dev,
 	dmu_tx_hold_sa_create(tx, osd_find_dnsize(dev, OSD_BASE_EA_IN_BONUS));
 	dmu_tx_hold_zap(tx, dir, FALSE, NULL);
 
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc)
 		GOTO(abort, rc);
 
@@ -2135,7 +2140,7 @@ static int osd_create_lastid(const struct lu_env *env, struct osd_device *dev,
 	dmu_tx_hold_write_by_dnode(tx, dn, 0, sizeof(lastid_known));
 
 	lastid = cpu_to_le64(lastid_known);
-	dmu_write_by_dnode(dn, 0, sizeof(lastid), &lastid, tx);
+	ll_dmu_write_by_dnode(dn, 0, sizeof(lastid), &lastid, tx, 0);
 
 	rc = osd_zap_add(dev, dir, NULL, LASTID, strlen(LASTID), num,
 			 (void *)zde, tx);
@@ -2320,7 +2325,7 @@ static int osd_scan_lastid_seq(const struct lu_env *env,
 	if (lastid < lastid_known)
 		dmu_tx_hold_write_by_dnode(tx, dn, 0, sizeof(lastid));
 
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc)
 		GOTO(abort, rc);
 
@@ -2343,8 +2348,8 @@ static int osd_scan_lastid_seq(const struct lu_env *env,
 
 	if (lastid < lastid_known) {
 		lastid = cpu_to_le64(lastid_known);
-		dmu_write_by_dnode(dn, 0, sizeof(lastid),
-				   (const char *) &lastid, tx);
+		ll_dmu_write_by_dnode(dn, 0, sizeof(lastid),
+				      (const char *)&lastid, tx, 0);
 	}
 
 	dmu_tx_commit(tx);
@@ -2420,4 +2425,44 @@ out:
 static int osd_scan_O_main(const struct lu_env *env, struct osd_device *dev)
 {
 	return osd_scan_dir(env, dev, dev->od_O_id, osd_scan_O_seq);
+}
+
+static int osd_seq_dir_helper(const struct lu_env *env,
+			      struct osd_device *osd, uint64_t dir_oid,
+			      struct osd_zap_it *ozi)
+{
+	struct osd_thread_info *info = osd_oti_get(env);
+	struct lu_fid *fid = &info->oti_fid;
+	__u64 seq;
+	int rc;
+
+	if (!S_ISDIR(cpu_to_le16(DTTOIF(ozi->ozi_zde.lzd_reg.zde_type))))
+		return 0;
+
+	rc = kstrtoull(ozi->ozi_name, 16, &seq);
+	if (!rc && seq >= FID_SEQ_NORMAL && seq > fid_seq(fid))
+		fid->f_seq = seq;
+
+	return 0;
+}
+
+int osd_last_seq_get(const struct lu_env *env, struct dt_device *dt,
+		     __u64 *seq)
+{
+	struct osd_thread_info *info = osd_oti_get(env);
+	struct osd_device *osd = osd_dt_dev(dt);
+	struct lu_fid *fid = &info->oti_fid;
+	int rc;
+
+	ENTRY;
+
+	if (!osd->od_is_ost)
+		RETURN(-EINVAL);
+
+	fid_zero(fid);
+	rc = osd_scan_dir(env, osd, osd->od_O_id, osd_seq_dir_helper);
+	if (!rc)
+		*seq = fid_seq(fid);
+
+	RETURN(rc);
 }

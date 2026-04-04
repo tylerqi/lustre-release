@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/obdclass/dt_object.c
  *
  * Dt Object.
  * Generic functions from dt_object.h
@@ -57,6 +37,7 @@ struct lu_context_key dt_key = {
 	.lct_init = dt_global_key_init,
 	.lct_fini = dt_global_key_fini
 };
+EXPORT_SYMBOL(dt_key);
 
 /*
  * no lock is necessary to protect the list, because call-backs
@@ -169,21 +150,22 @@ void dt_object_fini(struct dt_object *obj)
 EXPORT_SYMBOL(dt_object_fini);
 
 /**
- * Set directory .do_index_ops.
+ * dt_try_as_dir() - Set directory .do_index_ops.
+ * @env: current lustre environment
+ * @obj: dt object.
+ * @check: check @obj existence and type, return if index ops is set.
  *
  * Set directory index operations, if the caller knows directory exists,
- * \a check should be set to ensure object is directory and exists, while for
+ * @check should be set to ensure object is directory and exists, while for
  * new directories, skip check and the index operations will be used to create
  * ".." under directory.
  *
  * Normally this is called before dt_lookup() to ensure directory objects
  * exists and .do_index_ops is correctly set.
  *
- * \param env	lu_env object.
- * \param obj	dt object.
- * \param check	check \a obj existence and type, return if index ops is set.
- * \retval 1	on success.
- * \retval 0	on error.
+ * Return:
+ * * %1 on success.
+ * * %0 on error.
  */
 int dt_try_as_dir(const struct lu_env *env, struct dt_object *obj, bool check)
 {
@@ -234,9 +216,16 @@ enum dt_format_type dt_mode_to_dft(__u32 mode)
 EXPORT_SYMBOL(dt_mode_to_dft);
 
 /**
- * lookup fid for object named \a name in directory \a dir.
+ * dt_lookup_dir() - lookup fid for object named @name in directory @dir.
+ * @env: current lustre environment
+ * @dir: directory to do the lookup
+ * @name: name of file
+ * @fid: on successful lookup populate fid [out]
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
-
 int dt_lookup_dir(const struct lu_env *env, struct dt_object *dir,
                   const char *name, struct lu_fid *fid)
 {
@@ -275,133 +264,6 @@ struct dt_object *dt_locate_at(const struct lu_env *env,
 	return ERR_PTR(-ENOENT);
 }
 EXPORT_SYMBOL(dt_locate_at);
-
-/**
- * find an object named \a entry in given \a dfh->dfh_o directory.
- */
-static int dt_find_entry(const struct lu_env *env, const char *entry,
-			 void *data)
-{
-	struct dt_find_hint *dfh = data;
-	struct dt_device *dt = dfh->dfh_dt;
-	struct lu_fid *fid = dfh->dfh_fid;
-	struct dt_object *obj = dfh->dfh_o;
-	int rc;
-
-	rc = dt_lookup_dir(env, obj, entry, fid);
-	dt_object_put(env, obj);
-	if (rc == 0) {
-		obj = dt_locate(env, dt, fid);
-		if (IS_ERR(obj))
-			rc = PTR_ERR(obj);
-	}
-	dfh->dfh_o = obj;
-
-	return rc;
-}
-
-/**
- * Abstract function which parses path name. This function feeds
- * path component to \a entry_func.
- */
-int dt_path_parser(const struct lu_env *env,
-		   char *path, dt_entry_func_t entry_func,
-		   void *data)
-{
-	char *e;
-	int rc = 0;
-
-	while (1) {
-		e = strsep(&path, "/");
-		if (e == NULL)
-			break;
-
-		if (e[0] == 0) {
-			if (!path || path[0] == '\0')
-				break;
-			continue;
-		}
-		rc = entry_func(env, e, data);
-		if (rc)
-			break;
-	}
-
-	return rc;
-}
-
-struct dt_object *
-dt_store_resolve(const struct lu_env *env, struct dt_device *dt,
-		 const char *path, struct lu_fid *fid)
-{
-	struct dt_thread_info *info = dt_info(env);
-	struct dt_find_hint *dfh = &info->dti_dfh;
-	struct dt_object *obj;
-	int result;
-
-
-	dfh->dfh_dt = dt;
-	dfh->dfh_fid = fid;
-
-	strscpy(info->dti_buf, path, sizeof(info->dti_buf));
-
-	result = dt->dd_ops->dt_root_get(env, dt, fid);
-	if (result == 0) {
-		obj = dt_locate(env, dt, fid);
-		if (!IS_ERR(obj)) {
-			dfh->dfh_o = obj;
-			result = dt_path_parser(env, info->dti_buf,
-						dt_find_entry, dfh);
-			if (result != 0)
-				obj = ERR_PTR(result);
-			else
-				obj = dfh->dfh_o;
-		}
-	} else {
-		obj = ERR_PTR(result);
-	}
-	return obj;
-}
-
-static struct dt_object *dt_reg_open(const struct lu_env *env,
-				     struct dt_device *dt,
-				     struct dt_object *p,
-				     const char *name,
-				     struct lu_fid *fid)
-{
-	struct dt_object *o;
-	int result;
-
-	result = dt_lookup_dir(env, p, name, fid);
-	if (result == 0)
-		o = dt_locate(env, dt, fid);
-	else
-		o = ERR_PTR(result);
-
-	return o;
-}
-
-/**
- * Open dt object named \a filename from \a dirname directory.
- *      \param  dt      dt device
- *      \param  fid     on success, object fid is stored in *fid
- */
-struct dt_object *dt_store_open(const struct lu_env *env, struct dt_device *dt,
-				const char *dirname, const char *filename,
-				struct lu_fid *fid)
-{
-	struct dt_object *file;
-	struct dt_object *dir;
-
-	dir = dt_store_resolve(env, dt, dirname, fid);
-	if (!IS_ERR(dir)) {
-		file = dt_reg_open(env, dt, dir, filename, fid);
-		dt_object_put(env, dir);
-	} else {
-		file = dir;
-	}
-
-	return file;
-}
 
 struct dt_object *dt_find_or_create(const struct lu_env *env,
 				    struct dt_device *dt,
@@ -475,15 +337,15 @@ void dt_global_fini(void)
 }
 
 /**
- * Generic read helper. May return an error for partial reads.
+ * dt_read() - Generic read helper. May return an error for partial reads.
+ * @env: current lustre environment
+ * @dt: object to be read
+ * @buf: lu_buf to be filled, with beffer pointer and length
+ * @pos: position to start reading, updated as data is read
  *
- * \param env  lustre environment
- * \param dt   object to be read
- * \param buf  lu_buf to be filled, with buffer pointer and length
- * \param pos position to start reading, updated as data is read
- *
- * \retval real size of data read
- * \retval -ve errno on failure
+ * Return:
+ * * %>0 real size of data read
+ * * %negative on failure
  */
 int dt_read(const struct lu_env *env, struct dt_object *dt,
 	    struct lu_buf *buf, loff_t *pos)
@@ -494,17 +356,19 @@ int dt_read(const struct lu_env *env, struct dt_object *dt,
 EXPORT_SYMBOL(dt_read);
 
 /**
+ * dt_record_read() - Read structures of fixed size from storage
+ * @env: current lustre environment
+ * @dt: object to be read
+ * @buf: lu_buf to be filled, with beffer pointer and length
+ * @pos: position to start reading, updated as data is read
+ *
  * Read structures of fixed size from storage.  Unlike dt_read(), using
  * dt_record_read() will return an error for partial reads.
  *
- * \param env  lustre environment
- * \param dt   object to be read
- * \param buf  lu_buf to be filled, with buffer pointer and length
- * \param pos position to start reading, updated as data is read
- *
- * \retval 0 on successfully reading full buffer
- * \retval -EFAULT on short read
- * \retval -ve errno on failure
+ * Return:
+ * * %0 on successfully reading full buffer
+ * * %-EFAULT on short read
+ * * %negative on failure
  */
 int dt_record_read(const struct lu_env *env, struct dt_object *dt,
                    struct lu_buf *buf, loff_t *pos)
@@ -547,7 +411,7 @@ int dt_declare_version_set(const struct lu_env *env, struct dt_object *o,
 	LASSERT(o);
 	vbuf.lb_buf = NULL;
 	vbuf.lb_len = sizeof(dt_obj_version_t);
-	return dt_declare_xattr_set(env, o, &vbuf, xname, 0, th);
+	return dt_declare_xattr_set(env, o, NULL, &vbuf, xname, 0, th);
 }
 EXPORT_SYMBOL(dt_declare_version_set);
 
@@ -595,7 +459,8 @@ int dt_declare_data_version_set(const struct lu_env *env, struct dt_object *o,
 	vbuf.lb_buf = NULL;
 	vbuf.lb_len = sizeof(dt_obj_version_t);
 
-	return dt_declare_xattr_set(env, o, &vbuf, XATTR_NAME_DATAVER, 0, th);
+	return dt_declare_xattr_set(env, o, NULL, &vbuf, XATTR_NAME_DATAVER, 0,
+	       th);
 }
 EXPORT_SYMBOL(dt_declare_data_version_set);
 
@@ -940,6 +805,26 @@ out:
 }
 
 
+/* for dt_index*/
+void *rdpg_page_get(const struct lu_rdpg *rdpg, unsigned int index)
+{
+	if (rdpg->rp_npages) {
+		LASSERT(index < rdpg->rp_npages);
+		return kmap(rdpg->rp_pages[index]);
+	}
+	LASSERT(index << PAGE_SHIFT < rdpg->rp_count);
+
+	return rdpg->rp_data + (index << PAGE_SHIFT);
+}
+EXPORT_SYMBOL(rdpg_page_get);
+
+void rdpg_page_put(const struct lu_rdpg *rdpg, unsigned int index, void *kaddr)
+{
+	if (rdpg->rp_npages)
+		kunmap(kmap_to_page(kaddr));
+}
+EXPORT_SYMBOL(rdpg_page_put);
+
 /*
  * Walk index and fill lu_page containers with key/record pairs
  *
@@ -1012,12 +897,11 @@ int dt_index_walk(const struct lu_env *env, struct dt_object *obj,
 	 *  rc <  0 -> error.
 	 */
 	for (pageidx = 0; rc == 0 && bytes > 0; pageidx++) {
+		void *addr;
 		union lu_page	*lp;
 		int		 i;
 
-		LASSERT(pageidx < rdpg->rp_npages);
-		lp = kmap(rdpg->rp_pages[pageidx]);
-
+		lp = addr = rdpg_page_get(rdpg, pageidx);
 		/* fill lu pages */
 		for (i = 0; i < LU_PAGE_COUNT; i++, lp++, bytes-=LU_PAGE_SIZE) {
 			rc = filler(env, obj, lp,
@@ -1031,7 +915,7 @@ int dt_index_walk(const struct lu_env *env, struct dt_object *obj,
 				/* end of index */
 				break;
 		}
-		kunmap(rdpg->rp_pages[pageidx]);
+		rdpg_page_put(rdpg, pageidx, addr);
 	}
 
 out:
@@ -1046,18 +930,19 @@ out:
 EXPORT_SYMBOL(dt_index_walk);
 
 /**
+ * dt_index_read() - Walk key/record pairs of an index
+ * @env: current lustre environment
+ * @dev: is the dt_device storing the index
+ * @ii: is the idx_info structure packed by client in the OBD_IDX_READ request
+ * @rdpg: is the lu_rdpg descriptor
+ *
  * Walk key/record pairs of an index and copy them into 4KB containers to be
- * transferred over the network. This is the common handler for OBD_IDX_READ
- * RPC processing.
+ * transferred over the network. This is the common handler for OBD_IDX_READ RPC
+ * processing.
  *
- * \param env - is the environment passed by the caller
- * \param dev - is the dt_device storing the index
- * \param ii  - is the idx_info structure packed by the client in the
- *              OBD_IDX_READ request
- * \param rdpg - is the lu_rdpg descriptor
- *
- * \retval on success, return sum (in bytes) of all filled containers
- * \retval appropriate error otherwise.
+ * Return:
+ * * %>0 on success (return sum (in bytes) of all filled containers)
+ * * %negative on failure
  */
 int dt_index_read(const struct lu_env *env, struct dt_device *dev,
 		  struct idx_info *ii, const struct lu_rdpg *rdpg)
@@ -1154,17 +1039,20 @@ EXPORT_SYMBOL(dt_index_read);
 void dt_index_page_adjust(struct page **pages, const u32 npages,
 			  const size_t nlupgs)
 {
-	u32			nlupgs_mod = nlupgs % LU_PAGE_COUNT;
-	u32			remain_nlupgs;
-	u32			pgidx;
-	struct lu_idxpage      *lip;
-	union lu_page	       *lp;
-	int			i;
+	u32 nlupgs_mod = nlupgs % LU_PAGE_COUNT;
 
 	if (nlupgs_mod) {
+		void *kaddr;
+		struct lu_idxpage *lip;
+		union lu_page *lp;
+		u32 remain_nlupgs;
+		u32 pgidx;
+		int i;
+
 		pgidx = nlupgs / LU_PAGE_COUNT;
 		LASSERT(pgidx < npages);
-		lp = kmap(pages[pgidx]);
+		kaddr = kmap_local_page(pages[pgidx]);
+		lp = kaddr;
 		remain_nlupgs = LU_PAGE_COUNT - nlupgs_mod;
 
 		/* initialize the header for the remain lu_pages */
@@ -1174,7 +1062,7 @@ void dt_index_page_adjust(struct page **pages, const u32 npages,
 			lip->lip_magic = LIP_MAGIC;
 		}
 
-		kunmap(pages[pgidx]);
+		kunmap_local(kaddr);
 	}
 }
 #else
@@ -1184,102 +1072,6 @@ void dt_index_page_adjust(struct page **pages, const u32 npages,
 }
 #endif
 EXPORT_SYMBOL(dt_index_page_adjust);
-
-#ifdef CONFIG_PROC_FS
-int lprocfs_dt_blksize_seq_show(struct seq_file *m, void *v)
-{
-	struct dt_device *dt = m->private;
-	struct obd_statfs osfs;
-
-	int rc = dt_statfs(NULL, dt, &osfs);
-	if (rc == 0)
-		seq_printf(m, "%u\n", (unsigned) osfs.os_bsize);
-	return rc;
-}
-EXPORT_SYMBOL(lprocfs_dt_blksize_seq_show);
-
-int lprocfs_dt_kbytestotal_seq_show(struct seq_file *m, void *v)
-{
-	struct dt_device *dt = m->private;
-	struct obd_statfs osfs;
-
-	int rc = dt_statfs(NULL, dt, &osfs);
-	if (rc == 0) {
-		__u32 blk_size = osfs.os_bsize >> 10;
-		__u64 result = osfs.os_blocks;
-
-		while (blk_size >>= 1)
-			result <<= 1;
-
-		seq_printf(m, "%llu\n", result);
-	}
-	return rc;
-}
-EXPORT_SYMBOL(lprocfs_dt_kbytestotal_seq_show);
-
-int lprocfs_dt_kbytesfree_seq_show(struct seq_file *m, void *v)
-{
-	struct dt_device *dt = m->private;
-	struct obd_statfs osfs;
-
-	int rc = dt_statfs(NULL, dt, &osfs);
-	if (rc == 0) {
-		__u32 blk_size = osfs.os_bsize >> 10;
-		__u64 result = osfs.os_bfree;
-
-		while (blk_size >>= 1)
-			result <<= 1;
-
-		seq_printf(m, "%llu\n", result);
-	}
-	return rc;
-}
-EXPORT_SYMBOL(lprocfs_dt_kbytesfree_seq_show);
-
-int lprocfs_dt_kbytesavail_seq_show(struct seq_file *m, void *v)
-{
-	struct dt_device *dt = m->private;
-	struct obd_statfs osfs;
-
-	int rc = dt_statfs(NULL, dt, &osfs);
-	if (rc == 0) {
-		__u32 blk_size = osfs.os_bsize >> 10;
-		__u64 result = osfs.os_bavail;
-
-		while (blk_size >>= 1)
-			result <<= 1;
-
-		seq_printf(m, "%llu\n", result);
-	}
-	return rc;
-}
-EXPORT_SYMBOL(lprocfs_dt_kbytesavail_seq_show);
-
-int lprocfs_dt_filestotal_seq_show(struct seq_file *m, void *v)
-{
-	struct dt_device *dt = m->private;
-	struct obd_statfs osfs;
-
-	int rc = dt_statfs(NULL, dt, &osfs);
-	if (rc == 0)
-		seq_printf(m, "%llu\n", osfs.os_files);
-	return rc;
-}
-EXPORT_SYMBOL(lprocfs_dt_filestotal_seq_show);
-
-int lprocfs_dt_filesfree_seq_show(struct seq_file *m, void *v)
-{
-	struct dt_device *dt = m->private;
-	struct obd_statfs osfs;
-
-	int rc = dt_statfs(NULL, dt, &osfs);
-	if (rc == 0)
-		seq_printf(m, "%llu\n", osfs.os_ffree);
-	return rc;
-}
-EXPORT_SYMBOL(lprocfs_dt_filesfree_seq_show);
-
-#endif /* CONFIG_PROC_FS */
 
 static ssize_t uuid_show(struct kobject *kobj, struct attribute *attr,
 			 char *buf)
@@ -1291,7 +1083,7 @@ static ssize_t uuid_show(struct kobject *kobj, struct attribute *attr,
 	if (!lu->ld_obd)
 		return -ENODEV;
 
-	return sprintf(buf, "%s\n", lu->ld_obd->obd_uuid.uuid);
+	return scnprintf(buf, PAGE_SIZE, "%s\n", lu->ld_obd->obd_uuid.uuid);
 }
 LUSTRE_RO_ATTR(uuid);
 
@@ -1307,7 +1099,7 @@ static ssize_t blocksize_show(struct kobject *kobj, struct attribute *attr,
 	if (rc)
 		return rc;
 
-	return sprintf(buf, "%u\n", (unsigned) osfs.os_bsize);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", osfs.os_bsize);
 }
 LUSTRE_RO_ATTR(blocksize);
 
@@ -1331,7 +1123,7 @@ static ssize_t kbytestotal_show(struct kobject *kobj, struct attribute *attr,
 	while (blk_size >>= 1)
 		result <<= 1;
 
-	return sprintf(buf, "%llu\n", result);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", result);
 }
 LUSTRE_RO_ATTR(kbytestotal);
 
@@ -1355,7 +1147,7 @@ static ssize_t kbytesfree_show(struct kobject *kobj, struct attribute *attr,
 	while (blk_size >>= 1)
 		result <<= 1;
 
-	return sprintf(buf, "%llu\n", result);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", result);
 }
 LUSTRE_RO_ATTR(kbytesfree);
 
@@ -1379,7 +1171,7 @@ static ssize_t kbytesavail_show(struct kobject *kobj, struct attribute *attr,
 	while (blk_size >>= 1)
 		result <<= 1;
 
-	return sprintf(buf, "%llu\n", result);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", result);
 }
 LUSTRE_RO_ATTR(kbytesavail);
 
@@ -1395,7 +1187,7 @@ static ssize_t filestotal_show(struct kobject *kobj, struct attribute *attr,
 	if (rc)
 		return rc;
 
-	return sprintf(buf, "%llu\n", osfs.os_files);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", osfs.os_files);
 }
 LUSTRE_RO_ATTR(filestotal);
 
@@ -1411,18 +1203,69 @@ static ssize_t filesfree_show(struct kobject *kobj, struct attribute *attr,
 	if (rc)
 		return rc;
 
-	return sprintf(buf, "%llu\n", osfs.os_ffree);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", osfs.os_ffree);
 }
 LUSTRE_RO_ATTR(filesfree);
 
+static ssize_t maxbytes_show(struct kobject *kobj, struct attribute *attr,
+			     char *buf)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct obd_statfs osfs;
+	int rc;
+
+	rc = dt_statfs(NULL, dt, &osfs);
+	if (rc)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", osfs.os_maxbytes);
+}
+LUSTRE_RO_ATTR(maxbytes);
+
+static ssize_t namelen_max_show(struct kobject *kobj, struct attribute *attr,
+				char *buf)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct obd_statfs osfs;
+	int rc;
+
+	rc = dt_statfs(NULL, dt, &osfs);
+	if (rc)
+		return rc;
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", osfs.os_namelen);
+}
+LUSTRE_RO_ATTR(namelen_max);
+
+static ssize_t statfs_state_show(struct kobject *kobj, struct attribute *attr,
+				 char *buf)
+{
+	struct dt_device *dt = container_of(kobj, struct dt_device,
+					    dd_kobj);
+	struct obd_statfs osfs;
+	int rc;
+
+	rc = dt_statfs(NULL, dt, &osfs);
+	if (rc)
+		return rc;
+
+	return lprocfs_statfs_state(buf, PAGE_SIZE, osfs.os_state);
+}
+LUSTRE_RO_ATTR(statfs_state);
+
 static const struct attribute *dt_def_attrs[] = {
-	&lustre_attr_uuid.attr,
 	&lustre_attr_blocksize.attr,
+	&lustre_attr_filestotal.attr,
+	&lustre_attr_filesfree.attr,
 	&lustre_attr_kbytestotal.attr,
 	&lustre_attr_kbytesfree.attr,
 	&lustre_attr_kbytesavail.attr,
-	&lustre_attr_filestotal.attr,
-	&lustre_attr_filesfree.attr,
+	&lustre_attr_maxbytes.attr,
+	&lustre_attr_namelen_max.attr,
+	&lustre_attr_statfs_state.attr,
+	&lustre_attr_uuid.attr,
 	NULL,
 };
 
@@ -1437,18 +1280,16 @@ static void dt_sysfs_release(struct kobject *kobj)
 	complete(&dt->dd_kobj_unregister);
 }
 
-int dt_tunables_fini(struct dt_device *dt)
+void dt_tunables_fini(struct dt_device *dt)
 {
 	if (!dt)
-		return -EINVAL;
+		return;
 
 	if (dt->dd_def_attrs) {
 		sysfs_remove_files(&dt->dd_kobj, dt->dd_def_attrs);
 		kobject_put(&dt->dd_kobj);
 		wait_for_completion(&dt->dd_kobj_unregister);
 	}
-
-	return 0;
 }
 EXPORT_SYMBOL(dt_tunables_fini);
 

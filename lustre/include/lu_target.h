@@ -157,7 +157,11 @@ struct lu_target {
 				 /* enforce recovery for local clients */
 				 lut_local_recovery:1,
 				 lut_cksum_t10pi_enforce:1,
-				 lut_no_create:1;
+				 lut_no_create:1,
+				 /* if enabled, MDT inodes UID/GID are checked
+				  * against the nodemap mapping rules.
+				  */
+				 lut_enable_resource_id_check:1;
 	/* checksum types supported on this node */
 	enum cksum_types	 lut_cksum_types_supported;
 	/** last_rcvd file */
@@ -178,6 +182,8 @@ struct lu_target {
 	 * recorded in the last_rcvd file
 	 */
 	atomic_t		 lut_num_clients;
+	/* Maximum number of clients ever connected */
+	atomic_t		 lut_max_clients;
 	/* Client generation to identify client slot reuse */
 	atomic_t		 lut_client_generation;
 	/** reply_data file */
@@ -543,6 +549,7 @@ static inline int exp_grant_param_supp(struct obd_export *exp)
 #define COMPAT_BSIZE_SHIFT 12
 
 void tgt_grant_sanity_check(struct obd_device *obd, const char *func);
+void tgt_grant_dealloc(struct obd_export *exp, struct obdo *oa);
 void tgt_grant_connect(const struct lu_env *env, struct obd_export *exp,
 		       struct obd_connect_data *data, bool new_conn);
 void tgt_grant_discard(struct obd_export *exp);
@@ -570,12 +577,6 @@ ssize_t grant_compat_disable_show(struct kobject *kobj, struct attribute *attr,
 ssize_t grant_compat_disable_store(struct kobject *kobj,
 				   struct attribute *attr,
 				   const char *buffer, size_t count);
-#if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 16, 53, 0)
-ssize_t sync_lock_cancel_show(struct kobject *kobj,
-			      struct attribute *attr, char *buf);
-ssize_t sync_lock_cancel_store(struct kobject *kobj, struct attribute *attr,
-			       const char *buffer, size_t count);
-#endif
 
 /* FMD */
 void tgt_fmd_update(struct obd_export *exp, const struct lu_fid *fid,
@@ -616,10 +617,15 @@ struct distribute_txn_replay_req *
 distribute_txn_lookup_finish_list(struct target_distribute_txn_data *tdtd,
 				  __u64 transno);
 bool is_req_replayed_by_update(struct ptlrpc_request *req);
+
 enum {
 	ESERIOUS = 0x0001000
 };
 
+/* ESERIOUS errors must be returned during RPC handling by targets when
+ * the RPC reply buffer has not yet been packed.  Otherwise, the LBUG()
+ * in tgt_handle_request0() will be triggered when sending the reply.
+ */
 static inline int err_serious(int rc)
 {
 	LASSERT(rc < 0);

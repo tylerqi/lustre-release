@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 set -e
 
 LUSTRE=${LUSTRE:-$(dirname $0)/..}
@@ -56,7 +56,6 @@ adjust_inode() {
 
 
 file_count=$(adjust_inode)
-ost_count=$($LCTL dl | grep -c osc)
 
 # first unmount all the lustre clients
 cleanup_mount $MOUNT
@@ -81,9 +80,10 @@ get_target() {
 get_targets() {
 	local targets
 	local node
+	local mdts=$(mdts_nodes)
 
-	for node in $(mdts_nodes); do
-		targets+="${targets:+ }$(get_target $node)"
+	for mds in ${mdts//,/ }; do
+		targets+="${targets:+ }$(get_target $mds)"
 	done
 
 	echo -n $targets
@@ -115,10 +115,8 @@ test_1() {
 run_test 1 "Metadata survey with zero-stripe"
 
 test_2() {
-	local mdscount=$(get_node_count "$(mdts_nodes)")
-
-	[ $mdscount -gt 1 ] && skip_env "Only run this test on single MDS"
-	[ $ost_count -eq 0 ] && skip_env "Need to mount OST to test"
+	(( $MDSCOUNT == 1 )) || skip_env "Only run this test on single MDS"
+	$LCTL dl | grep -q osc || skip_env "need local client mount"
 
 	mds_survey_run "mdd" "1"
 }

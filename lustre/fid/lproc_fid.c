@@ -17,7 +17,6 @@
 
 #define DEBUG_SUBSYSTEM S_FID
 
-#include <libcfs/libcfs.h>
 #include <linux/module.h>
 #include <obd.h>
 #include <obd_class.h>
@@ -28,7 +27,7 @@
 
 /* Format: [0x64BIT_INT - 0x64BIT_INT] + 32 bytes just in case */
 #define MAX_FID_RANGE_STRLEN (32 + 2 * 2 * sizeof(__u64))
-/**
+/*
  * Reduce the SEQ range allocated to a node to a strict subset of the range
  * currently-allocated SEQ range.  If the specified range is "clear", then
  * drop all allocated sequences and request a new one from the master.
@@ -75,7 +74,7 @@ ldebugfs_fid_write_common(const char __user *buffer, size_t count,
 	RETURN(0);
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 /*
  * Server side debugfs stuff.
  */
@@ -479,7 +478,7 @@ const struct file_operations seq_fld_debugfs_seq_fops = {
 	.release = fldb_seq_release,
 };
 
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 /* Client side debugfs stuff */
 static ssize_t
@@ -587,10 +586,10 @@ ldebugfs_client_fid_server_seq_show(struct seq_file *m, void *unused)
 	if (seq->lcs_exp) {
 		cli = &seq->lcs_exp->exp_obd->u.cli;
 		seq_printf(m, "%s\n", cli->cl_target_uuid.uuid);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	} else {
 		seq_printf(m, "%s\n", seq->lcs_srv->lss_name);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	}
 
 	RETURN(0);

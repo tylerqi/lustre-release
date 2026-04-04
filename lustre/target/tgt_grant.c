@@ -58,12 +58,9 @@
 
 #include "tgt_internal.h"
 
-int lbug_on_grant_miscount;
+static int lbug_on_grant_miscount;
 module_param(lbug_on_grant_miscount, int, 0644);
 MODULE_PARM_DESC(lbug_on_grant_miscount, "LBUG on grant miscount");
-
-/* Clients typically hold 2x their max_rpcs_in_flight of grant space */
-#define TGT_GRANT_SHRINK_LIMIT(exp)	(2ULL * 8 * exp_max_brw_size(exp))
 
 /* Helpers to inflate/deflate grants for clients that do not support the grant
  * parameters */
@@ -588,8 +585,9 @@ static void tgt_grant_shrink(struct obd_export *exp, struct obdo *oa,
 
 	assert_spin_locked(&tgd->tgd_grant_lock);
 	LASSERT(exp);
-	if (left_space >= tgd->tgd_tot_granted_clients *
-			  TGT_GRANT_SHRINK_LIMIT(exp))
+
+	/* don't need to shrink grant if it uses less than 25% of left space */
+	if (tgd->tgd_tot_granted * 4 < left_space)
 		return;
 
 	grant_shrink = oa->o_grant;
@@ -954,7 +952,6 @@ static long tgt_grant_alloc(struct obd_export *exp, u64 curgrant,
 
 	tgd->tgd_tot_granted += grant;
 	ted->ted_grant += grant;
-
 	if (unlikely(ted->ted_grant < 0 || ted->ted_grant > want + chunk)) {
 		CERROR("%s: cli %s/%p grant %ld want %llu current %llu\n",
 		       obd->obd_name, exp->exp_client_uuid.uuid, exp,
@@ -977,6 +974,36 @@ static long tgt_grant_alloc(struct obd_export *exp, u64 curgrant,
 
 	RETURN(grant);
 }
+
+/**
+ * Deallocate space granted to a client
+ *
+ * This is used when write RPC fails. Server needs to update grant
+ * counters as a client won't get addiitional grants.
+ *
+ * \param[in] exp		export of the client which sent the request
+ * \param[in] granted		grants allocated via tgt_grant_prepare_write
+ */
+void tgt_grant_dealloc(struct obd_export *exp, struct obdo *oa)
+{
+	struct tg_grants_data *tgd = &obd2obt(exp->exp_obd)->obt_lut->lut_tgd;
+	struct tg_export_data *ted = &exp->exp_target_data;
+	int disconnected;
+
+	if (!(oa->o_valid & OBD_MD_FLGRANT))
+		return;
+	spin_lock(&tgd->tgd_grant_lock);
+	spin_lock(&exp->exp_lock);
+	disconnected = exp->exp_disconnected;
+	spin_unlock(&exp->exp_lock);
+	if (!disconnected) {
+		tgd->tgd_tot_granted -= oa->o_grant;
+		ted->ted_grant -= oa->o_grant;
+		oa->o_grant = 0;
+	}
+	spin_unlock(&tgd->tgd_grant_lock);
+}
+EXPORT_SYMBOL(tgt_grant_dealloc);
 
 /**
  * Handle grant space allocation on client connection & reconnection.
@@ -1098,11 +1125,11 @@ void tgt_grant_discard(struct obd_export *exp)
 			ttd += e->exp_target_data.ted_dirty;
 		}
 		if (tgd->tgd_tot_granted < ted->ted_grant)
-			CERROR("%s: cli %s/%p: tot_granted %llu < ted_grant %ld, corrected to %llu",
+			CERROR("%s: cli %s/%p: tot_granted %llu < ted_grant %ld, corrected to %llu\n",
 			       obd->obd_name,  exp->exp_client_uuid.uuid, exp,
 			       tgd->tgd_tot_granted, ted->ted_grant, ttg);
 		if (tgd->tgd_tot_dirty < ted->ted_dirty)
-			CERROR("%s: cli %s/%p: tot_dirty %llu < ted_dirty %ld, corrected to %llu",
+			CERROR("%s: cli %s/%p: tot_dirty %llu < ted_dirty %ld, corrected to %llu\n",
 			       obd->obd_name, exp->exp_client_uuid.uuid, exp,
 			       tgd->tgd_tot_dirty, ted->ted_dirty, ttd);
 		tgd->tgd_tot_granted = ttg;

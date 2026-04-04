@@ -85,9 +85,7 @@ static ssize_t dom_stripesize_store(struct kobject *kobj,
 /* Old attribute name is still supported */
 LUSTRE_RW_ATTR(dom_stripesize);
 
-/**
- * Show DoM maximum allowed stripe size.
- */
+/* Show DoM maximum allowed stripe size. */
 static ssize_t dom_stripesize_max_kb_show(struct kobject *kobj,
 					  struct attribute *attr,
 					  char *buf)
@@ -99,9 +97,7 @@ static ssize_t dom_stripesize_max_kb_show(struct kobject *kobj,
 			 lod->lod_dom_stripesize_max_kb);
 }
 
-/**
- * Set DoM maximum allowed stripe size.
- */
+/* Set DoM maximum allowed stripe size. */
 static ssize_t dom_stripesize_max_kb_store(struct kobject *kobj,
 					   struct attribute *attr,
 					   const char *buffer, size_t count)
@@ -122,9 +118,7 @@ static ssize_t dom_stripesize_max_kb_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(dom_stripesize_max_kb);
 
-/**
- * Show DoM default stripe size.
- */
+/* Show DoM default stripe size. */
 static ssize_t dom_stripesize_cur_kb_show(struct kobject *kobj,
 					  struct attribute *attr,
 					  char *buf)
@@ -138,9 +132,7 @@ static ssize_t dom_stripesize_cur_kb_show(struct kobject *kobj,
 
 LUSTRE_RO_ATTR(dom_stripesize_cur_kb);
 
-/**
- * Show DoM threshold.
- */
+/* Show DoM threshold. */
 static ssize_t dom_threshold_free_mb_show(struct kobject *kobj,
 					  struct attribute *attr, char *buf)
 {
@@ -151,9 +143,7 @@ static ssize_t dom_threshold_free_mb_show(struct kobject *kobj,
 			 lod->lod_dom_threshold_free_mb);
 }
 
-/**
- * Set DoM default stripe size.
- */
+/* Set DoM default stripe size. */
 static ssize_t dom_threshold_free_mb_store(struct kobject *kobj,
 					   struct attribute *attr,
 					   const char *buffer, size_t count)
@@ -162,22 +152,13 @@ static ssize_t dom_threshold_free_mb_store(struct kobject *kobj,
 	struct lod_device *lod = dt2lod_dev(dt);
 	u64 val;
 	int rc;
-	char *pct;
 
-	pct = strnchr(buffer, count, '%');
-	if (pct) {
-		rc = string_to_size(&val, buffer, pct - buffer);
-		if (rc < 0)
-			return rc;
-		val = mult_frac(lod->lod_lsfs_total_mb,
-				min_t(unsigned int, val, 100), 100);
-	} else {
-		rc = sysfs_memparse(buffer, count, &val, "MiB");
-		if (rc < 0)
-			return rc;
-		val >>= 20;
-	}
+	rc = sysfs_memparse_total(buffer, count, &val,
+				  lod->lod_lsfs_total_mb << 20, "MiB");
+	if (rc < 0)
+		return rc;
 
+	val >>= 20;
 	spin_lock(&lod->lod_lsfs_lock);
 	lod->lod_dom_threshold_free_mb = val;
 	lod_dom_stripesize_recalc(lod);
@@ -220,9 +201,7 @@ static ssize_t stripesize_store(struct kobject *kobj, struct attribute *attr,
 
 LUSTRE_RW_ATTR(stripesize);
 
-/**
- * Show default stripe offset.
- */
+/* Show default stripe offset. */
 static ssize_t stripeoffset_show(struct kobject *kobj, struct attribute *attr,
 				 char *buf)
 {
@@ -234,7 +213,7 @@ static ssize_t stripeoffset_show(struct kobject *kobj, struct attribute *attr,
 		lod->lod_ost_descs.ltd_lov_desc.ld_default_stripe_offset);
 }
 
-/**
+/*
  * Set default stripe offset.
  *
  * Usually contains -1 allowing Lustre to balance objects among OST
@@ -361,9 +340,7 @@ static ssize_t max_stripes_per_mdt_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(max_stripes_per_mdt);
 
 
-/**
- * Show default striping pattern (LOV_PATTERN_*).
- */
+/* Show default striping pattern (LOV_PATTERN_*). */
 static ssize_t __stripetype_show(struct kobject *kobj, struct attribute *attr,
 				 char *buf, bool is_mdt)
 {
@@ -388,9 +365,7 @@ static ssize_t stripetype_show(struct kobject *kobj, struct attribute *attr,
 	return __stripetype_show(kobj, attr, buf, false);
 }
 
-/**
- * Set default striping pattern (a number, not a human-readable string).
- */
+/* Set default striping pattern (a number, not a human-readable string). */
 static ssize_t __stripetype_store(struct kobject *kobj, struct attribute *attr,
 				  const char *buffer, size_t count, bool is_mdt)
 {
@@ -433,9 +408,7 @@ static ssize_t stripetype_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(mdt_stripetype);
 LUSTRE_RW_ATTR(stripetype);
 
-/**
- * Show default number of stripes.
- */
+/* Show default number of stripes. */
 static ssize_t __stripecount_show(struct kobject *kobj, struct attribute *attr,
 				  char *buf, bool is_mdt)
 {
@@ -461,9 +434,7 @@ static ssize_t stripecount_show(struct kobject *kobj, struct attribute *attr,
 	return __stripecount_show(kobj, attr, buf, false);
 }
 
-/**
- * Set default number of stripes.
- */
+/* Set default number of stripes. */
 static ssize_t __stripecount_store(struct kobject *kobj, struct attribute *attr,
 				   const char *buffer, size_t count,
 				   bool is_mdt)
@@ -506,9 +477,7 @@ static ssize_t stripecount_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(mdt_stripecount);
 LUSTRE_RW_ATTR(stripecount);
 
-/**
- * Show number of targets.
- */
+/* Show number of targets. */
 static ssize_t __numobd_show(struct kobject *kobj, struct attribute *attr,
 			     char *buf, bool is_mdt)
 {
@@ -537,9 +506,7 @@ static ssize_t numobd_show(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RO_ATTR(mdt_numobd);
 LUSTRE_RO_ATTR(numobd);
 
-/**
- * Show number of active targets.
- */
+/* Show number of active targets. */
 static ssize_t __activeobd_show(struct kobject *kobj, struct attribute *attr,
 				char *buf, bool is_mdt)
 {
@@ -568,9 +535,7 @@ static ssize_t activeobd_show(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RO_ATTR(mdt_activeobd);
 LUSTRE_RO_ATTR(activeobd);
 
-/**
- * Show UUID of LOD device.
- */
+/* Show UUID of LOD device. */
 static ssize_t desc_uuid_show(struct kobject *kobj, struct attribute *attr,
 			      char *buf)
 {
@@ -583,7 +548,7 @@ static ssize_t desc_uuid_show(struct kobject *kobj, struct attribute *attr,
 }
 LUSTRE_RO_ATTR(desc_uuid);
 
-/**
+/*
  * Show QoS priority parameter.
  *
  * The printed value is a percentage value (0-100%) indicating the priority
@@ -617,7 +582,7 @@ static ssize_t qos_prio_free_show(struct kobject *kobj,
 	return __qos_prio_free_show(kobj, attr, buf, false);
 }
 
-/**
+/*
  * Set QoS free space priority parameter.
  *
  * Set the relative priority of free OST space compared to OST load when OSTs
@@ -679,9 +644,7 @@ static ssize_t qos_prio_free_store(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RW_ATTR(mdt_qos_prio_free);
 LUSTRE_RW_ATTR(qos_prio_free);
 
-/**
- * Show threshold for "same space on all OSTs" rule.
- */
+/* Show threshold for "same space on all OSTs" rule. */
 static ssize_t __qos_threshold_rr_show(struct kobject *kobj,
 				       struct attribute *attr, char *buf,
 				       bool is_mdt)
@@ -709,7 +672,7 @@ static ssize_t qos_threshold_rr_show(struct kobject *kobj,
 	return __qos_threshold_rr_show(kobj, attr, buf, false);
 }
 
-/**
+/*
  * Set threshold for "same space on all OSTs" rule.
  *
  * This sets the maximum percentage difference of free space between the most
@@ -771,8 +734,7 @@ static ssize_t qos_threshold_rr_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(mdt_qos_threshold_rr);
 LUSTRE_RW_ATTR(qos_threshold_rr);
 
-/**
- * Show expiration period used to refresh cached statfs data, which
+/* Show expiration period used to refresh cached statfs data, which
  * is used to implement QoS/RR striping allocation algorithm.
  */
 static ssize_t __qos_maxage_show(struct kobject *kobj, struct attribute *attr,
@@ -800,9 +762,7 @@ static ssize_t qos_maxage_show(struct kobject *kobj, struct attribute *attr,
 	return __qos_maxage_show(kobj, attr, buf, true);
 }
 
-/**
- * Set expiration period used to refresh cached statfs data.
- */
+/* Set expiration period used to refresh cached statfs data. */
 static ssize_t __qos_maxage_store(struct kobject *kobj, struct attribute *attr,
 				  const char *buffer, size_t count, bool is_mdt)
 {
@@ -952,13 +912,14 @@ static void *lod_osts_seq_next(struct seq_file *p, void *v, loff_t *pos)
 }
 
 /**
- * Show active/inactive status for OST found by lod_osts_seq_next().
+ * lod_tgts_seq_show() - Show active/inactive status for OST found by
+ * lod_osts_seq_next().
+ * @p: seq file
+ * @v: unused for single entry
  *
- * \param[in] m		seq file
- * \param[in] v		unused for single entry
- *
- * \retval 0		on success
- * \retval negative	error code if failed
+ * Return:
+ * * %0		on success
+ * * %negative	error code if failed
  */
 static int lod_tgts_seq_show(struct seq_file *p, void *v)
 {
@@ -1026,13 +987,11 @@ static int lod_osts_seq_open(struct inode *inode, struct file *file)
 		return rc;
 
 	seq = file->private_data;
-	seq->private = pde_data(inode);
+	seq->private = inode->i_private;
 	return 0;
 }
 
-/**
- * Show whether special failout mode for testing is enabled or not.
- */
+/* Show whether special failout mode for testing is enabled or not. */
 static ssize_t lmv_failout_show(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
@@ -1043,7 +1002,7 @@ static ssize_t lmv_failout_show(struct kobject *kobj, struct attribute *attr,
 	return scnprintf(buf, PAGE_SIZE, "%d\n", lod->lod_lmv_failout ? 1 : 0);
 }
 
-/**
+/*
  * Enable/disable a special failout mode for testing.
  *
  * This determines whether the LMV will try to continue processing a striped
@@ -1149,7 +1108,7 @@ static const struct proc_ops lod_proc_mdt_fops = {
 	.proc_open	= lod_mdts_seq_open,
 	.proc_read	= seq_read,
 	.proc_lseek	= seq_lseek,
-	.proc_release	= lprocfs_seq_release,
+	.proc_release	= seq_release,
 };
 
 static int lod_spill_threshold_pct_seq_show(struct seq_file *m, void *v)
@@ -1383,12 +1342,12 @@ struct lprocfs_vars lprocfs_lod_spill_vars[] = {
 	{ NULL }
 };
 
-static struct proc_ops lod_proc_target_fops = {
-	PROC_OWNER(THIS_MODULE)
-	.proc_open	= lod_osts_seq_open,
-	.proc_read	= seq_read,
-	.proc_lseek	= seq_lseek,
-	.proc_release	= lprocfs_seq_release,
+static const struct file_operations lod_debugfs_target_fops = {
+	.owner		= THIS_MODULE,
+	.open		= lod_osts_seq_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
 };
 
 static struct attribute *lod_attrs[] = {
@@ -1533,12 +1492,12 @@ static struct ldebugfs_vars ldebugfs_lod_vars[] = {
 };
 
 /**
- * Initialize procfs entries for LOD.
+ * lod_procfs_init() - Initialize procfs entries for LOD.
+ * @lod: LOD device
  *
- * \param[in] lod	LOD device
- *
- * \retval 0		on success
- * \retval negative	error code if failed
+ * Return:
+ * * %0 on success
+ * * %negative error code if failed
  */
 int lod_procfs_init(struct lod_device *lod)
 {
@@ -1568,14 +1527,6 @@ int lod_procfs_init(struct lod_device *lod)
 
 	rc = lprocfs_seq_create(obd->obd_proc_entry, "mdt_obd",
 				0444, &lod_proc_mdt_fops, obd);
-	if (rc) {
-		CWARN("%s: Error adding the target_obd file %d\n",
-		      obd->obd_name, rc);
-		GOTO(out, rc);
-	}
-
-	rc = lprocfs_seq_create(obd->obd_proc_entry, "target_obd",
-				0444, &lod_proc_target_fops, obd);
 	if (rc) {
 		CWARN("%s: Error adding the target_obd file %d\n",
 		      obd->obd_name, rc);
@@ -1623,6 +1574,9 @@ int lod_procfs_init(struct lod_device *lod)
 
 	ldebugfs_add_vars(obd->obd_debugfs_entry, ldebugfs_lod_vars, lod);
 
+	debugfs_create_file("target_obd", 0444, obd->obd_debugfs_entry,
+			    obd, &lod_debugfs_target_fops);
+
 	lod->lod_debugfs = ldebugfs_add_symlink(obd->obd_name, "lov",
 						"../lod/%s", obd->obd_name);
 	if (!lod->lod_debugfs)
@@ -1652,9 +1606,8 @@ out:
 }
 
 /**
- * Cleanup procfs entries registred for LOD.
- *
- * \param[in] lod	LOD device
+ * lod_procfs_fini() - Cleanup procfs entries registred for LOD.
+ * @lod: LOD device
  */
 void lod_procfs_fini(struct lod_device *lod)
 {

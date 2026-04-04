@@ -16,8 +16,6 @@
 #include <linux/sunrpc/addr.h>
 #include <net/addrconf.h>
 
-#include <libcfs/linux/linux-net.h>
-
 #include "o2iblnd.h"
 
 static const struct lnet_lnd the_o2iblnd;
@@ -1202,6 +1200,23 @@ kiblnd_ctl(struct lnet_ni *ni, unsigned int cmd, void *arg)
 	return rc;
 }
 
+static int
+kiblnd_tun_defaults(struct lnet_lnd_tunables *tunables,
+		    struct lnet_ioctl_config_lnd_cmn_tunables *cmn)
+{
+	int rc;
+
+	/* sync to latest module settings */
+	rc = kiblnd_tunables_setup(tunables, cmn);
+	if (rc < 0)
+		return 0;
+
+	memcpy(&tunables->lnd_tun_u.lnd_o2ib, &kib_default_tunables,
+	       sizeof(kib_default_tunables));
+
+	return rc;
+}
+
 static const struct ln_key_list kiblnd_tunables_keys = {
 	.lkl_maxattr                    = LNET_NET_O2IBLND_TUNABLES_ATTR_MAX,
 	.lkl_list			= {
@@ -1249,7 +1264,8 @@ static const struct ln_key_list kiblnd_tunables_keys = {
 };
 
 static int
-kiblnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
+kiblnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data,
+	      bool export_backup)
 {
 	struct lnet_ioctl_config_o2iblnd_tunables *tuns;
 	struct lnet_ni *ni = data;
@@ -1263,10 +1279,16 @@ kiblnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
 	tuns = &ni->ni_lnd_tunables.lnd_tun_u.lnd_o2ib;
 	nla_put_u32(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_HIW_PEER_CREDITS,
 		    tuns->lnd_peercredits_hiw);
-	if (tuns->lnd_map_on_demand) {
-		nla_put_flag(msg,
-			     LNET_NET_O2IBLND_TUNABLES_ATTR_MAP_ON_DEMAND);
-	}
+	/* Map on demand is obsolete and should always be set to 1.
+	 * Always report to user the default setting of 1 (True). If
+	 * the user updates their config file on modern systems the
+	 * correct default behavior will replace whatever the users
+	 * selection was previously. Eventually we can even remove
+	 * map_on_demand completely once all systems are using the
+	 * Netlink APIs. User config still having map_on_demand will
+	 * work but the value will be ignored.
+	 */
+	nla_put_flag(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_MAP_ON_DEMAND);
 	nla_put_u32(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_CONCURRENT_SENDS,
 		    tuns->lnd_concurrent_sends);
 	nla_put_u32(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_FMR_POOL_SIZE,
@@ -1278,55 +1300,13 @@ kiblnd_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
 	nla_put_u16(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_NTX, tuns->lnd_ntx);
 	nla_put_u16(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_CONNS_PER_PEER,
 		    tuns->lnd_conns_per_peer);
-	nla_put_u32(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_LND_TIMEOUT,
-		    kiblnd_timeout());
+	if (!export_backup)
+		nla_put_u32(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_LND_TIMEOUT,
+			    kiblnd_timeout());
 	nla_put_s16(msg, LNET_NET_O2IBLND_TUNABLES_ATTR_LND_TOS,
 		    tuns->lnd_tos);
 
 	return 0;
-}
-
-static inline void
-kiblnd_nl_set_default(int cmd, int type, void *data)
-{
-	struct lnet_lnd_tunables *tunables = data;
-	struct lnet_ioctl_config_o2iblnd_tunables *lt;
-	struct lnet_ioctl_config_o2iblnd_tunables *df;
-
-	lt = &tunables->lnd_tun_u.lnd_o2ib;
-	df = &kib_default_tunables;
-	switch (type) {
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_HIW_PEER_CREDITS:
-		lt->lnd_peercredits_hiw = df->lnd_peercredits_hiw;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_MAP_ON_DEMAND:
-		lt->lnd_map_on_demand = df->lnd_map_on_demand;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_CONCURRENT_SENDS:
-		lt->lnd_concurrent_sends = df->lnd_concurrent_sends;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_FMR_POOL_SIZE:
-		lt->lnd_fmr_pool_size = df->lnd_fmr_pool_size;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_FMR_FLUSH_TRIGGER:
-		lt->lnd_fmr_flush_trigger = df->lnd_fmr_flush_trigger;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_FMR_CACHE:
-		lt->lnd_fmr_cache = df->lnd_fmr_cache;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_NTX:
-		lt->lnd_ntx = df->lnd_ntx;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_LND_TIMEOUT:
-		lt->lnd_timeout = df->lnd_timeout;
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_CONNS_PER_PEER:
-		lt->lnd_conns_per_peer = df->lnd_conns_per_peer;
-		fallthrough;
-	default:
-		break;
-	}
-
 }
 
 static int
@@ -1339,20 +1319,12 @@ kiblnd_nl_set(int cmd, struct nlattr *attr, int type, void *data)
 	if (cmd != LNET_CMD_NETS)
 		return -EOPNOTSUPP;
 
-	if (!attr) {
-		kiblnd_nl_set_default(cmd, type, data);
-		return 0;
-	}
-
-	if (nla_type(attr) != LN_SCALAR_ATTR_INT_VALUE)
+	if (!attr || nla_type(attr) != LN_SCALAR_ATTR_INT_VALUE)
 		return -EINVAL;
 
 	switch (type) {
 	case LNET_NET_O2IBLND_TUNABLES_ATTR_HIW_PEER_CREDITS:
 		tunables->lnd_tun_u.lnd_o2ib.lnd_peercredits_hiw = nla_get_s64(attr);
-		break;
-	case LNET_NET_O2IBLND_TUNABLES_ATTR_MAP_ON_DEMAND:
-		tunables->lnd_tun_u.lnd_o2ib.lnd_map_on_demand = nla_get_s64(attr);
 		break;
 	case LNET_NET_O2IBLND_TUNABLES_ATTR_CONCURRENT_SENDS:
 		tunables->lnd_tun_u.lnd_o2ib.lnd_concurrent_sends = nla_get_s64(attr);
@@ -1370,7 +1342,7 @@ kiblnd_nl_set(int cmd, struct nlattr *attr, int type, void *data)
 		tunables->lnd_tun_u.lnd_o2ib.lnd_ntx = nla_get_s64(attr);
 		break;
 	case LNET_NET_O2IBLND_TUNABLES_ATTR_LND_TIMEOUT:
-		tunables->lnd_tun_u.lnd_o2ib.lnd_timeout = nla_get_s64(attr);
+		/* Ignore */
 		break;
 	case LNET_NET_O2IBLND_TUNABLES_ATTR_CONNS_PER_PEER:
 		num = nla_get_s64(attr);
@@ -1382,6 +1354,9 @@ kiblnd_nl_set(int cmd, struct nlattr *attr, int type, void *data)
 	case LNET_NET_O2IBLND_TUNABLES_ATTR_LND_TOS:
 		num = nla_get_s64(attr);
 		tunables->lnd_tun_u.lnd_o2ib.lnd_tos = num;
+		fallthrough;
+	/* map_on_demand is always 1 so ignore any MAP_ON_DEMAND ATTR */
+	case LNET_NET_O2IBLND_TUNABLES_ATTR_MAP_ON_DEMAND:
 		fallthrough;
 	default:
 		break;
@@ -1855,9 +1830,19 @@ kiblnd_fail_fmr_poolset(struct kib_fmr_poolset *fps, struct list_head *zombies)
 static void
 kiblnd_fini_fmr_poolset(struct kib_fmr_poolset *fps)
 {
+	LIST_HEAD(fps_failed_pool_list);
+	LIST_HEAD(fps_pool_list);
+
 	if (fps->fps_net != NULL) { /* initialized? */
-		kiblnd_destroy_fmr_pool_list(&fps->fps_failed_pool_list);
-		kiblnd_destroy_fmr_pool_list(&fps->fps_pool_list);
+		/* added spinlock to protect poolset */
+		spin_lock(&fps->fps_lock);
+		list_splice(&fps->fps_failed_pool_list, &fps_failed_pool_list);
+		list_splice(&fps->fps_pool_list, &fps_pool_list);
+		INIT_LIST_HEAD(&fps->fps_failed_pool_list);
+		INIT_LIST_HEAD(&fps->fps_pool_list);
+		spin_unlock(&fps->fps_lock);
+		kiblnd_destroy_fmr_pool_list(&fps_failed_pool_list);
+		kiblnd_destroy_fmr_pool_list(&fps_pool_list);
 	}
 }
 
@@ -2244,9 +2229,19 @@ kiblnd_fail_poolset(struct kib_poolset *ps, struct list_head *zombies)
 static void
 kiblnd_fini_poolset(struct kib_poolset *ps)
 {
+	LIST_HEAD(ps_failed_pool_list);
+	LIST_HEAD(ps_pool_list);
+
 	if (ps->ps_net != NULL) { /* initialized? */
-		kiblnd_destroy_pool_list(&ps->ps_failed_pool_list);
-		kiblnd_destroy_pool_list(&ps->ps_pool_list);
+		/* added spinlock to protect poolset */
+		spin_lock(&ps->ps_lock);
+		list_splice(&ps->ps_failed_pool_list, &ps_failed_pool_list);
+		list_splice(&ps->ps_pool_list, &ps_pool_list);
+		INIT_LIST_HEAD(&ps->ps_failed_pool_list);
+		INIT_LIST_HEAD(&ps->ps_pool_list);
+		spin_unlock(&ps->ps_lock);
+		kiblnd_destroy_pool_list(&ps_failed_pool_list);
+		kiblnd_destroy_pool_list(&ps_pool_list);
 	}
 }
 
@@ -2591,29 +2586,11 @@ kiblnd_net_init_pools(struct kib_net *net, struct lnet_ni *ni, __u32 *cpts,
 		      int ncpts)
 {
 	struct lnet_ioctl_config_o2iblnd_tunables *tunables;
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	unsigned long	flags;
-#endif
-	int		cpt;
-	int		rc;
-	int		i;
+	int cpt;
+	int rc;
+	int i;
 
 	tunables = &ni->ni_lnd_tunables.lnd_tun_u.lnd_o2ib;
-
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	read_lock_irqsave(&kiblnd_data.kib_global_lock, flags);
-	/* if lnd_map_on_demand is zero then we have effectively disabled
-	 * FMR or FastReg and we're using global memory regions
-	 * exclusively.
-	 */
-	if (!tunables->lnd_map_on_demand) {
-		read_unlock_irqrestore(&kiblnd_data.kib_global_lock,
-					   flags);
-		goto create_tx_pool;
-	}
-
-	read_unlock_irqrestore(&kiblnd_data.kib_global_lock, flags);
-#endif
 
 	if (tunables->lnd_fmr_pool_size < tunables->lnd_ntx / 4) {
 		CERROR("Can't set fmr pool size (%d) < ntx / 4(%d)\n",
@@ -2654,9 +2631,6 @@ kiblnd_net_init_pools(struct kib_net *net, struct lnet_ni *ni, __u32 *cpts,
 	if (i > 0)
 		LASSERT(i == ncpts);
 
-#ifdef HAVE_OFED_IB_GET_DMA_MR
- create_tx_pool:
-#endif
 	net->ibn_tx_ps = cfs_percpt_alloc(lnet_cpt_table(),
 					  sizeof(struct kib_tx_poolset));
 	if (net->ibn_tx_ps == NULL) {
@@ -2867,28 +2841,11 @@ out_clean_attr:
 	return rc;
 }
 
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-static void
-kiblnd_hdev_cleanup_mrs(struct kib_hca_dev *hdev)
-{
-	if (hdev->ibh_mrs == NULL)
-		return;
-
-	ib_dereg_mr(hdev->ibh_mrs);
-
-	hdev->ibh_mrs = NULL;
-}
-#endif
-
 void
 kiblnd_hdev_destroy(struct kib_hca_dev *hdev)
 {
 	if (hdev->ibh_event_handler.device != NULL)
 		ib_unregister_event_handler(&hdev->ibh_event_handler);
-
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	kiblnd_hdev_cleanup_mrs(hdev);
-#endif
 
 	if (hdev->ibh_pd != NULL)
 		ib_dealloc_pd(hdev->ibh_pd);
@@ -2898,27 +2855,6 @@ kiblnd_hdev_destroy(struct kib_hca_dev *hdev)
 
 	LIBCFS_FREE(hdev, sizeof(*hdev));
 }
-
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-static int
-kiblnd_hdev_setup_mrs(struct kib_hca_dev *hdev)
-{
-	struct ib_mr *mr;
-	int           acflags = IB_ACCESS_LOCAL_WRITE |
-				IB_ACCESS_REMOTE_WRITE;
-
-	mr = ib_get_dma_mr(hdev->ibh_pd, acflags);
-	if (IS_ERR(mr)) {
-		CERROR("Failed ib_get_dma_mr: %ld\n", PTR_ERR(mr));
-		kiblnd_hdev_cleanup_mrs(hdev);
-		return PTR_ERR(mr);
-	}
-
-	hdev->ibh_mrs = mr;
-
-	return 0;
-}
-#endif
 
 static int
 kiblnd_dummy_callback(struct rdma_cm_id *cmid, struct rdma_cm_event *event)
@@ -3104,14 +3040,6 @@ kiblnd_dev_failover(struct kib_dev *dev, struct net *ns)
 		goto out;
 	}
 
-#ifdef HAVE_OFED_IB_GET_DMA_MR
-	rc = kiblnd_hdev_setup_mrs(hdev);
-	if (rc != 0) {
-		CERROR("Can't setup device: %d\n", rc);
-		goto out;
-	}
-#endif
-
 	INIT_IB_EVENT_HANDLER(&hdev->ibh_event_handler,
 				hdev->ibh_ibdev, kiblnd_event_handler);
 	ib_register_event_handler(&hdev->ibh_event_handler);
@@ -3280,7 +3208,7 @@ kiblnd_handle_link_state_change(struct net_device *dev,
 		if (link_down) {
 			ni_state_before = lnet_set_link_fatal_state(ni, 1);
 		} else {
-			state = (lnet_get_link_status(dev) == 0);
+			state = (lnet_get_link_status_locked(dev) == 0);
 			ni_state_before = lnet_set_link_fatal_state(ni,
 								    state);
 		}
@@ -3518,8 +3446,6 @@ kiblnd_shutdown(struct lnet_ni *ni)
 				       libcfs_nidstr(&ni->ni_nid),
 				       atomic_read(&net->ibn_npeers));
 
-		kiblnd_net_fini_pools(net);
-
 		write_lock_irqsave(g_lock, flags);
 		LASSERT(net->ibn_dev->ibd_nnets > 0);
 		net->ibn_dev->ibd_nnets--;
@@ -3532,6 +3458,7 @@ kiblnd_shutdown(struct lnet_ni *ni)
 				       "%s: waiting for %d conns to clean\n",
 				       libcfs_nidstr(&ni->ni_nid),
 				       atomic_read(&net->ibn_nconns));
+		kiblnd_net_fini_pools(net);
 		fallthrough;
 
 	case IBLND_INIT_NOTHING:
@@ -3747,7 +3674,16 @@ kiblnd_startup(struct lnet_ni *ni)
 	net->ibn_ni = ni;
 	net->ibn_incarnation = ktime_get_real_ns() / NSEC_PER_USEC;
 
-	kiblnd_tunables_setup(ni);
+	/* if there was no tunables specified, setup the tunables to be
+	 * defaulted
+	 */
+	if (!ni->ni_lnd_tunables_set)
+		memcpy(&ni->ni_lnd_tunables.lnd_tun_u.lnd_o2ib,
+		       &kib_default_tunables, sizeof(kib_default_tunables));
+	rc = kiblnd_tunables_setup(&ni->ni_lnd_tunables,
+				   &ni->ni_net->net_tunables);
+	if (rc < 0)
+		goto failed;
 
 	/* Multi-Rail wants each secondary
 	 * IP to be treated as an unique 'struct ni' interface.
@@ -3892,16 +3828,18 @@ failed:
 }
 
 static const struct lnet_lnd the_o2iblnd = {
-	.lnd_type	= O2IBLND,
-	.lnd_startup	= kiblnd_startup,
-	.lnd_shutdown	= kiblnd_shutdown,
-	.lnd_ctl	= kiblnd_ctl,
-	.lnd_send	= kiblnd_send,
-	.lnd_recv	= kiblnd_recv,
-	.lnd_get_dev_prio = kiblnd_get_dev_prio,
-	.lnd_nl_get	= kiblnd_nl_get,
-	.lnd_nl_set	= kiblnd_nl_set,
-	.lnd_keys	= &kiblnd_tunables_keys,
+	.lnd_type		= O2IBLND,
+	.lnd_startup		= kiblnd_startup,
+	.lnd_shutdown		= kiblnd_shutdown,
+	.lnd_ctl		= kiblnd_ctl,
+	.lnd_send		= kiblnd_send,
+	.lnd_recv		= kiblnd_recv,
+	.lnd_get_dev_prio	= kiblnd_get_dev_prio,
+	.lnd_tun_defaults	= kiblnd_tun_defaults,
+	.lnd_nl_get		= kiblnd_nl_get,
+	.lnd_nl_set		= kiblnd_nl_set,
+	.lnd_get_timeout	= kiblnd_timeout,
+	.lnd_keys		= &kiblnd_tunables_keys,
 };
 
 static void ko2inlnd_assert_wire_constants(void)
@@ -4086,10 +4024,16 @@ static int __init ko2iblnd_init(void)
 	return 0;
 }
 
+#ifdef EXTERNAL_OFED_BUILD
+#define OFED_VERSION " (ext ofed: " EXTERNAL_OFED_VERSION ")"
+#else
+#define OFED_VERSION " (in-kernel)"
+#endif
+
 MODULE_AUTHOR("OpenSFS, Inc. <http://www.lustre.org/>");
 MODULE_DESCRIPTION("OpenIB gen2 LNet Network Driver");
-MODULE_VERSION("2.8.0");
+MODULE_VERSION("2.8.0" OFED_VERSION);
 MODULE_LICENSE("GPL");
 
-module_init(ko2iblnd_init);
+late_initcall_sync(ko2iblnd_init);
 module_exit(ko2iblnd_exit);

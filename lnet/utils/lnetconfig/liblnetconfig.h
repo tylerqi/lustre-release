@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1 */
+/* SPDX-License-Identifier: LGPL-2.1+ */
 
 /*
  * Copyright (c) 2014, 2017, Intel Corporation.
@@ -52,8 +52,15 @@
 #define INT_STRING_LEN		23
 #define LNET_DEFAULT_INDENT	6
 
+/* LNet module parameter path */
 #define modparam_path "/sys/module/lnet/parameters/"
-#define o2ib_modparam_path "/sys/module/ko2iblnd/parameters/"
+
+/* LND module parameter paths */
+#define o2iblnd_modparam_path "/sys/module/ko2iblnd/parameters/"
+#define socklnd_modparam_path "/sys/module/ksocklnd/parameters/"
+#define kfilnd_modparam_path "/sys/module/kkfilnd/parameters/"
+#define gnilnd_modparam_path "/sys/module/kgnilnd/parameters/"
+
 #define gni_nid_path "/proc/cray_xt/"
 
 enum lnetctl_cmd {
@@ -83,6 +90,40 @@ struct lnet_dlc_intf_descr {
 	struct list_head intf_on_network;
 	char intf_name[LNET_MAX_STR_LEN];
 	struct cfs_expr_list *cpt_expr;
+};
+
+/*
+ * lustre_lnet_ip2nets
+ *	Describes an ip2nets rule. This can be on a list of rules.
+ */
+struct lustre_lnet_ip2nets {
+	struct lnet_dlc_network_descr ip2nets_net;
+	struct list_head ip2nets_ip_ranges;
+};
+
+/*
+ * lustre_lnet_ip_range_descr
+ *	Describes an IP range.
+ *	For IPv4: Each octet is an expression (ipr_expr)
+ *	For IPv6: Single address or CIDR netmask (ipr_addr, ipr_netmask)
+ */
+struct lustre_lnet_ip_range_descr {
+	struct list_head ipr_entry;
+	struct list_head ipr_expr;	/* IPv4 expression list */
+	bool ipr_is_ipv6;		/* true if IPv6, false if IPv4 */
+	union {
+		struct in_addr ipv4;
+		struct in6_addr ipv6;
+	} ipr_addr;			/* IPv6 base address */
+	union {
+		struct in_addr ipv4;
+		struct in6_addr ipv6;
+	} ipr_netmask;			/* IPv6 netmask */
+	union {
+		struct in_addr ipv4;
+		struct in6_addr ipv6;
+	} ipr_netaddr;			/* IPv6 network address */
+	__u8 ipr_prefix_len;		/* IPv6 prefix length */
 };
 
 /* This UDSP structures need to match the kernel space structures
@@ -173,12 +214,11 @@ int lustre_lnet_config_ni_system(bool up, bool load_ni_from_mod,
  *   gw - gateway
  *   hops - number of hops passed down by the user
  *   prio - priority of the route
- *   sen - health sensitivity value for the gateway
  *   seq_no - sequence number of the request
  *   err_rc - [OUT] struct cYAML tree describing the error. Freed by caller
  */
 int lustre_lnet_config_route(char *nw, char *gw, int hops, int prio,
-			     int sen, int seq_no, struct cYAML **err_rc);
+			     int seq_no, struct cYAML **err_rc);
 
 /*
  * lustre_lnet_del_route
@@ -267,14 +307,14 @@ int lustre_lnet_show_net(char *nw, int detail, int seq_no,
 			 bool backup);
 
 /*
- * lustre_lnet_enable_routing
+ * lustre_lnet_config_routing
  *   Send down an IOCTL to enable or diable routing
  *
  *   enable - 1 to enable routing, 0 to disable routing
  *   seq_no - sequence number of the request
  *   err_rc - [OUT] struct cYAML tree describing the error. Freed by caller
  */
-int lustre_lnet_enable_routing(int enable, int seq_no,
+int lustre_lnet_config_routing(int enable, int seq_no,
 			       struct cYAML **err_rc);
 
 /*
@@ -423,6 +463,20 @@ int lustre_lnet_show_hsensitivity(int seq_no, struct cYAML **show_rc,
  */
 int lustre_lnet_show_rtr_sensitivity(int seq_no, struct cYAML **show_rc,
 				     struct cYAML **err_rc);
+
+/* lustre_lnet_config_lnd_timeout
+ *   sets the LND timeout which defines how long the LND should take to complete
+ *   a network transaction, by writing the timeout value to the sysfs file
+ *   (usually under /sys/module/<lnd>/parameters/).
+ *
+ *   timeout - timeout value to configure, in seconds
+ *   net_type - LND id to configure the timeout on
+ *   seq_no - sequence number of the request
+ *   err_rc - [OUT] struct cYAML tree describing the error. Freed by
+ *   caller
+ */
+int lustre_lnet_config_lnd_timeout(int timeout, __u32 net_type, int seq_no,
+				   struct cYAML **err_rc);
 
 /*
  * lustre_lnet_config_transaction_to
@@ -891,6 +945,16 @@ void yaml_parser_log_error(yaml_parser_t *parser, FILE *log,
  */
 void yaml_emitter_log_error(yaml_emitter_t *emitter, FILE *log);
 
+/*
+ * yaml_emitter_cleanup - Cleanup request & all memory held by reqeust
+ */
+void yaml_emitter_cleanup(yaml_emitter_t *request);
+
+/*
+ * yaml_parser_cleanup - Cleanup parser & all memory held by parser
+ */
+void yaml_parser_cleanup(yaml_parser_t *reply);
+
 /**
  * yaml_netlink_setup_emitter
  *
@@ -1037,4 +1101,18 @@ int
 lnet_yaml_str_mapping(yaml_event_t *event, yaml_emitter_t *emitter,
 		      const char *key, const char *val);
 
+int
+lustre_lnet_add_intf_descr(struct list_head *list, char *intf, int len);
+int
+lustre_lnet_add_ip_range(struct list_head *list, char *str_ip_range);
+int
+lustre_lnet_config_ip2nets(struct lustre_lnet_ip2nets *ip2nets,
+			   struct lnet_ioctl_config_lnd_tunables *tunables,
+			   struct cfs_expr_list *global_cpts,
+			   int seq_no, struct cYAML **err_rc);
+void free_intf_descr(struct lnet_dlc_intf_descr *intf_descr);
+int lustre_lnet_resolve_ip2nets_rule(struct lustre_lnet_ip2nets *ip2nets,
+				     lnet_nid_t **nids, __u32 *nnids,
+				     char *err_str, size_t str_len);
+int lustre_lnet_kfi_intf2cxi(struct lnet_dlc_intf_descr *intf);
 #endif /* LIB_LNET_CONFIG_API_H */

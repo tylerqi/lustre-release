@@ -29,7 +29,6 @@
 #endif /* CONFIG_LUSTRE_FS_POSIX_ACL */
 #include <lustre_handles.h>
 #include <lustre_intent.h>
-#include <libcfs/libcfs.h>
 #include <obd_class.h>
 #include <uapi/linux/lustre/lustre_idl.h>
 #include <lustre_lib.h>
@@ -75,19 +74,25 @@ static inline void mdc_update_max_ea_from_body(struct obd_export *exp,
 /* mdc/mdc_locks.c */
 int it_open_error(int phase, struct lookup_intent *it);
 
-static inline bool cl_is_lov_delay_create(unsigned int flags)
+static inline bool cl_is_lov_delay_create(enum mds_open_flags flags)
 {
-	return  (flags & O_LOV_DELAY_CREATE_1_8) != 0 ||
-		(flags & O_LOV_DELAY_CREATE_MASK) == O_LOV_DELAY_CREATE_MASK;
+	return (flags & O_LOV_DELAY_CREATE) == O_LOV_DELAY_CREATE;
 }
 
 static inline void cl_lov_delay_create_clear(unsigned int *flags)
 {
-	if ((*flags & O_LOV_DELAY_CREATE_1_8) != 0)
-		*flags &= ~O_LOV_DELAY_CREATE_1_8;
-	if ((*flags & O_LOV_DELAY_CREATE_MASK) == O_LOV_DELAY_CREATE_MASK)
-		*flags &= ~O_LOV_DELAY_CREATE_MASK;
+	if ((*flags & O_LOV_DELAY_CREATE) == O_LOV_DELAY_CREATE)
+		*flags &= ~O_LOV_DELAY_CREATE;
 }
+
+static inline unsigned long hash_x_index(__u64 hash, int hash64)
+{
+	if (BITS_PER_LONG == 32 && hash64)
+		hash >>= 32;
+	/* save hash 0 with hash 1 */
+	return ~0UL - (hash + !hash);
+}
+
 
 /** @} mdc */
 

@@ -97,6 +97,7 @@ TAGS
 /series
 /stamp-h1
 /LUSTRE-VERSION-FILE
+/kconftest.*
 
 # common python venv names
 /.venv
@@ -129,3 +130,7 @@ doxygen.*
 /lnet/klnds/o2iblnd/Module.symvers
 /debian/changelog
 /debian/control
+
+# coverage artifacts:
+*.gcno
+lustre/tests/lcov-merge.sh

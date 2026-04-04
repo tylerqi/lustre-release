@@ -86,16 +86,20 @@ struct qsd_instance {
 	 * enforced here (via procfs) */
 	int			 qsd_timeout;
 
+	/* how long the QSD will wait after it found it has broken with QMT */
+	int			 qsd_ver_reint_timeout;
+
+	/* count of qunit updates during glimpse */
+	int			 qsd_glimpse_refresh;
+
 	unsigned long		qsd_is_md:1,    /* managing quota for mdt */
 				qsd_started:1,  /* instance is now started */
-				qsd_prepared:1, /* qsd_prepare() successfully
-						  * called */
+				qsd_prepared:1, /* qsd_prepare() succeeded */
 				qsd_exp_valid:1,/* qsd_exp is now valid */
 				qsd_stopping:1, /* qsd_instance is stopping */
 				qsd_updating:1, /* qsd is updating record */
 				qsd_exclusive:1, /* upd exclusive with reint */
 				qsd_root_prj_enable:1;
-
 };
 
 /*
@@ -317,6 +321,42 @@ static inline int qsd_wait_timeout(struct qsd_instance *qsd)
 	return min_t(int, obd_get_at_max(obd) / 2, obd_timeout / 2);
 }
 
+/**
+ * helper function bumping lqe_pending_req if there is no quota request in
+ * flight for the lquota entry \a lqe. Otherwise, EBUSY is returned.
+ */
+static inline int qsd_request_enter(struct lquota_entry *lqe)
+{
+	/* is there already a quota request in flight? */
+	if (lqe->lqe_pending_req != 0) {
+		LQUOTA_DEBUG(lqe, "already a request in flight");
+		return -EBUSY;
+	}
+
+	if (lqe->lqe_pending_rel != 0) {
+		LQUOTA_ERROR(lqe, "no request in flight with pending_rel=%llu",
+			     lqe->lqe_pending_rel);
+		LBUG();
+	}
+
+	lqe->lqe_pending_req++;
+	return 0;
+}
+
+/**
+ * Companion of qsd_request_enter() dropping lqe_pending_req to 0.
+ */
+static inline void qsd_request_exit(struct lquota_entry *lqe)
+{
+	if (lqe->lqe_pending_req != 1) {
+		LQUOTA_ERROR(lqe, "lqe_pending_req != 1!!!");
+		LBUG();
+	}
+	lqe->lqe_pending_req--;
+	lqe->lqe_pending_rel = 0;
+	wake_up(&lqe->lqe_waiters);
+}
+
 /* qsd_entry.c */
 extern const struct lquota_entry_operations qsd_lqe_ops;
 int qsd_refresh_usage(const struct lu_env *, struct lquota_entry *);
@@ -353,7 +393,7 @@ int qsd_intent_lock(const struct lu_env *, struct obd_export *,
 		    struct quota_body *, bool, int, qsd_req_completion_t,
 		    struct qsd_qtype_info *, struct lquota_lvb *, void *);
 int qsd_fetch_index(const struct lu_env *, struct obd_export *,
-		    struct idx_info *, unsigned int, struct page **, bool *);
+		    struct idx_info *, unsigned int, struct folio **, bool *);
 
 /* qsd_writeback.c */
 void qsd_bump_version(struct qsd_qtype_info *, __u64, bool);
@@ -367,6 +407,10 @@ int qsd_process_config(struct lustre_cfg *);
 
 /* qsd_handler.c */
 int qsd_adjust(const struct lu_env *, struct lquota_entry *);
+void qsd_req_completion(const struct lu_env *env, struct qsd_qtype_info *qqi,
+			struct quota_body *reqbody, struct quota_body *repbody,
+			struct lustre_handle *lockh, struct lquota_lvb *lvb,
+			void *arg, int ret);
 
 /* qsd_writeback.c */
 void qsd_upd_schedule(struct qsd_qtype_info *, struct lquota_entry *,

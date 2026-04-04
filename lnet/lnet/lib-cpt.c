@@ -17,12 +17,11 @@
 #include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-
-#include <libcfs/libcfs_string.h>
-#include <libcfs/libcfs.h>
+#include <linux/libcfs/libcfs.h>
+#include <lnet/lib-types.h>
 #include <lnet/lib-cpt.h>
 
-/** virtual processing unit */
+/* virtual processing unit */
 struct cfs_cpu_partition {
 	/* CPUs mask for this partition */
 	cpumask_var_t			cpt_cpumask;
@@ -60,7 +59,7 @@ struct cfs_cpt_table {
 struct cfs_cpt_table *cfs_cpt_tab __read_mostly;
 EXPORT_SYMBOL(cfs_cpt_tab);
 
-/**
+/*
  * modparam for setting number of partitions
  *
  *  0 : estimate best value based on cores or NUMA nodes
@@ -70,7 +69,7 @@ EXPORT_SYMBOL(cfs_cpt_tab);
 module_param(cpu_npartitions, int, 0444);
 MODULE_PARM_DESC(cpu_npartitions, "# of CPU partitions");
 
-/**
+/*
  * modparam for setting CPU partitions patterns:
  *
  * i.e:	"0[0-3] 1[4,5,7]", number before bracket is CPU partition ID,
@@ -79,10 +78,21 @@ MODULE_PARM_DESC(cpu_npartitions, "# of CPU partitions");
  * i.e:	"N 0[0,1] 1[2,3]" the first character 'N' means numbers in bracket
  *	are NUMA node ID, number before bracket is CPU partition ID.
  *
- * i.e:	"N C[0-1]" or "C[0-1], the character 'C' means numbers in bracket are
- *	relative core numbers to exclude for each NUMA node, all other cores
- *	are included. As per the example, the first two cores of each NUMA node
- *	will be excluded, all other cores on all nodes are included.
+ * i.e:	"N C[0-1]" or "C[0-1]", the character 'C' means numbers in bracket are
+ *	relative core numbers to exclude, all other cores
+ *	are included. If 'N' is specified then the core numbers are relative to
+ *	the NUMA nodes, otherwise, they cores are relative to each partition.
+ *	As per the first example, the first two cores of each NUMA node
+ *	will be excluded, all other cores on all nodes are included with
+ *	one partition per node. In the second example, the first two cores of
+ *	each partition will be excluded, all other cores on all partitions are
+ *	included. The partition count is specified with cpu_npartitions.
+ *
+ * i.e:	"N X[0-1]" or "X[0-1]", the character 'X' means that the numbers in
+ *	brackets are processor IDs to be excluded from the CPT that they belong
+ *	to. If 'N' was specified it will use the default NUMA node layout,
+ *	otherwise it uses the default configuration for the cpu_npartitions
+ *	specified.
  *
  * i.e:	"N", shortcut expression to create CPT from NUMA & CPU topology
  *	This is the default behavior if the cpu_pattern and cpu_npartitions
@@ -623,8 +633,8 @@ void cfs_cpt_unset_node(struct cfs_cpt_table *cptab, int cpt, int node)
 }
 EXPORT_SYMBOL(cfs_cpt_unset_node);
 
-int cfs_cpt_set_node_core(struct cfs_cpt_table *cptab, int cpt,
-			     int include_lo, int include_hi)
+void cfs_set_node_core(struct cfs_cpt_table *cptab,
+		      int include_lo, int include_hi)
 {
 	const cpumask_t *mask;
 	int node, cpu;
@@ -641,16 +651,16 @@ int cfs_cpt_set_node_core(struct cfs_cpt_table *cptab, int cpt,
 				offset = cpu;
 			if (include_lo + offset <= cpu &&
 			    include_hi + offset >= cpu)
-				cfs_cpt_add_cpu(cptab, cpt, cpu);
+				cfs_cpt_add_cpu(cptab,
+						cfs_cpt_of_cpu(cptab, cpu),
+						cpu);
 		}
 	}
-
-	return 1;
 }
-EXPORT_SYMBOL(cfs_cpt_set_node_core);
+EXPORT_SYMBOL(cfs_set_node_core);
 
-void cfs_cpt_unset_node_core(struct cfs_cpt_table *cptab, int cpt,
-			     int exclude_lo, int exclude_hi)
+void cfs_unset_node_core(struct cfs_cpt_table *cptab,
+			 int exclude_lo, int exclude_hi)
 {
 	const cpumask_t *mask;
 	int node, cpu;
@@ -667,11 +677,61 @@ void cfs_cpt_unset_node_core(struct cfs_cpt_table *cptab, int cpt,
 				offset = cpu;
 			if (exclude_lo + offset <= cpu &&
 			    exclude_hi + offset >= cpu)
+				cfs_cpt_del_cpu(cptab,
+						cfs_cpt_of_cpu(cptab, cpu),
+						cpu);
+		}
+	}
+}
+EXPORT_SYMBOL(cfs_unset_node_core);
+
+void cfs_set_cpt_core(struct cfs_cpt_table *cptab,
+			int include_lo, int include_hi)
+{
+	const cpumask_t *mask;
+	int cpt, cpu;
+	int offset;
+
+	for (cpt = 0; cpt < cptab->ctb_nparts; cpt++) {
+		offset = -1;
+		mask = cptab->ctb_parts[cpt].cpt_cpumask;
+		if (cpumask_empty(mask))
+			continue;
+
+		for_each_cpu(cpu, cptab->ctb_parts[cpt].cpt_cpumask) {
+			if (offset < 0)
+				offset = cpu;
+			if (include_lo + offset <= cpu &&
+			    include_hi + offset >= cpu)
+				cfs_cpt_add_cpu(cptab, cpt, cpu);
+		}
+	}
+}
+EXPORT_SYMBOL(cfs_set_cpt_core);
+
+void cfs_unset_cpt_core(struct cfs_cpt_table *cptab,
+			int exclude_lo, int exclude_hi)
+{
+	const cpumask_t *mask;
+	int cpt, cpu;
+	int offset;
+
+	for (cpt = 0; cpt < cptab->ctb_nparts; cpt++) {
+		offset = -1;
+		mask = cptab->ctb_parts[cpt].cpt_cpumask;
+		if (cpumask_empty(mask))
+			continue;
+
+		for_each_cpu(cpu, cptab->ctb_parts[cpt].cpt_cpumask) {
+			if (offset < 0)
+				offset = cpu;
+			if (exclude_lo + offset <= cpu &&
+			    exclude_hi + offset >= cpu)
 				cfs_cpt_del_cpu(cptab, cpt, cpu);
 		}
 	}
 }
-EXPORT_SYMBOL(cfs_cpt_unset_node_core);
+EXPORT_SYMBOL(cfs_unset_cpt_core);
 
 int cfs_cpt_set_nodemask(struct cfs_cpt_table *cptab, int cpt,
 			 const nodemask_t *mask)
@@ -806,8 +866,18 @@ int cfs_cpt_bind(struct cfs_cpt_table *cptab, int cpt)
 EXPORT_SYMBOL(cfs_cpt_bind);
 
 /**
- * Choose max to \a number CPUs from \a node and set them in \a cpt.
+ * cfs_cpt_choose_ncpus() - Choose max to @number CPUs from @node and set them
+ *                          in @cpt.
+ * @cptab: CPU Partitioning Table
+ * @cpt: partitioning index
+ * @node_mask: CPU Mask
+ * @number: Count of CPU to select
+ *
  * We always prefer to choose CPU in the same core/socket.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int cfs_cpt_choose_ncpus(struct cfs_cpt_table *cptab, int cpt,
 				cpumask_t *node_mask, int number)
@@ -996,6 +1066,7 @@ static struct cfs_cpt_table *cfs_cpt_table_create_pattern(const char *pattern)
 	char *bracket;
 	char *str;
 	bool exclude = false;
+	bool relative = false;
 	int node = 0;
 	int ncpt = cpu_npartitions;
 	int cpt = 0;
@@ -1010,7 +1081,7 @@ static struct cfs_cpt_table *cfs_cpt_table_create_pattern(const char *pattern)
 		return ERR_PTR(-ENOMEM);
 	}
 
-	str = strim(pattern_dup);
+	str = skip_spaces(pattern_dup);
 	if (*str == 'n' || *str == 'N') {
 		str++; /* skip 'N' char */
 		node = 1; /* NUMA pattern */
@@ -1024,30 +1095,39 @@ static struct cfs_cpt_table *cfs_cpt_table_create_pattern(const char *pattern)
 				if (!cpumask_empty(cpumask_of_node(i)))
 					ncpt++;
 		}
-		str = strim(str);
+		str = skip_spaces(str);
+	}
+	if (*str == 'x' || *str == 'X') {
+		str++; /* skip 'X' char */
+		exclude = true;
+		str = skip_spaces(str);
 	}
 
 	if (*str == 'c' || *str == 'C') {
 		str++; /* skip 'C' char */
 		exclude = true;
-		node = -1; /* initialize all nodes to be set */
-		for_each_online_node(i)
+		relative = true;
+	}
+	if (node && !ncpt) {
+		for_each_online_node(i) {
 			if (!cpumask_empty(cpumask_of_node(i)))
 				ncpt++;
+		}
 	} else if (!ncpt) { /* scan for bracket at start of partition */
 		bracket = str;
 		while ((bracket = strchr(bracket, '['))) {
 			bracket++;
 			ncpt++;
 		}
-		if ((!ncpt && !exclude) ||
-		    (node && ncpt > num_online_nodes()) ||
-		    (!node && ncpt > num_online_cpus())) {
-			CERROR("Invalid pattern '%s', or too many partitions %d\n",
-			pattern_dup, ncpt);
-			rc = -EINVAL;
-			goto err_free_str;
-		}
+	}
+
+	if ((!ncpt && !exclude) ||
+	    (node && ncpt > num_online_nodes()) ||
+	    (!node && ncpt > num_online_cpus())) {
+		CERROR("Invalid pattern '%s', or too many partitions %d\n",
+		       pattern_dup, ncpt);
+		rc = -EINVAL;
+		goto err_free_str;
 	}
 
 	cptab = cfs_cpt_table_alloc(ncpt);
@@ -1057,35 +1137,48 @@ static struct cfs_cpt_table *cfs_cpt_table_create_pattern(const char *pattern)
 		goto err_free_str;
 	}
 
-	if (node < 0) { /* shortcut to create CPT from NUMA & CPU topology */
-		for_each_online_node(i) {
-			if (cpumask_empty(cpumask_of_node(i)))
-				continue;
+	if (exclude || node < 0) { /* create a default cpu layout */
+		if (node) {
+			for_each_online_node(i) {
+				if (cpumask_empty(cpumask_of_node(i)))
+					continue;
 
-			rc = cfs_cpt_set_node(cptab, cpt++, i);
-			if (!rc) {
-				rc = -EINVAL;
-				goto err_free_table;
+				rc = cfs_cpt_set_node(cptab, cpt++, i);
+				if (!rc) {
+					rc = -EINVAL;
+					goto err_free_table;
+				}
+
+				if (relative) {
+					c = 0;
+					for_each_cpu(rc, cpumask_of_node(i))
+						c++;
+					if (high == 0 || c < high)
+						high = c;
+				}
 			}
-
-			if (exclude) {
-				c = 0;
-				for_each_cpu(rc, cpumask_of_node(i))
-					c++;
-				if (high == 0 || c < high)
-					high = c;
+			if (node < 0) { /* return layout for only "N" */
+				kfree(pattern_dup);
+				return cptab;
+			}
+		} else {
+			cfs_cpt_table_free(cptab); /* free old table */
+			cptab = cfs_cpt_table_create(ncpt);
+			if (!cptab) {
+				rc = -ENOMEM;
+				CERROR("Failed to allocate CPU partition table based on cpu_npartitions: rc=%d\n",
+				       -rc);
+				goto err_free_str;
 			}
 		}
-		if (!exclude) {
-			kfree(pattern_dup);
-			return cptab;
-		}
+		if (!relative)
+			high = num_online_cpus() - 1;
 	}
 
 	if (!exclude)
 		high = node ? nr_node_ids - 1 : nr_cpu_ids - 1;
 
-	for (str = strim(str), c = 0; /* until break */; c++) {
+	for (c = 0; c < num_possible_cpus() /* should end sooner */; c++) {
 		struct cfs_range_expr *range;
 		struct cfs_expr_list *el;
 		int n;
@@ -1150,24 +1243,28 @@ static struct cfs_cpt_table *cfs_cpt_table_create_pattern(const char *pattern)
 		}
 
 		list_for_each_entry(range, &el->el_exprs, re_link) {
-			if (exclude && node) {
-				for (cpt = 0; cpt < ncpt; cpt++) {
-					cfs_cpt_unset_node_core(cptab, cpt,
-								range->re_lo,
-								range->re_hi);
-					if (!cfs_cpt_online(cptab, cpt)) {
-						CERROR("All cores are excluded on partition %d\n",
-						       cpt);
-						rc = -ENODEV;
-						goto err_free_table;
-					}
-				}
+			if (exclude && relative) {
+				if (node)
+					cfs_unset_node_core(cptab,
+							    range->re_lo,
+							    range->re_hi);
+				else
+					cfs_unset_cpt_core(cptab,
+							   range->re_lo,
+							   range->re_hi);
 				continue;
 			}
 
 			for (i = range->re_lo; i <= range->re_hi; i++) {
 				if ((i - range->re_lo) % range->re_stride)
 					continue;
+
+				if (exclude) {
+					cfs_cpt_unset_cpu(cptab,
+							  cfs_cpt_of_cpu(cptab,
+									 i), i);
+					continue;
+				}
 
 				rc = node ?
 				     cfs_cpt_set_node(cptab, cpt, i)
@@ -1183,7 +1280,16 @@ static struct cfs_cpt_table *cfs_cpt_table_create_pattern(const char *pattern)
 
 		cfs_expr_list_free(el);
 
-		if (!exclude && !cfs_cpt_online(cptab, cpt)) {
+		if (exclude || relative) {
+			for (cpt = 0; cpt < ncpt; cpt++) {
+				if (!cfs_cpt_online(cptab, cpt)) {
+					rc = -ENODEV;
+					CERROR("All cores are excluded on partition %d: rc=%d\n",
+					       cpt, -rc);
+					goto err_free_table;
+				}
+			}
+		} else if (!exclude && !cfs_cpt_online(cptab, cpt)) {
 			CERROR("No online CPU is found on partition %d\n", cpt);
 			rc = -ENODEV;
 			goto err_free_table;
@@ -1282,14 +1388,12 @@ cfs_percpt_number(void *vars)
 EXPORT_SYMBOL(cfs_percpt_number);
 
 #ifdef CONFIG_HOTPLUG_CPU
-#ifdef HAVE_HOTPLUG_STATE_MACHINE
 static enum cpuhp_state lustre_cpu_online;
 
 static int cfs_cpu_online(unsigned int cpu)
 {
 	return 0;
 }
-#endif
 
 static int cfs_cpu_dead(unsigned int cpu)
 {
@@ -1303,36 +1407,6 @@ static int cfs_cpu_dead(unsigned int cpu)
 	       cpu);
 	return 0;
 }
-
-#ifndef HAVE_HOTPLUG_STATE_MACHINE
-static int cfs_cpu_notify(struct notifier_block *self, unsigned long action,
-			  void *hcpu)
-{
-	int cpu = (unsigned long)hcpu;
-
-	switch (action) {
-	case CPU_DEAD:
-	case CPU_DEAD_FROZEN:
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-	default:
-		if (action != CPU_DEAD && action != CPU_DEAD_FROZEN) {
-			CDEBUG(D_INFO, "CPU changed [cpu %u action %lx]\n",
-			       cpu, action);
-			break;
-		}
-
-		cfs_cpu_dead(cpu);
-	}
-
-	return NOTIFY_OK;
-}
-
-static struct notifier_block cfs_cpu_notifier = {
-	.notifier_call	= cfs_cpu_notify,
-	.priority	= 0
-};
-#endif /* !HAVE_HOTPLUG_STATE_MACHINE */
 #endif /* CONFIG_HOTPLUG_CPU */
 
 void cfs_cpu_fini(void)
@@ -1341,14 +1415,10 @@ void cfs_cpu_fini(void)
 		cfs_cpt_table_free(cfs_cpt_tab);
 
 #ifdef CONFIG_HOTPLUG_CPU
-#ifdef HAVE_HOTPLUG_STATE_MACHINE
 	if (lustre_cpu_online > 0)
 		cpuhp_remove_state_nocalls(lustre_cpu_online);
 	cpuhp_remove_state_nocalls(CPUHP_BP_PREPARE_DYN);
-#else
-	unregister_hotcpu_notifier(&cfs_cpu_notifier);
-#endif /* !HAVE_HOTPLUG_STATE_MACHINE */
-#endif /* CONFIG_HOTPLUG_CPU */
+#endif
 }
 
 int cfs_cpu_init(void)
@@ -1358,7 +1428,6 @@ int cfs_cpu_init(void)
 	LASSERT(!cfs_cpt_tab);
 
 #ifdef CONFIG_HOTPLUG_CPU
-#ifdef HAVE_HOTPLUG_STATE_MACHINE
 	ret = cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN,
 					"fs/lustre/cfe:dead", NULL,
 					cfs_cpu_dead);
@@ -1372,11 +1441,7 @@ int cfs_cpu_init(void)
 		goto failed_cpu_online;
 
 	lustre_cpu_online = ret;
-#else
-	register_hotcpu_notifier(&cfs_cpu_notifier);
-#endif /* !HAVE_HOTPLUG_STATE_MACHINE */
-#endif /* CONFIG_HOTPLUG_CPU */
-
+#endif
 	cpus_read_lock();
 	if (*cpu_pattern) {
 		cfs_cpt_tab = cfs_cpt_table_create_pattern(cpu_pattern);
@@ -1409,16 +1474,13 @@ failed_alloc_table:
 	if (!IS_ERR_OR_NULL(cfs_cpt_tab))
 		cfs_cpt_table_free(cfs_cpt_tab);
 
+	ret = -EINVAL;
 #ifdef CONFIG_HOTPLUG_CPU
-#ifdef HAVE_HOTPLUG_STATE_MACHINE
 	if (lustre_cpu_online > 0)
 		cpuhp_remove_state_nocalls(lustre_cpu_online);
 failed_cpu_online:
 	cpuhp_remove_state_nocalls(CPUHP_BP_PREPARE_DYN);
 failed_cpu_dead:
-#else
-	unregister_hotcpu_notifier(&cfs_cpu_notifier);
-#endif /* !HAVE_HOTPLUG_STATE_MACHINE */
-#endif /* CONFIG_HOTPLUG_CPU */
+#endif
 	return ret;
 }

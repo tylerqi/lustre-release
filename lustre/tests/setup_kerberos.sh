@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 # -*- mode: Bash; tab-width: 4; indent-tabs-mode: t; -*-
 # vim:shiftwidth=4:softtabstop=4:tabstop=4:
 
@@ -487,7 +487,8 @@ cfg_libgssapi() {
 			grep libgssapi_krb5.so | head -n1)
 
 		if ! do_node_mute $node \
-	"egrep -q \\\"^$krb5_lib|^$(basename $krb5_lib)\\\" $GSSAPI_MECH_CONF"; then
+		     "grep -E -q \\\"^$krb5_lib|^$(basename $krb5_lib)\\\" \
+		     $GSSAPI_MECH_CONF"; then
 			do_node_mute $node \
 			"echo '$krb5_lib mechglue_internal_krb5_init' >> $GSSAPI_MECH_CONF"
 		fi

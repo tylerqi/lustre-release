@@ -289,6 +289,7 @@ static int osd_zap_cursor_retrieve_value(const struct lu_env *env,
 	zap_attribute_t *za = &osd_oti_get(env)->oti_za;
 	zap_cursor_t *zc = it->oiq_zc;
 	struct osd_device *osd = osd_obj2dev(it->oiq_obj);
+	uint64_t acct_obj;
 	int rc, actual_size;
 
 	rc = -zap_cursor_retrieve(zc, za);
@@ -308,9 +309,15 @@ static int osd_zap_cursor_retrieve_value(const struct lu_env *env,
 	}
 
 	/* use correct special ID to request bytes used */
-	rc = osd_zap_lookup(osd, fid_oid(fid) == ACCT_GROUP_OID ?
-			    DMU_GROUPUSED_OBJECT : DMU_USERUSED_OBJECT, NULL,
-			    za->za_name, za->za_integer_length, buf_size, buf);
+	if (fid_oid(fid) == ACCT_USER_OID)
+		acct_obj = DMU_USERUSED_OBJECT;
+	else if (fid_oid(fid) == ACCT_GROUP_OID)
+		acct_obj = DMU_GROUPUSED_OBJECT;
+	else
+		acct_obj = DMU_PROJECTUSED_OBJECT;
+
+	rc = osd_zap_lookup(osd, acct_obj, NULL, za->za_name,
+			    za->za_integer_length, buf_size, buf);
 	if (likely(rc == 0))
 		*bytes_read = actual_size;
 
@@ -511,6 +518,7 @@ int osd_declare_quota(const struct lu_env *env, struct osd_device *osd,
 	struct qsd_instance *qsd = NULL;
 	int rcu, rcg, rcp = 0; /* user & group & project rc */
 	struct thandle *th = &oh->ot_super;
+	enum osd_quota_local_flags tmp_flags;
 	bool force = !!(osd_qid_declare_flags & OSD_QID_FORCE) ||
 			th->th_ignore_quota;
 
@@ -563,11 +571,24 @@ int osd_declare_quota(const struct lu_env *env, struct osd_device *osd,
 	/* for project quota */
 	if (osd->od_projectused_dn) {
 		qi->lqi_id.qid_projid = projid;
+		qi->lqi_ignore_root_proj_quota = th->th_ignore_root_proj_quota;
 		qi->lqi_type = PRJQUOTA;
+
+		tmp_flags = 0;
+		if (local_flags)
+			tmp_flags = *local_flags;
 		rcp = qsd_op_begin(env, qsd, &oh->ot_quota_trans, qi,
-				   local_flags);
-		if (local_flags && *local_flags & QUOTA_FL_ROOT_PRJQUOTA)
-			force = th->th_ignore_quota;
+				   &tmp_flags);
+		if (tmp_flags & QUOTA_FL_ROOT_PRJQUOTA &&
+		    !(osd_qid_declare_flags & OSD_QID_IGNORE_ROOT_PRJ))
+			/* Currently, th_ignore_quota is only set for inode
+			 * quota in mdd_trans_create if the user has
+			 * CAP_SYS_RESOURCE, then it should be ignored if
+			 * root_prj_enable is set.
+			 */
+			force = 0;
+		if (local_flags)
+			*local_flags = tmp_flags;
 		if (force && (rcp == -EDQUOT || rcp == -EINPROGRESS))
 			rcp = 0;
 	}

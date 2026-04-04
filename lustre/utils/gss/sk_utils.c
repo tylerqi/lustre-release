@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2015, Trustees of Indiana University
  *
@@ -34,9 +14,9 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <openssl/dh.h>
-#include <openssl/engine.h>
 #include <openssl/err.h>
 #include <openssl/hmac.h>
+#include <openssl/rand.h>
 #ifdef HAVE_OPENSSL_EVP_PKEY
 #include <openssl/param_build.h>
 #endif
@@ -45,6 +25,7 @@
 #include <libcfs/util/string.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <linux/lustre/lgss.h>
 
 #include "sk_utils.h"
 #include "write_bytes.h"
@@ -58,6 +39,8 @@
 # include "gss_oids.h"
 # include "err_util.h"
 #endif
+
+int fips_mode = -1;
 
 #ifdef _ERR_UTIL_H_
 /**
@@ -73,6 +56,207 @@ void sk_init_logging(char *program, int verbose, int fg)
 }
 #endif
 
+#if !defined(HAVE_OPENSSL_EVP_PKEY) && OPENSSL_VERSION_NUMBER >= 0x10100000L
+static int __fetch_ssk_prime(struct sk_keyfile_config *config)
+{
+	const BIGNUM *p;
+	DH *dh = NULL;
+	int primenid;
+	int rc = -1;
+
+	primenid = sk_primebits2primenid(config->skc_prime_bits);
+	dh = DH_new_by_nid(primenid);
+	if (!dh) {
+		fprintf(stderr, "error: dh cannot be init\n");
+		goto prime_end;
+	}
+
+	p = DH_get0_p(dh);
+	if (!p) {
+		fprintf(stderr, "error: cannot get p from dh\n");
+		goto prime_end;
+	}
+
+	if (BN_num_bytes(p) > SK_MAX_P_BYTES) {
+		fprintf(stderr,
+			"error: requested length %d exceeds maximum %d\n",
+			BN_num_bytes(p), SK_MAX_P_BYTES * 8);
+		goto prime_end;
+	}
+
+	if (BN_bn2bin(p, config->skc_p) != BN_num_bytes(p)) {
+		fprintf(stderr, "error: convert BIGNUM p to binary failed\n");
+		goto prime_end;
+	}
+
+	rc = 0;
+
+prime_end:
+	if (rc)
+		fprintf(stderr,
+			"error: fetching SSK prime failed: %s\n",
+			ERR_error_string(ERR_get_error(), NULL));
+	DH_free(dh);
+	return rc;
+}
+#endif
+
+/**
+ * Generates the prime required by the client key, and stores it in the
+ * struct sk_keyfile_config.
+ *
+ * \param[in]	config		config describing the key
+ *
+ * \return	0		success
+ * \return	-1		failure
+ */
+int gen_ssk_prime(struct sk_keyfile_config *config)
+{
+	int rc = -1;
+	const char *primename;
+	EVP_PKEY_CTX *ctx = NULL;
+	EVP_PKEY *dh = NULL;
+	BIGNUM *p = NULL;
+
+	if (fips_mode < 0)
+		fips_mode = FIPS_mode();
+	if (fips_mode) {
+		primename = sk_primebits2name(config->skc_prime_bits);
+		if (!primename) {
+			fprintf(stderr,
+				"error: prime len %d not supported in FIPS mode\n",
+				config->skc_prime_bits);
+			return rc;
+		}
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+		fprintf(stdout,
+			"FIPS mode, using well-known prime %s\n", primename);
+#ifndef HAVE_OPENSSL_EVP_PKEY
+		return __fetch_ssk_prime(config);
+#endif
+#endif /* OPENSSL_VERSION_NUMBER >= 0x10100000L */
+	}
+
+	ctx = EVP_PKEY_CTX_new_from_name(NULL, "DH", NULL);
+	if (!ctx || EVP_PKEY_paramgen_init(ctx) != 1) {
+		fprintf(stderr, "error: ctx cannot be init\n");
+		goto prime_end;
+	}
+
+	if (EVP_PKEY_CTX_set_dh_paramgen_prime_len(ctx,
+						config->skc_prime_bits) <= 0 ||
+	    EVP_PKEY_CTX_set_dh_paramgen_generator(ctx, SK_GENERATOR) <= 0) {
+		fprintf(stderr, "error: cannot set prime or generator\n");
+		goto prime_end;
+	}
+
+	if (EVP_PKEY_paramgen(ctx, &dh) != 1) {
+		fprintf(stderr, "error: cannot generate DH parameters\n");
+		goto prime_end;
+	}
+
+	if (!EVP_PKEY_get_bn_param(dh, OSSL_PKEY_PARAM_FFC_P, &p)) {
+		fprintf(stderr, "error: cannot get p from dh\n");
+		goto prime_end;
+	}
+
+	if (BN_num_bytes(p) > SK_MAX_P_BYTES) {
+		fprintf(stderr,
+			"error: cannot generate DH parameters: requested length %d exceeds maximum %d\n",
+			config->skc_prime_bits, SK_MAX_P_BYTES * 8);
+		goto prime_end;
+	}
+	if (BN_bn2bin(p, config->skc_p) != BN_num_bytes(p)) {
+		fprintf(stderr,
+			"error: convert BIGNUM p to binary failed\n");
+		goto prime_end;
+	}
+
+	rc = 0;
+
+prime_end:
+	if (rc)
+		fprintf(stderr,
+			"error: generating SSK prime failed: %s\n",
+			ERR_error_string(ERR_get_error(), NULL));
+	EVP_PKEY_free(dh);
+	EVP_PKEY_CTX_free(ctx);
+	return rc;
+}
+
+static int write_data_with_error_handling(int fd, const void *data,
+					  size_t expected_size,
+					  const char *output_file,
+					  const char *data_type)
+{
+	ssize_t rc;
+
+	rc = write(fd, data, expected_size);
+	if (rc < 0) {
+		fprintf(stderr, "error: writing %s to '%s': %s\n",
+			data_type, output_file, strerror(errno));
+		return -errno;
+	} else if (rc != expected_size) {
+		fprintf(stderr, "error: short write to '%s'\n", output_file);
+		return -ENOSPC;
+	}
+	return 0;
+}
+
+/**
+ * Writes sk config to file.
+ *
+ * \param[in]	output_file		output file to write sk config to
+ * \param[in]	config			the sk config to write
+ * \param[in]	overwrite		true to overwrite existing output file
+ * \param[in]	ascii_format		true to write ASCII-encoded output
+ *
+ * \return	0		success
+ * \return	-errno		on failure
+ */
+int write_config_file(char *output_file, struct sk_keyfile_config *config,
+		      bool overwrite, bool ascii_format)
+{
+	int flags = O_WRONLY | O_CREAT;
+	char *ascii_data = NULL;
+	size_t ascii_len = 0;
+	int fd, rc;
+
+	if (!overwrite)
+		flags |= O_EXCL;
+
+	sk_config_cpu_to_disk(config);
+
+	fd = open(output_file, flags, 0400);
+	if (fd < 0) {
+		fprintf(stderr, "error: opening '%s': %s\n", output_file,
+			strerror(errno));
+		return -errno;
+	}
+
+	if (ascii_format) {
+		/* Generate ASCII-encoded output */
+		rc = sk_encode_ascii_key(config, &ascii_data, &ascii_len);
+		if (rc) {
+			fprintf(stderr,
+				"error: failed to encode key in ASCII format\n");
+			close(fd);
+			return -EINVAL;
+		}
+
+		rc = write_data_with_error_handling(fd, ascii_data, ascii_len,
+						    output_file, "ASCII data");
+		free(ascii_data);
+	} else {
+		/* Binary format output */
+		rc = write_data_with_error_handling(fd, config, sizeof(*config),
+						    output_file, "data");
+	}
+
+	close(fd);
+	return rc;
+}
+
 /**
  * Loads the key from \a filename and returns the struct sk_keyfile_config.
  * It should be freed by the caller.
@@ -84,17 +268,14 @@ void sk_init_logging(char *program, int verbose, int fg)
  */
 struct sk_keyfile_config *sk_read_file(char *filename)
 {
-	struct sk_keyfile_config *config;
+	struct sk_keyfile_config *config = NULL;
+	char *file_data = NULL;
 	char *ptr;
-	size_t rc;
-	size_t remain;
+	size_t bytes_read = 0;
+	size_t max_size;
+	struct stat st;
 	int fd;
-
-	config = malloc(sizeof(*config));
-	if (!config) {
-		printerr(0, "Failed to allocate memory for config\n");
-		return NULL;
-	}
+	ssize_t rc;
 
 	/* allow standard input override */
 	if (strcmp(filename, "-") == 0)
@@ -105,58 +286,101 @@ struct sk_keyfile_config *sk_read_file(char *filename)
 	if (fd == -1) {
 		printerr(0, "Error opening key file '%s': %s\n", filename,
 			 strerror(errno));
-		goto out_free;
-	} else if (fd != STDIN_FILENO) {
-		struct stat st;
+		return NULL;
+	}
 
+	/* Check file permissions for regular files */
+	if (fd != STDIN_FILENO) {
 		rc = fstat(fd, &st);
-		if (rc == 0 && (st.st_mode & ~(S_IFREG | 0600)))
+		if (rc == 0 && (st.st_mode & ~(S_IFREG | 0600))) {
 			fprintf(stderr, "warning: "
 				"secret key '%s' has insecure file mode %#o\n",
 				filename, st.st_mode);
+		}
 	}
 
-	ptr = (char *)config;
-	remain = sizeof(*config);
-	while (remain > 0) {
-		rc = read(fd, ptr, remain);
+	/* Allocate fixed buffer - twice config size should be enough */
+	max_size = 2 * sizeof(struct sk_keyfile_config);
+	file_data = malloc(max_size + 1);
+	if (!file_data) {
+		printerr(0, "Failed to allocate memory for file data\n");
+		goto out_close;
+	}
+
+	/* Read file with size limit */
+	ptr = file_data;
+	while (bytes_read < max_size) {
+		rc = read(fd, ptr, max_size - bytes_read);
 		if (rc == -1) {
 			if (errno == EINTR)
 				continue;
 			printerr(0, "read() failed on %s: %s\n", filename,
 				 strerror(errno));
-			goto out_close;
+			goto out_free;
 		} else if (rc == 0) {
-			printerr(0, "File %s does not have a complete key\n",
-				 filename);
-			goto out_close;
+			break;
 		}
+
 		ptr += rc;
-		remain -= rc;
+		bytes_read += rc;
+	}
+
+	/* Check if file is too large */
+	if (bytes_read >= max_size) {
+		printerr(0,
+			 "File %s too large, exceeds maximum expected size\n",
+			 filename);
+		goto out_free;
 	}
 
 	if (fd != STDIN_FILENO)
 		close(fd);
-	sk_config_disk_to_cpu(config);
+	fd = -1;
+
+	/* Null-terminate for ASCII processing */
+	file_data[bytes_read] = '\0';
+
+	if (sk_is_ascii_encoded(file_data, bytes_read)) {
+		config = sk_decode_ascii_key(file_data, bytes_read);
+
+		/* Free original buffer since decode allocates new one */
+		free(file_data);
+	} else {
+		/* Binary format - check size and process */
+		if (bytes_read != sizeof(struct sk_keyfile_config)) {
+			printerr(0,
+				"File %s does not have a complete key: got %zu bytes, expected %zu bytes\n",
+				filename, bytes_read,
+				sizeof(struct sk_keyfile_config));
+			goto out_free;
+		}
+
+		/* Use the existing buffer as config */
+		config = (struct sk_keyfile_config *)file_data;
+	}
+
+	if (config)
+		sk_config_disk_to_cpu(config);
+
 	return config;
 
-out_close:
-	close(fd);
 out_free:
-	free(config);
+	free(file_data);
+out_close:
+	if (fd != -1)
+		close(fd);
 	return NULL;
 }
 
 /**
  * Checks if a key matching \a description is found in the keyring for
- * logging purposes and then attempts to load \a payload of \a psize into a key
- * with \a description.
+ * logging purposes and then attempts to load the payload from \a skc keyfile
+ * config into a key with \a description.
  *
- * \param[in]	payload		Key payload
- * \param[in]	psize		Payload size
+ * \param[in]	skc		keyfile config to load
  * \param[in]	description	Description used for key in keyring
  *
- * \return	0	sucess
+ * \return	>= 0	key serial of key successfully loaded
  * \return	-1	failure
  */
 static key_serial_t sk_load_key(const struct sk_keyfile_config *skc,
@@ -200,40 +424,43 @@ static key_serial_t sk_load_key(const struct sk_keyfile_config *skc,
  * same description are replaced.
  *
  * \param[in]	path	Path to key file
- * \param[in]	type	Type of key to load which determines the description
+ * \param[in]	client	Client is mounting with a server key
  *
- * \return	0	sucess
- * \return	-1	failure
+ * \return	> 0	client file system key id if successfully loaded
+ * \return	  0	other key type successfully loaded
+ * \return	< 0	-errno on failure
  */
-int sk_load_keyfile(char *path)
+int sk_load_keyfile(char *path, bool client)
 {
 	struct sk_keyfile_config *config;
 	char description[SK_DESCRIPTION_SIZE + 1];
 	struct stat buf;
-	int i;
-	int rc;
-	int rc2 = -1;
+	int keyid = 0;
+	int i, rc;
 
 	rc = stat(path, &buf);
 	if (rc == -1) {
 		printerr(0, "stat() failed for file %s: %s\n", path,
 			 strerror(errno));
-		return rc2;
+		return -errno;
 	}
 
+read_sk:
 	config = sk_read_file(path);
 	if (!config)
-		return rc2;
+		return -ENOKEY;
 
 	/* Similar to ssh, require adequate care of key files */
 	if (buf.st_mode & (S_IRGRP | S_IWGRP | S_IWOTH | S_IXOTH)) {
-		printerr(0, "Shared key files must be read/writeable only by "
-			 "owner\n");
-		return -1;
+		printerr(0,
+			 "Shared key files must be readable/writeable only by owner\n");
+		return -EACCES;
 	}
 
-	if (sk_validate_config(config))
+	if (sk_validate_config(config)) {
+		rc = -ENOKEY;
 		goto out;
+	}
 
 	/* The server side can have multiple key files per file system so
 	 * the nodemap name is appended to the key description to uniquely
@@ -242,34 +469,65 @@ int sk_load_keyfile(char *path)
 		/* Any key can be an MGS key as long as we are told to use it */
 		rc = snprintf(description, SK_DESCRIPTION_SIZE, "lustre:MGS:%s",
 			      config->skc_nodemap);
-		if (rc >= SK_DESCRIPTION_SIZE)
+		if (rc >= SK_DESCRIPTION_SIZE) {
+			rc = -ENAMETOOLONG;
 			goto out;
-		if (sk_load_key(config, description) == -1)
+		}
+		if (sk_load_key(config, description) == -1) {
+			rc = -ENOKEY;
 			goto out;
+		}
 	}
 	if (config->skc_type & SK_TYPE_SERVER) {
+		if (client) {
+			/* Client is mounting with a server key:
+			 * generate prime on the fly and reload.
+			 */
+			config->skc_type = SK_TYPE_CLIENT;
+
+			/* This message is verified by sanity-sec.sh test_100 */
+			printf("Generating DH parameters to turn %s into a client key, this can take a while...\n",
+				path);
+			if (gen_ssk_prime(config))
+				goto out;
+			if (write_config_file(path, config, true, false))
+				goto out;
+			free(config);
+			goto read_sk;
+		}
+
 		/* Server keys need to have the file system name in the key */
 		if (config->skc_fsname[0] == '\0') {
-			printerr(0, "Key configuration has no file system "
-				 "attribute.  Can't load as server type\n");
+			printerr(0,
+				 "Key configuration has no file system attribute.  Can't load as server type\n");
+			rc = -ENOKEY;
 			goto out;
 		}
 		rc = snprintf(description, SK_DESCRIPTION_SIZE, "lustre:%s:%s",
 			      config->skc_fsname, config->skc_nodemap);
-		if (rc >= SK_DESCRIPTION_SIZE)
+		if (rc >= SK_DESCRIPTION_SIZE) {
+			rc = -ENAMETOOLONG;
 			goto out;
-		if (sk_load_key(config, description) == -1)
+		}
+		if (sk_load_key(config, description) == -1) {
+			rc = -ENOKEY;
 			goto out;
+		}
 	}
 	if (config->skc_type & SK_TYPE_CLIENT) {
 		/* Load client file system key */
 		if (config->skc_fsname[0] != '\0') {
 			rc = snprintf(description, SK_DESCRIPTION_SIZE,
 				      "lustre:%s", config->skc_fsname);
-			if (rc >= SK_DESCRIPTION_SIZE)
+			if (rc >= SK_DESCRIPTION_SIZE) {
+				rc = -ENAMETOOLONG;
 				goto out;
-			if (sk_load_key(config, description) == -1)
+			}
+			keyid = sk_load_key(config, description);
+			if (keyid == -1) {
+				rc = -ENOKEY;
 				goto out;
+			}
 		}
 
 		/* Load client MGC keys */
@@ -279,18 +537,23 @@ int sk_load_keyfile(char *path)
 			rc = snprintf(description, SK_DESCRIPTION_SIZE,
 				      "lustre:MGC%s",
 				      libcfs_nid2str(config->skc_mgsnids[i]));
-			if (rc >= SK_DESCRIPTION_SIZE)
+			if (rc >= SK_DESCRIPTION_SIZE) {
+				rc = -ENAMETOOLONG;
 				goto out;
-			if (sk_load_key(config, description) == -1)
+			}
+			if (sk_load_key(config, description) == -1) {
+				rc = -ENOKEY;
 				goto out;
+			}
 		}
 	}
-
-	rc2 = 0;
+	rc = 0;
 
 out:
 	free(config);
-	return rc2;
+	if (keyid > 0)
+		return keyid;
+	return rc;
 }
 
 /**
@@ -415,6 +678,156 @@ int sk_validate_config(const struct sk_keyfile_config *config)
 		printerr(0, "Invalid key type\n");
 		return -1;
 	}
+
+	return 0;
+}
+
+/**
+ * Checks if the given data is ASCII-encoded SSK key format
+ *
+ * \param[in]	data	Data to check
+ * \param[in]	len	Length of data
+ *
+ * \return	1	ASCII-encoded format
+ * \return	0	binary format
+ */
+int sk_is_ascii_encoded(const char *data, size_t len)
+{
+	if (len < SK_ASCII_HEADER_LEN)
+		return 0;
+
+	return memcmp(data, SK_ASCII_HEADER, SK_ASCII_HEADER_LEN) == 0;
+}
+
+/**
+ * Decodes ASCII-encoded SSK key data into sk_keyfile_config structure
+ *
+ * \param[in,out]	ascii_data	ASCII-encoded key data (may be modified)
+ * \param[in]		len		Length of ASCII data
+ *
+ * \return	sk_keyfile_config	success
+ * \return	NULL			failure
+ */
+struct sk_keyfile_config *sk_decode_ascii_key(char *ascii_data, size_t len)
+{
+	struct sk_keyfile_config *config;
+	const char *encoded_start;
+	size_t encoded_len;
+	int decoded_len;
+
+	if (!sk_is_ascii_encoded(ascii_data, len)) {
+		printerr(0, "Data is not ASCII-encoded SSK key format\n");
+		return NULL;
+	}
+
+	/* Skip the header string and any whitespace */
+	encoded_start = ascii_data + SK_ASCII_HEADER_LEN;
+	while (encoded_start < ascii_data + len &&
+	       (*encoded_start == ' ' || *encoded_start == '\t' ||
+		*encoded_start == '\n' || *encoded_start == '\r'))
+		encoded_start++;
+
+	encoded_len = len - (encoded_start - ascii_data);
+	if (encoded_len <= 0) {
+		printerr(0, "No encoded data found after header string\n");
+		return NULL;
+	}
+
+	/* Remove trailing whitespace */
+	while (encoded_len > 0 &&
+	       (encoded_start[encoded_len - 1] == ' ' ||
+		encoded_start[encoded_len - 1] == '\t' ||
+		encoded_start[encoded_len - 1] == '\n' ||
+		encoded_start[encoded_len - 1] == '\r'))
+		encoded_len--;
+
+	decoded_len = gss_base64url_decode((char **)&encoded_start,
+					   ascii_data,
+					   sizeof(struct sk_keyfile_config));
+	if (decoded_len != sizeof(struct sk_keyfile_config)) {
+		printerr(0,
+			"Failed to decode base64url data or incorrect size: got %d bytes, expected %zu bytes\n",
+			decoded_len, sizeof(struct sk_keyfile_config));
+		return NULL;
+	}
+
+	/* Allocate new buffer for the result */
+	config = malloc(sizeof(struct sk_keyfile_config));
+	if (!config) {
+		printerr(0, "Failed to allocate memory for config\n");
+		return NULL;
+	}
+
+	/* Copy the decoded data to the result buffer */
+	memcpy(config, ascii_data, sizeof(struct sk_keyfile_config));
+
+	return config;
+}
+
+/**
+ * Encodes sk_keyfile_config structure into ASCII format
+ *
+ * \param[in]	config		Key configuration to encode
+ * \param[out]	ascii_data	Allocated ASCII-encoded data (caller must free)
+ * \param[out]	ascii_len	Length of ASCII-encoded data
+ *
+ * \return	0	success
+ * \return	-1	failure
+ */
+int sk_encode_ascii_key(const struct sk_keyfile_config *config,
+			char **ascii_data, size_t *ascii_len)
+{
+	char *output = NULL;
+	size_t encoded_len;
+	size_t total_len;
+	char *ptr;
+	int len;
+	int rc;
+
+	if (!config || !ascii_data || !ascii_len) {
+		printerr(0, "Invalid parameters for ASCII encoding\n");
+		return -1;
+	}
+
+	/* Calculate total length: header + encoded data + newline + null
+	 * terminator
+	 */
+	encoded_len = BASE64URL_CHARS(sizeof(struct sk_keyfile_config));
+	total_len = SK_ASCII_HEADER_LEN + encoded_len + 2;
+
+	output = malloc(total_len);
+	if (!output) {
+		printerr(0, "Failed to allocate memory for ASCII output\n");
+		return -1;
+	}
+
+	/* header */
+	memcpy(output, SK_ASCII_HEADER, SK_ASCII_HEADER_LEN);
+
+	ptr = output + SK_ASCII_HEADER_LEN;
+	len = encoded_len + 1; /* +1 for trailing space padding */
+	rc = gss_base64url_encode(&ptr, &len, (const __u8 *)config,
+				  sizeof(*config));
+	if (rc < 0) {
+		printerr(0, "Failed to base64url encode key data\n");
+		free(output);
+		return -1;
+	}
+
+	/* back up pointer to trailing space and bound check for new line */
+	ptr--;
+	if (ptr < output || ptr > output + total_len - 2) {
+		printerr(0,
+			 "Invalid pointer position after base64url encoding\n");
+		free(output);
+		return -1;
+	}
+	/* add newline, overwrite trailing space */
+	*ptr++ = '\n';
+	*ptr = '\0';
+
+	*ascii_data = output;
+	*ascii_len = strlen(output);
 
 	return 0;
 }

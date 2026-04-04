@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2016, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ptlrpc/gss/gss_cli_upcall.c
  *
  * Author: Eric Mei <ericm@clusterfs.com>
  */
@@ -76,6 +56,13 @@ int ctx_init_pack_request(struct obd_import *imp,
 	LASSERT(msg->lm_bufcount <= 4);
 	LASSERT(req->rq_cli_ctx);
 	LASSERT(req->rq_cli_ctx->cc_sec);
+
+	if (!imp->imp_sec) {
+		CDEBUG(D_SEC,
+		       "%s: no sec on import, ctx init request is too late or too soon: rc = %d\n",
+		       imp->imp_obd->obd_name, -EINVAL);
+		return -EINVAL;
+	}
 
 	/* gss hdr */
 	ghdr = lustre_msg_buf(msg, 0, sizeof(*ghdr));
@@ -218,7 +205,7 @@ int ctx_init_parse_reply(struct lustre_msg *msg, int swabbed,
 	return effective;
 }
 
-int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
+int gss_do_ctx_init_rpc(char *buffer, unsigned long count)
 {
 	struct obd_import *imp = NULL, *imp0;
 	struct ptlrpc_request *req;
@@ -226,6 +213,7 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 	struct obd_device *obd;
 	char obdname[64];
 	long lsize;
+	__s64 status;
 	int rc;
 
 	if (count != sizeof(param)) {
@@ -233,11 +221,8 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 		       count, (unsigned long) sizeof(param));
 		RETURN(-EINVAL);
 	}
-	if (copy_from_user(&param, buffer, sizeof(param))) {
-		CERROR("failed copy data from lgssd\n");
-		RETURN(-EFAULT);
-	}
 
+	memcpy(&param, buffer, sizeof(param));
 	if (param.version != GSSD_INTERFACE_VERSION) {
 		CERROR("gssd interface version %d (expect %d)\n",
 		       param.version, GSSD_INTERFACE_VERSION);
@@ -315,11 +300,11 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 	req = ptlrpc_request_alloc_pack(imp, &RQF_SEC_CTX, LUSTRE_OBD_VERSION,
 					SEC_CTX_INIT);
 	if (IS_ERR(req)) {
-		param.status = PTR_ERR(req);
+		status = PTR_ERR(req);
 		req = NULL;
 		goto out_copy;
 	} else if (!req->rq_cli_ctx || !req->rq_cli_ctx->cc_sec) {
-		param.status = -ENOMEM;
+		status = -ENOMEM;
 		goto out_copy;
 	}
 
@@ -328,7 +313,7 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 		CWARN("%s: original secid %d, now has changed to %d, cancel this negotiation: rc = %d\n",
 		      obd->obd_name, param.secid,
 		      req->rq_cli_ctx->cc_sec->ps_id, rc);
-		param.status = rc;
+		status = rc;
 		goto out_copy;
 	}
 
@@ -339,7 +324,7 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 				   param.send_token_size,
 				   (char __user *)param.send_token);
 	if (rc) {
-		param.status = rc;
+		status = rc;
 		goto out_copy;
 	}
 
@@ -356,12 +341,12 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 		 * FIXME maybe some other error code shouldn't be treated
 		 * as timeout.
 		 */
-		param.status = rc;
+		status = rc;
 		if (rc != -EACCES)
-			param.status = -ETIMEDOUT;
+			status = -ETIMEDOUT;
 		CDEBUG(D_SEC,
 		       "%s: ctx init req got %d, returning to userspace status %lld\n",
-		       obd->obd_name, rc, param.status);
+		       obd->obd_name, rc, status);
 		goto out_copy;
 	}
 
@@ -371,15 +356,16 @@ int gss_do_ctx_init_rpc(char __user *buffer, unsigned long count)
 				     (char __user *)param.reply_buf,
 				     param.reply_buf_size);
 	if (lsize < 0) {
-		param.status = (int) lsize;
+		status = (int) lsize;
 		goto out_copy;
 	}
 
-	param.status = 0;
-	param.reply_length = lsize;
+	status = 0;
 
 out_copy:
-	if (copy_to_user(buffer, &param, sizeof(param)))
+	/* param.status is a user-space pointer. We are sending
+	 * back the result to the userspace caller. */
+	if (copy_to_user(param.status, &status, sizeof(status)))
 		rc = -EFAULT;
 	else
 		rc = 0;

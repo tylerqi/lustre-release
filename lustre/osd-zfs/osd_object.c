@@ -17,7 +17,6 @@
 
 #define DEBUG_SUBSYSTEM S_OSD
 
-#include <libcfs/libcfs.h>
 #include <obd_support.h>
 #include <lustre_net.h>
 #include <obd.h>
@@ -122,7 +121,8 @@ void osd_object_sa_dirty_rele(const struct lu_env *env, struct osd_thandle *oh)
 			}
 			up_write(&obj->oo_guard);
 		}
-		sa_spill_rele(obj->oo_sa_hdl);
+		if (obj->oo_sa_hdl)
+			sa_spill_rele(obj->oo_sa_hdl);
 	}
 }
 
@@ -313,7 +313,7 @@ struct lu_object *osd_object_alloc(const struct lu_env *env,
 		l->lo_ops = &osd_lu_obj_ops;
 		INIT_LIST_HEAD(&mo->oo_sa_linkage);
 		INIT_LIST_HEAD(&mo->oo_unlinked_linkage);
-		init_rwsem(&mo->oo_sem);
+		init_rwsem(&mo->oo_dt.dd_sem);
 		init_rwsem(&mo->oo_guard);
 		rwlock_init(&mo->oo_attr_lock);
 		mo->oo_destroy = OSD_DESTROY_NONE;
@@ -345,7 +345,7 @@ static void osd_obj_set_blksize(const struct lu_env *env,
 	}
 
 	dmu_tx_hold_bonus(tx, dn->dn_object);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc) {
 		dmu_tx_abort(tx);
 		CERROR("%s: fail to assign tx to set blksize for "DFID": rc = %d\n",
@@ -929,56 +929,6 @@ static int osd_object_print(const struct lu_env *env, void *cookie,
 	return (*p)(env, cookie, LUSTRE_OSD_ZFS_NAME"-object@%p", o);
 }
 
-static void osd_read_lock(const struct lu_env *env, struct dt_object *dt,
-			  unsigned int role)
-{
-	struct osd_object *obj = osd_dt_obj(dt);
-
-	LASSERT(osd_invariant(obj));
-
-	down_read_nested(&obj->oo_sem, role);
-}
-
-static void osd_write_lock(const struct lu_env *env, struct dt_object *dt,
-			   unsigned int role)
-{
-	struct osd_object *obj = osd_dt_obj(dt);
-
-	LASSERT(osd_invariant(obj));
-
-	down_write_nested(&obj->oo_sem, role);
-}
-
-static void osd_read_unlock(const struct lu_env *env, struct dt_object *dt)
-{
-	struct osd_object *obj = osd_dt_obj(dt);
-
-	LASSERT(osd_invariant(obj));
-	up_read(&obj->oo_sem);
-}
-
-static void osd_write_unlock(const struct lu_env *env, struct dt_object *dt)
-{
-	struct osd_object *obj = osd_dt_obj(dt);
-
-	LASSERT(osd_invariant(obj));
-	up_write(&obj->oo_sem);
-}
-
-static int osd_write_locked(const struct lu_env *env, struct dt_object *dt)
-{
-	struct osd_object *obj = osd_dt_obj(dt);
-	int rc = 1;
-
-	LASSERT(osd_invariant(obj));
-
-	if (down_write_trylock(&obj->oo_sem)) {
-		rc = 0;
-		up_write(&obj->oo_sem);
-	}
-	return rc;
-}
-
 static int osd_attr_get(const struct lu_env *env, struct dt_object *dt,
 			struct lu_attr *attr)
 {
@@ -1031,8 +981,7 @@ static int osd_attr_get(const struct lu_env *env, struct dt_object *dt,
 	}
 	/* Block size may be not set; suggest maximal I/O transfers. */
 	if (blksize == 0)
-		blksize = spa_maxblocksize(
-			dmu_objset_spa(osd_obj2dev(obj)->od_os));
+		blksize = osd->od_max_blksz;
 
 	attr->la_blksize = blksize;
 	attr->la_blocks = blocks;
@@ -1131,20 +1080,17 @@ out:
 }
 #endif
 
-static int osd_declare_attr_set(const struct lu_env *env,
-				struct dt_object *dt,
+static int osd_declare_attr_set(const struct lu_env *env, struct dt_object *dt,
 				const struct lu_attr *attr,
 				struct thandle *handle)
 {
-	struct osd_thread_info	*info = osd_oti_get(env);
-	struct osd_object	*obj = osd_dt_obj(dt);
-	struct osd_device	*osd = osd_obj2dev(obj);
-	dmu_tx_hold_t		*txh;
-	struct osd_thandle	*oh;
-	uint64_t		 bspace;
-	uint32_t		 blksize;
-	int			 rc = 0;
-	bool			 found;
+	struct osd_thread_info *info = osd_oti_get(env);
+	struct osd_object *obj = osd_dt_obj(dt);
+	struct osd_device *osd = osd_obj2dev(obj);
+	dmu_tx_hold_t *txh;
+	struct osd_thandle *oh;
+	int rc = 0;
+	bool found;
 
 	ENTRY;
 	LASSERT(handle != NULL);
@@ -1180,66 +1126,77 @@ static int osd_declare_attr_set(const struct lu_env *env,
 	if (oh->ot_tx->tx_err != 0)
 		GOTO(out_sem, rc = -oh->ot_tx->tx_err);
 
-	if (attr && attr->la_valid & LA_FLAGS) {
+	if (!attr)
+		GOTO(out_sem, rc = 0);
+
+	if (attr->la_valid & LA_FLAGS) {
 		/* punch must be aware we are dealing with an encrypted file */
 		if (attr->la_flags & LUSTRE_ENCRYPT_FL)
 			obj->oo_lma_flags |= LUSTRE_ENCRYPT_FL;
 	}
 
-	if (attr && (attr->la_valid & (LA_UID | LA_GID | LA_PROJID))) {
+	if (attr->la_valid & (LA_UID | LA_GID | LA_PROJID)) {
+		uint64_t bspace;
+		uint32_t blksize;
+
 		sa_object_size(obj->oo_sa_hdl, &blksize, &bspace);
-		bspace = toqb(bspace * 512);
+		bspace = stoqb(bspace * 512);
 
 		CDEBUG(D_QUOTA,
-		       "%s: enforce quota on UID %u, GID %u, the quota space is %lld (%u)\n",
-		       osd->od_svname,
-		       attr->la_uid, attr->la_gid, bspace, blksize);
-	}
-	/* to preserve locking order - qsd_transfer() may need to flush
-	 * currently running transaction when we're out of quota.
-	 */
-	up_read(&obj->oo_guard);
+		       "%s: quota on UID=%u GID=%u PROJID=%u bspace=%lld*%u\n",
+		       osd->od_svname, attr->la_uid, attr->la_gid,
+		       attr->la_projid, bspace, blksize);
+		/* to preserve locking order - qsd_transfer() may need to flush
+		 * currently running transaction when we're out of quota.
+		 */
+		up_read(&obj->oo_guard);
 
-	/* quota enforcement for user */
-	if (attr && attr->la_valid & LA_UID &&
-	    attr->la_uid != obj->oo_attr.la_uid) {
-		rc = qsd_transfer(env, osd_def_qsd(osd),
-				  &oh->ot_quota_trans, USRQUOTA,
-				  obj->oo_attr.la_uid, attr->la_uid,
-				  bspace, &info->oti_qi);
-		if (rc)
-			GOTO(out, rc);
-	}
+		/* quota enforcement for user */
+		if (attr->la_valid & LA_UID &&
+		    attr->la_uid != obj->oo_attr.la_uid) {
+			rc = qsd_transfer(env, osd_def_qsd(osd),
+					  &oh->ot_quota_trans, USRQUOTA,
+					  obj->oo_attr.la_uid, attr->la_uid,
+					  bspace, &info->oti_qi);
+			if (rc)
+				GOTO(out, rc);
+		}
 
-	/* quota enforcement for group */
-	if (attr && attr->la_valid & LA_GID &&
-	    attr->la_gid != obj->oo_attr.la_gid) {
-		rc = qsd_transfer(env, osd_def_qsd(osd),
-				  &oh->ot_quota_trans, GRPQUOTA,
-				  obj->oo_attr.la_gid, attr->la_gid,
-				  bspace, &info->oti_qi);
-		if (rc)
-			GOTO(out, rc);
-	}
+		/* quota enforcement for group */
+		if (attr->la_valid & LA_GID &&
+		    attr->la_gid != obj->oo_attr.la_gid) {
+			rc = qsd_transfer(env, osd_def_qsd(osd),
+					  &oh->ot_quota_trans, GRPQUOTA,
+					  obj->oo_attr.la_gid, attr->la_gid,
+					  bspace, &info->oti_qi);
+			if (rc)
+				GOTO(out, rc);
+		}
+
 #ifdef ZFS_PROJINHERIT
-	/* quota enforcement for project */
-	if (attr && attr->la_valid & LA_PROJID &&
-	    attr->la_projid != obj->oo_attr.la_projid) {
-		if (!osd->od_projectused_dn)
-			GOTO(out, rc = -EOPNOTSUPP);
+		/* quota enforcement for project */
+		if (attr->la_valid & LA_PROJID &&
+		    attr->la_projid != obj->oo_attr.la_projid) {
+			if (!osd->od_projectused_dn)
+				GOTO(out, rc = -EOPNOTSUPP);
 
-		if (!zpl_is_valid_projid(attr->la_projid))
-			GOTO(out, rc = -EINVAL);
+			if (!zpl_is_valid_projid(attr->la_projid))
+				GOTO(out, rc = -EINVAL);
 
-		rc = qsd_transfer(env, osd_def_qsd(osd),
-				  &oh->ot_quota_trans, PRJQUOTA,
-				  obj->oo_attr.la_projid,
-				  attr->la_projid, bspace,
-				  &info->oti_qi);
-		if (rc)
-			GOTO(out, rc);
-	}
+			info->oti_qi.lqi_ignore_root_proj_quota =
+				handle->th_ignore_root_proj_quota;
+			rc = qsd_transfer(env, osd_def_qsd(osd),
+					  &oh->ot_quota_trans, PRJQUOTA,
+					  obj->oo_attr.la_projid,
+					  attr->la_projid, bspace,
+					  &info->oti_qi);
+			if (rc)
+				GOTO(out, rc);
+		}
 #endif
+	} else {
+		up_read(&obj->oo_guard);
+	}
 out:
 	RETURN(rc);
 out_sem:
@@ -1790,7 +1747,7 @@ int __osd_zap_create(const struct lu_env *env, struct osd_device *osd,
 
 	oid = osd_zap_create_flags(osd->od_os, 0, flags | ZAP_FLAG_HASH64,
 				   DMU_OT_DIRECTORY_CONTENTS,
-				   14, /* == ZFS fzap_default_blockshift */
+				   osd->od_fzap_blockshift,
 				   DN_MAX_INDBLKSHIFT, /* indirect blockshift */
 				   dnsize, tx);
 
@@ -2179,11 +2136,6 @@ static int osd_object_sync(const struct lu_env *env, struct dt_object *dt,
 }
 
 static const struct dt_object_operations osd_obj_ops = {
-	.do_read_lock		= osd_read_lock,
-	.do_write_lock		= osd_write_lock,
-	.do_read_unlock		= osd_read_unlock,
-	.do_write_unlock	= osd_write_unlock,
-	.do_write_locked	= osd_write_locked,
 	.do_attr_get		= osd_attr_get,
 	.do_declare_attr_set	= osd_declare_attr_set,
 	.do_attr_set		= osd_attr_set,

@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_open.c
  *
  * Lustre Metadata Target (mdt) open/close file handling
  *
@@ -47,6 +27,9 @@ static const char mfd_open_handle_owner[] = "mdt";
 
 static int mdt_open_by_fid(struct mdt_thread_info *info, struct ldlm_reply *rep,
 			   struct mdt_lock_handle *lhc);
+
+static void mdt_pack_attr_acl(struct mdt_thread_info *info,
+			      struct mdt_object *o);
 
 /* Create a new mdt_file_data struct, initialize it,
  * and insert it to global hash table */
@@ -103,8 +86,7 @@ void mdt_mfd_free(struct mdt_file_data *mfd)
 {
 	LASSERT(refcount_read(&mfd->mfd_open_handle.h_ref) == 1);
 	LASSERT(list_empty(&mfd->mfd_list));
-	OBD_FREE_PRE(mfd, sizeof(*mfd), "kfree_rcu");
-	kfree_rcu(mfd, mfd_open_handle.h_rcu);
+	OBD_FREE_RCU(mfd, sizeof(*mfd), mfd_open_handle.h_rcu);
 }
 
 static int mdt_create_data(struct mdt_thread_info *info,
@@ -295,11 +277,16 @@ static void mdt_empty_transno(struct mdt_thread_info *info, int rc)
 	EXIT;
 }
 
-void mdt_mfd_set_mode(struct mdt_file_data *mfd, u64 open_flags)
+/**
+ * mdt_mfd_set_mode() - Set MDS open flags into @mfd
+ * @mfd: mdt_file_data object per open handle
+ * @open_flags: open flags passed from client
+ */
+void mdt_mfd_set_mode(struct mdt_file_data *mfd, enum mds_open_flags open_flags)
 {
 	LASSERT(mfd != NULL);
 
-	CDEBUG(D_DENTRY, DFID " Change mfd open_flags %#llo -> %#llo.\n",
+	CDEBUG(D_DENTRY, DFID " Change mfd open_flags %#lo -> %#lo.\n",
 	       PFID(mdt_object_fid(mfd->mfd_object)), mfd->mfd_open_flags,
 	       open_flags);
 
@@ -307,11 +294,18 @@ void mdt_mfd_set_mode(struct mdt_file_data *mfd, u64 open_flags)
 }
 
 /**
- * prep ma_lmm/ma_lmv for md_attr from reply
+ * mdt_prep_ma_buf_from_rep() - prep ma_lmm/ma_lmv for md_attr from reply
+ * @info: Common data shared by mdt-level handlers
+ * @obj: metadata object
+ * @ma: attributes to be evaluated for that object
+ * @open_flags: open flags passed from client
+ *
+ * Return:
+ * * void
  */
 void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
 			      struct mdt_object *obj, struct md_attr *ma,
-			      __u64 open_flags)
+			      enum mds_open_flags open_flags)
 {
 	struct req_capsule *pill;
 
@@ -350,9 +344,23 @@ void mdt_prep_ma_buf_from_rep(struct mdt_thread_info *info,
 	}
 }
 
+/*
+ * mdt_mfd_open() - open object in metadata server
+ *
+ * @info: Common data shared by mdt-level handlers
+ * @p: Parent mdt object
+ * @o: Child mdt object
+ * @open_flags: open flags passed from client
+ * @created: Object already existing/created
+ * @rep: ldlm_reply object
+ *
+ * Return:
+ * * 0 on success
+ * * <0 on failure
+ */
 static int mdt_mfd_open(struct mdt_thread_info *info, struct mdt_object *p,
-			struct mdt_object *o, u64 open_flags, int created,
-			struct ldlm_reply *rep)
+			struct mdt_object *o, enum mds_open_flags open_flags,
+			int created, struct ldlm_reply *rep)
 {
 	struct ptlrpc_request *req = mdt_info_req(info);
 	struct mdt_export_data *med = &req->rq_export->exp_mdt_data;
@@ -531,7 +539,7 @@ err_out:
 
 static int mdt_finish_open(struct mdt_thread_info *info,
 			   struct mdt_object *p, struct mdt_object *o,
-			   u64 open_flags,
+			   enum mds_open_flags open_flags,
 			   struct ldlm_reply *rep)
 {
 	struct ptlrpc_request *req = mdt_info_req(info);
@@ -726,7 +734,7 @@ out:
 static int mdt_open_by_fid(struct mdt_thread_info *info, struct ldlm_reply *rep,
 			   struct mdt_lock_handle *lhc)
 {
-	u64 open_flags = info->mti_spec.sp_cr_flags;
+	enum mds_open_flags open_flags = info->mti_spec.sp_cr_flags;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	struct md_attr *ma = &info->mti_attr;
 	struct mdt_object *o;
@@ -736,6 +744,10 @@ static int mdt_open_by_fid(struct mdt_thread_info *info, struct ldlm_reply *rep,
 	o = mdt_object_find(info->mti_env, info->mti_mdt, rr->rr_fid2);
 	if (IS_ERR(o))
 		RETURN(rc = PTR_ERR(o));
+
+	rc = mdt_check_resource_ids(info, o);
+	if (unlikely(rc))
+		GOTO(out, rc);
 
 	rc = mdt_check_enc(info, o);
 	if (rc)
@@ -785,11 +797,11 @@ out:
 static int mdt_object_open_lock(struct mdt_thread_info *info,
 				struct mdt_object *obj,
 				struct mdt_lock_handle *lhc,
-				__u64 *ibits)
+				enum mds_ibits_locks *ibits)
 {
 	struct md_attr *ma = &info->mti_attr;
-	__u64 open_flags = info->mti_spec.sp_cr_flags;
-	__u64 trybits = 0;
+	enum mds_open_flags open_flags = info->mti_spec.sp_cr_flags;
+	enum mds_ibits_locks trybits = MDS_INODELOCK_NONE;
 	enum ldlm_mode lm = LCK_PR;
 	bool acq_lease = !!(open_flags & MDS_OPEN_LEASE);
 	bool try_layout = false;
@@ -798,9 +810,10 @@ static int mdt_object_open_lock(struct mdt_thread_info *info,
 	__u32 dom_stripe = 0;
 	unsigned int dom_only = 0;
 	unsigned int dom_lock = 0;
+	struct ptlrpc_request *req = mdt_info_req(info);
 
 	ENTRY;
-	*ibits = 0;
+	*ibits = MDS_INODELOCK_NONE;
 	if (req_is_replay(mdt_info_req(info)))
 		RETURN(0);
 
@@ -844,8 +857,7 @@ static int mdt_object_open_lock(struct mdt_thread_info *info,
 
 		/* Lease must be with open lock */
 		if (!(open_flags & MDS_OPEN_LOCK)) {
-			CERROR("%s: Request lease for file:"DFID ", but open lock "
-			       "is missed, open_flags = %#llo : rc = %d\n",
+			CERROR("%s: Request lease for file:"DFID ", but open lock is missed, open_flags = %#lo : rc = %d\n",
 			       mdt_obd_name(info->mti_mdt),
 			       PFID(mdt_object_fid(obj)), open_flags, -EPROTO);
 			GOTO(out, rc = -EPROTO);
@@ -886,6 +898,19 @@ static int mdt_object_open_lock(struct mdt_thread_info *info,
 			trybits |= MDS_INODELOCK_DOM | MDS_INODELOCK_LAYOUT;
 		}
 
+		/*
+		 * dir read on open - needs a update lock to protect an page
+		 * cache contents lets take UPD
+		 */
+		if (S_ISDIR(lu_object_attr(&obj->mot_obj)) &&
+		    likely(req->rq_reqmsg->lm_repsize) &&
+		    exp_connect_open_readdir(info->mti_exp) &&
+		    likely(!(mdt_object_remote(obj) ||
+		    mdt_object_striped(info, obj))) ){
+			*ibits |= MDS_INODELOCK_UPDATE;
+			lm = LCK_PR;
+		}
+
 		CDEBUG(D_INODE, "normal open:"DFID" lease count: %d, lm: %d\n",
 			PFID(mdt_object_fid(obj)),
 			atomic_read(&obj->mot_lease_count), lm);
@@ -919,8 +944,8 @@ static int mdt_object_open_lock(struct mdt_thread_info *info,
 	if (*ibits | trybits)
 		rc = mdt_object_lock_try(info, obj, lhc, ibits, trybits, lm);
 
-	CDEBUG(D_INODE, "%s: Requested bits lock:"DFID ", ibits = %#llx/%#llx"
-	       ", open_flags = %#llo, try_layout = %d : rc = %d\n",
+	CDEBUG(D_INODE,
+	       "%s: Requested bits lock:"DFID ", ibits = %#lx/%#lx, open_flags = %#lo, try_layout = %d : rc = %d\n",
 	       mdt_obd_name(info->mti_mdt), PFID(mdt_object_fid(obj)),
 	       *ibits, trybits, open_flags, try_layout, rc);
 
@@ -929,7 +954,7 @@ static int mdt_object_open_lock(struct mdt_thread_info *info,
 		struct mdt_lock_handle *ll = &info->mti_lh[MDT_LH_LAYOUT];
 
 		CDEBUG(D_INODE, "Will create layout, get EX layout lock:"DFID
-			", open_flags = %#llo\n",
+			", open_flags = %#lo\n",
 			PFID(mdt_object_fid(obj)), open_flags);
 
 		/* We cannot enqueue another lock for the same resource we
@@ -995,9 +1020,9 @@ out:
 static void mdt_object_open_unlock(struct mdt_thread_info *info,
 				   struct mdt_object *obj,
 				   struct mdt_lock_handle *lhc,
-				   __u64 ibits, int rc)
+				   enum mds_ibits_locks ibits, int rc)
 {
-	__u64 open_flags = info->mti_spec.sp_cr_flags;
+	enum mds_open_flags open_flags = info->mti_spec.sp_cr_flags;
 	struct mdt_lock_handle *ll = &info->mti_lh[MDT_LH_LOCAL];
 
 	ENTRY;
@@ -1022,11 +1047,12 @@ static void mdt_object_open_unlock(struct mdt_thread_info *info,
 		up_read(&obj->mot_open_sem);
 
 	/* Cross-ref case, the lock should be returned to the client */
-	if (ibits == 0 || rc == -MDT_EREMOTE_OPEN)
+	if (ibits == MDS_INODELOCK_NONE || rc == -MDT_EREMOTE_OPEN)
 		RETURN_EXIT;
 
-	if (!(open_flags & MDS_OPEN_LOCK) && !(ibits & MDS_INODELOCK_LAYOUT) &&
-	    !(ibits & MDS_INODELOCK_DOM)) {
+	if (!(open_flags & MDS_OPEN_LOCK) &&
+	    !(ibits & (MDS_INODELOCK_LAYOUT | MDS_INODELOCK_DOM)) &&
+	    !S_ISDIR(lu_object_attr(&obj->mot_obj))) {
 		/* for the open request, the lock will only return to client
 		 * if open or layout lock is granted. */
 		rc = 1;
@@ -1043,7 +1069,7 @@ static void mdt_object_open_unlock(struct mdt_thread_info *info,
 	RETURN_EXIT;
 }
 
-/**
+/*
  * Check release is permitted for the current HSM flags.
  */
 static bool mdt_hsm_release_allow(const struct md_attr *ma)
@@ -1062,7 +1088,7 @@ static bool mdt_hsm_release_allow(const struct md_attr *ma)
 
 static int mdt_refetch_lovea(struct mdt_thread_info *info,
 			     struct mdt_object *o, struct md_attr *ma,
-			     u64 ibits)
+			     enum mds_ibits_locks ibits)
 {
 	struct mdt_body *repbody;
 	int rc;
@@ -1101,7 +1127,7 @@ static int mdt_open_by_fid_lock(struct mdt_thread_info *info,
 	struct mdt_object *parent = NULL;
 	struct mdt_object *o;
 	bool object_locked = false;
-	u64 ibits = 0;
+	enum mds_ibits_locks ibits = MDS_INODELOCK_NONE;
 	int rc;
 
 	ENTRY;
@@ -1137,8 +1163,12 @@ static int mdt_open_by_fid_lock(struct mdt_thread_info *info,
 		GOTO(out, rc = -ENOENT);
 	}
 
-	/* do not check enc for directory: always allow open */
+	/* do not check enc or id for directory: always allow open */
 	if (!S_ISDIR(lu_object_attr(&o->mot_obj))) {
+		rc = mdt_check_resource_ids(info, o);
+		if (unlikely(rc))
+			GOTO(out, rc);
+
 		rc = mdt_check_enc(info, o);
 		if (rc)
 			GOTO(out, rc);
@@ -1220,16 +1250,22 @@ out_parent_put:
 static int mdt_cross_open(struct mdt_thread_info *info,
 			  const struct lu_fid *parent_fid,
 			  const struct lu_fid *fid,
-			  struct ldlm_reply *rep, u64 open_flags)
+			  struct ldlm_reply *rep,
+			  enum mds_open_flags open_flags)
 {
 	struct md_attr *ma = &info->mti_attr;
 	struct mdt_object *o;
 	int rc;
 
 	ENTRY;
+
 	o = mdt_object_find(info->mti_env, info->mti_mdt, fid);
 	if (IS_ERR(o))
 		RETURN(rc = PTR_ERR(o));
+
+	rc = mdt_check_resource_ids(info, o);
+	if (unlikely(rc))
+		GOTO(out, rc);
 
 	rc = mdt_check_enc(info, o);
 	if (rc)
@@ -1254,8 +1290,16 @@ static int mdt_cross_open(struct mdt_thread_info *info,
 
 			rc = mo_permission(info->mti_env, NULL,
 					   mdt_object_child(o), NULL, mask);
-			if (rc)
+			if (rc) {
+				if (rc == -EACCES) {
+					/* in case of EACCES,
+					 * hint the client with supp groups
+					 * and ACLs
+					 */
+					mdt_pack_attr_acl(info, o);
+				}
 				goto out;
+			}
 
 			mdt_prep_ma_buf_from_rep(info, o, ma, open_flags);
 			rc = mdt_attr_get_complex(info, o, ma);
@@ -1296,7 +1340,7 @@ static int mdt_lock_root_xattr(struct mdt_thread_info *info,
 {
 	struct mdt_object *md_root = mdt->mdt_md_root;
 	struct mdt_lock_handle *lh = &info->mti_lh[MDT_LH_LOCAL];
-	__u64 ibits = MDS_INODELOCK_XATTR;
+	enum mds_ibits_locks ibits = MDS_INODELOCK_XATTR;
 	int rc;
 
 	if (md_root == NULL) {
@@ -1346,7 +1390,7 @@ static int mdt_lock_root_xattr(struct mdt_thread_info *info,
 static inline enum ldlm_mode mdt_open_lock_mode(struct mdt_thread_info *info,
 						struct mdt_object *p,
 						struct lu_name *name,
-						u64 open_flags)
+						enum mds_open_flags open_flags)
 {
 	int result;
 	struct lu_fid fid;
@@ -1405,8 +1449,8 @@ int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	struct lu_fid *child_fid = &info->mti_tmp_fid1;
 	struct lu_ucred *uc = mdt_ucred(info);
 	struct md_attr *ma = &info->mti_attr;
-	u64 open_flags = info->mti_spec.sp_cr_flags;
-	u64 ibits = 0;
+	enum mds_open_flags open_flags = info->mti_spec.sp_cr_flags;
+	enum mds_ibits_locks ibits = MDS_INODELOCK_NONE;
 	struct mdt_reint_record *rr = &info->mti_rr;
 	int result, rc;
 	int created = 0;
@@ -1438,9 +1482,9 @@ int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 		GOTO(out, result = -EROFS);
 
 	CDEBUG(D_INODE, "I am going to open "DFID"/("DNAME"->"DFID") "
-	       "cr_flag=%#llo mode=0%06o msg_flag=0x%x\n",
-	       PFID(rr->rr_fid1), PNAME(&rr->rr_name), PFID(rr->rr_fid2),
-	       open_flags, ma->ma_attr.la_mode, msg_flags);
+	       "cr_flag=%#lo mode=0%06o msg_flag=0x%x\n",
+	       PFID(rr->rr_fid1), encode_fn_luname(&rr->rr_name),
+	       PFID(rr->rr_fid2), open_flags, ma->ma_attr.la_mode, msg_flags);
 
 	/* Prevent by-fid operation if parent fid is .lustre/fid.
 	 * Also, we want rbac roles to have precedence over any other
@@ -1508,6 +1552,10 @@ int mdt_reint_open(struct mdt_thread_info *info, struct mdt_lock_handle *lhc)
 	    open_flags & MDS_OPEN_CREAT)
 		GOTO(out_parent, result = -EPERM);
 
+	result = mdt_check_resource_ids(info, parent);
+	if (unlikely(result))
+		GOTO(out_parent, result);
+
 	result = mdt_check_enc(info, parent);
 	if (result)
 		GOTO(out_parent, result);
@@ -1531,7 +1579,7 @@ again_pw:
 
 	LASSERTF(ergo(result == 0, fid_is_sane(child_fid)),
 		 "looking for "DFID"/"DNAME", found FID = "DFID"\n",
-		 PFID(mdt_object_fid(parent)), PNAME(&rr->rr_name),
+		 PFID(mdt_object_fid(parent)), encode_fn_luname(&rr->rr_name),
 		 PFID(child_fid));
 
 	if (result != 0 && result != -ENOENT) {
@@ -1678,7 +1726,7 @@ again_pw:
 			/* Object does not exist. Likely FS corruption. */
 			CERROR("%s: name '"DNAME"' present, but FID "
 			       DFID" is invalid\n", mdt_obd_name(info->mti_mdt),
-			       PNAME(&rr->rr_name), PFID(child_fid));
+			       encode_fn_luname(&rr->rr_name), PFID(child_fid));
 			GOTO(out_child, result = -EIO);
 		}
 	}
@@ -1779,7 +1827,7 @@ out:
 	return result;
 }
 
-/**
+/*
  * Create an orphan object use local root.
  */
 static struct mdt_object *mdt_orphan_open(struct mdt_thread_info *info,
@@ -1917,6 +1965,9 @@ static int mdt_hsm_release(struct mdt_thread_info *info, struct mdt_object *o,
 	if (mdt_rdonly(info->mti_exp))
 		RETURN(-EROFS);
 
+	if (!uc->uc_rbac_hsm_ops)
+		RETURN(-EACCES);
+
 	data = req_capsule_client_get(info->mti_pill, &RMF_CLOSE_DATA);
 	if (data == NULL)
 		RETURN(-EPROTO);
@@ -1936,7 +1987,7 @@ static int mdt_hsm_release(struct mdt_thread_info *info, struct mdt_object *o,
 
 	/* Check if the lease open lease has already canceled */
 	lock_res_and_lock(lease);
-	lease_broken = ldlm_is_cancel(lease);
+	lease_broken = (lease->l_flags & LDLM_FL_CANCEL);
 	unlock_res_and_lock(lease);
 
 	LDLM_DEBUG(lease, DFID " lease broken? %d",
@@ -2253,7 +2304,7 @@ static int mdt_close_handle_layouts(struct mdt_thread_info *info,
 
 	/* Check if the lease open lease has already canceled */
 	lock_res_and_lock(lease);
-	lease_broken = ldlm_is_cancel(lease);
+	lease_broken = (lease->l_flags & LDLM_FL_CANCEL);
 	unlock_res_and_lock(lease);
 
 	LDLM_DEBUG(lease, DFID " lease broken? %d",
@@ -2283,20 +2334,23 @@ static int mdt_close_handle_layouts(struct mdt_thread_info *info,
 	if (ma->ma_attr_flags & MDS_CLOSE_LAYOUT_SWAP) {
 		__u64 dv1 = data->cd_data_version;
 		__u64 dv2 = 0;
+		__u64 flags = 0;
 
-		if (ma->ma_attr_flags & MDS_CLOSE_LAYOUT_SWAP_HSM)
+		if (ma->ma_attr_flags & MDS_CLOSE_LAYOUT_SWAP_HSM) {
 			/* Compat: new clients send new dataversion in
 			 * cd_data_version2 and old one in cd_data_version.
 			 * Old clients sent cd_data_version = 0 and no
 			 * cd_data_version2.
 			 */
 			dv2 = data->cd_data_version2;
+			flags |= SWAP_LAYOUTS_WITH_DV12;
+		}
 
 		if (swap_objects)
 			swap(dv1, dv2);
 
 		rc = mo_swap_layouts(info->mti_env, mdt_object_child(o1),
-				     mdt_object_child(o2), dv1, dv2, 0);
+				     mdt_object_child(o2), dv1, dv2, flags);
 	} else if (ma->ma_attr_flags & MDS_CLOSE_LAYOUT_MERGE ||
 		   ma->ma_attr_flags & MDS_CLOSE_LAYOUT_SPLIT) {
 		struct lu_buf *buf = &info->mti_buf;
@@ -2439,7 +2493,7 @@ static int mdt_close_resync_done(struct mdt_thread_info *info,
 
 	/* Check if the lease open lease has already canceled */
 	lock_res_and_lock(lease);
-	lease_broken = ldlm_is_cancel(lease);
+	lease_broken = (lease->l_flags & LDLM_FL_CANCEL);
 	unlock_res_and_lock(lease);
 
 	LDLM_DEBUG(lease, DFID " lease broken? %d",
@@ -2528,6 +2582,7 @@ int mdt_mfd_close(struct mdt_thread_info *info, struct mdt_file_data *mfd)
 	struct md_object *next = mdt_object_child(o);
 	struct md_attr *ma = &info->mti_attr;
 	struct lu_fid *ofid = &info->mti_tmp_fid1;
+	bool rdonly = mdt_rdonly(info->mti_exp);
 	int rc = 0;
 	int rc2;
 	u64 open_flags;
@@ -2586,7 +2641,7 @@ int mdt_mfd_close(struct mdt_thread_info *info, struct mdt_file_data *mfd)
 	}
 
 	if (S_ISREG(lu_object_attr(&o->mot_obj)) &&
-	    ma->ma_attr.la_valid & (LA_LSIZE | LA_LBLOCKS)) {
+	    ma->ma_attr.la_valid & (LA_LSIZE | LA_LBLOCKS) && !rdonly) {
 		rc2 = mdt_lsom_update(info, o, false);
 		if (rc2 < 0) {
 			CDEBUG(D_INODE,
@@ -2609,7 +2664,7 @@ int mdt_mfd_close(struct mdt_thread_info *info, struct mdt_file_data *mfd)
 	     open_flags & MDS_FMODE_WRITE) && (ma->ma_valid & MA_INODE) &&
 	    (ma->ma_attr.la_valid & LA_ATIME ||
 	     ma->ma_attr.la_valid & LA_MTIME ||
-	     ma->ma_attr.la_valid & LA_CTIME)) {
+	     ma->ma_attr.la_valid & LA_CTIME) && !rdonly) {
 		ma->ma_valid = MA_INODE;
 		ma->ma_attr_flags |= MDS_CLOSE_UPDATE_TIMES;
 		ma->ma_attr.la_valid &= (LA_ATIME | LA_MTIME | LA_CTIME);

@@ -1,24 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- *
  * Copyright 2020, DataDirect Networks Storage.
  *
  * This file is part of Lustre, http://www.lustre.org/
@@ -45,6 +26,7 @@
 #include "lstddef.h"
 #include "ofd_access_batch.h"
 
+static time_t when_last_printed;
 struct fid_hash_node {
 	struct list_head fhn_node;
 	struct lu_fid fhn_fid;
@@ -74,7 +56,7 @@ static void fhn_del_init(struct fid_hash_node *fhn)
 }
 
 static inline void fhn_replace_init(struct fid_hash_node *old_fhn,
-				struct fid_hash_node *new_fhn)
+				    struct fid_hash_node *new_fhn)
 {
 	list_add(&new_fhn->fhn_node, &old_fhn->fhn_node);
 	list_del_init(&old_fhn->fhn_node);
@@ -215,7 +197,7 @@ int alr_batch_add(struct alr_batch *alrb, const char *obd_name,
 	if (alrb == NULL)
 		return 0;
 
-	assert(sizeof(time_t) == sizeof(__u64));
+	static_assert(sizeof(time_t) == sizeof(__u64), "time_t size mismatch");
 
 	fhn_init(&fhn, pfid);
 
@@ -267,6 +249,7 @@ static void alre_printf(FILE *f, struct alr_entry *alre, enum alr_rw d)
 		(unsigned long long)alre->alre_segment_count[d],
 		(unsigned long long)alre->alre_count[d],
 		(d == ALR_READ) ? 'r' : 'w');
+	when_last_printed = time(NULL);
 }
 
 struct alr_thread_arg {
@@ -275,6 +258,35 @@ struct alr_thread_arg {
 	FILE *file;
 	pthread_mutex_t *file_mutex;
 };
+
+static void alre_print_keepalive(struct alr_thread_arg *aa)
+{
+	/* Do not print keepalive if disabled */
+	if (keepalive_interval == 0)
+		return;
+
+	/* If nothing printed during keepalive_interval - send keepalive */
+	if (time(NULL) < (when_last_printed + keepalive_interval))
+		return;
+
+	fprintf(aa->file, "# keepalive\n");
+	when_last_printed = time(NULL);
+	DEBUG("send keepalive\n");
+}
+
+static void alre_print_keepalive_locked(struct alr_thread_arg *aa)
+{
+	int rc = pthread_mutex_lock(aa->file_mutex);
+
+	if (rc != 0)
+		FATAL("cannot lock batch file: %s\n", strerror(rc));
+
+	alre_print_keepalive(aa);
+
+	rc = pthread_mutex_unlock(aa->file_mutex);
+	if (rc != 0)
+		FATAL("cannot unlock batch file: %s\n", strerror(rc));
+}
 
 /* Fraction < 100 */
 static void *alr_sort_and_print_thread(void *arg)
@@ -298,10 +310,8 @@ static void *alr_sort_and_print_thread(void *arg)
 		goto out;
 
 	sa = calloc(nr, sizeof(*sa));
-	if (!sa) {
-		fprintf(stderr, "cannot allocate memory for sorting\n");
-		exit(1);
-	}
+	if (!sa)
+		FATAL("cannot allocate memory for sorting\n");
 
 	i = 0;
 	list_for_each_entry(alre, tmp, alre_fid_hash_node.fhn_node) {
@@ -322,11 +332,8 @@ static void *alr_sort_and_print_thread(void *arg)
 	/* Prevent jumbled output from multiple concurrent sort and
 	 * print threads. */
 	rc = pthread_mutex_lock(aa->file_mutex);
-	if (rc != 0) {
-		fprintf(stderr, "cannot lock batch file: %s\n",
-			strerror(rc));
-		exit(1);
-	}
+	if (rc != 0)
+		FATAL("cannot lock batch file: %s\n", strerror(rc));
 
 	/* there might be lots of items at @cut, but we want to limit total
 	 * output. so the first loop dumps all items > @cut and the second
@@ -352,13 +359,13 @@ static void *alr_sort_and_print_thread(void *arg)
 	}
 
 	rc = pthread_mutex_unlock(aa->file_mutex);
-	if (rc != 0) {
-		fprintf(stderr, "cannot unlock batch file: %s\n",
-			strerror(rc));
-		exit(1);
-	}
+	if (rc != 0)
+		FATAL("cannot unlock batch file: %s\n", strerror(rc));
 
 out:
+	/* send keepalive */
+	alre_print_keepalive_locked(aa);
+
 	fflush(aa->file);
 
 	list_for_each_entry_safe(alre, next, tmp, alre_fid_hash_node.fhn_node) {
@@ -381,10 +388,8 @@ static void *alr_print_thread_fraction_100(void *arg)
 	/* Prevent jumbled output from multiple concurrent sort and
 	 * print threads. */
 	rc = pthread_mutex_lock(aa->file_mutex);
-	if (rc != 0) {
-		fprintf(stderr, "cannot lock batch file: %s\n",	strerror(rc));
-		exit(1);
-	}
+	if (rc != 0)
+		FATAL("cannot lock batch file: %s\n", strerror(rc));
 
 	list_for_each_entry(alre, &aa->list, alre_fid_hash_node.fhn_node) {
 		enum alr_rw d;
@@ -395,11 +400,12 @@ static void *alr_print_thread_fraction_100(void *arg)
 		}
 	}
 
+	/* send keepalive */
+	alre_print_keepalive(aa);
+
 	rc = pthread_mutex_unlock(aa->file_mutex);
-	if (rc != 0) {
-		fprintf(stderr, "cannot unlock batch file: %s\n", strerror(rc));
-		exit(1);
-	}
+	if (rc != 0)
+		FATAL("cannot unlock batch file: %s\n", strerror(rc));
 
 	fflush(aa->file);
 

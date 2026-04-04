@@ -13,7 +13,6 @@
  * Author: Eric Barton <eric@bartonsoftware.com>
  */
 
-#include <libcfs/linux/linux-mem.h>
 #include "socklnd.h"
 #include <linux/sunrpc/addr.h>
 
@@ -616,8 +615,9 @@ simulate_error:
 		ksocknal_uncheck_zc_req(tx);
 
 	/* it's not an error if conn is being closed */
-	ksocknal_close_conn_and_siblings(conn,
-					  (conn->ksnc_closing) ? 0 : rc);
+	if (!error_sim)
+		ksocknal_close_conn_and_siblings(conn,
+						 (conn->ksnc_closing) ? 0 : rc);
 
 	return rc;
 }
@@ -684,8 +684,6 @@ ksocknal_find_conn_locked(struct ksock_peer_ni *peer_ni, struct ksock_tx *tx, in
 		rc = c->ksnc_proto->pro_match_tx(c, tx, nonblk);
 
 		switch (rc) {
-		default:
-			LBUG();
 		case SOCKNAL_MATCH_NO: /* protocol rejected the tx */
 			continue;
 
@@ -706,6 +704,8 @@ ksocknal_find_conn_locked(struct ksock_peer_ni *peer_ni, struct ksock_tx *tx, in
 				fnob     = nob;
 			}
 			break;
+		default:
+			LBUG();
 		}
 	}
 
@@ -876,6 +876,7 @@ ksocknal_launch_packet(struct lnet_ni *ni, struct ksock_tx *tx,
 	rwlock_t *g_lock;
 	int retry;
 	int rc;
+	int port = lnet_acceptor_port();
 
 	LASSERT(tx->tx_conn == NULL);
 
@@ -929,14 +930,14 @@ ksocknal_launch_packet(struct lnet_ni *ni, struct ksock_tx *tx,
 			sin = (void *)&sa;
 			sin->sin_family = AF_INET;
 			sin->sin_addr.s_addr = id->nid.nid_addr[0];
-			sin->sin_port = htons(lnet_acceptor_port());
+			sin->sin_port = htons(port);
 			break;
 		case 16:
 			sin6 = (void *)&sa;
 			sin6->sin6_family = AF_INET6;
 			memcpy(&sin6->sin6_addr, id->nid.nid_addr,
 			       sizeof(sin6->sin6_addr));
-			sin6->sin6_port = htons(lnet_acceptor_port());
+			sin6->sin6_port = htons(port);
 			break;
 		}
 		rc = ksocknal_add_peer(ni, id, (struct sockaddr *)&sa);
@@ -1028,8 +1029,17 @@ ksocknal_send(struct lnet_ni *ni, void *private, struct lnet_msg *lntmsg)
 
 	LASSERT(tx->tx_nkiov <= LNET_MAX_IOV);
 
-	if (payload_nob >= *ksocknal_tunables.ksnd_zc_min_payload)
+	if (payload_nob >= *ksocknal_tunables.ksnd_zc_min_payload) {
+		int i;
+
 		tx->tx_zc_capable = 1;
+		for (i = 0; i < tx->tx_nkiov; i++) {
+			if (!sendpage_ok(tx->tx_kiov[i].bv_page)) {
+				tx->tx_zc_capable = 0;
+				break;
+			}
+		}
+	}
 
 	tx->tx_msg.ksm_csum = 0;
 	tx->tx_msg.ksm_type = KSOCK_MSG_LNET;
@@ -2000,7 +2010,8 @@ ksocknal_connect(struct ksock_conn_cb *conn_cb)
 		sock = lnet_connect(&peer_ni->ksnp_id.nid,
 				    net->ksnn_interface.ksni_index,
 				    (struct sockaddr *)&conn_cb->ksnr_addr,
-				    peer_ni->ksnp_ni->ni_net_ns);
+				    peer_ni->ksnp_ni->ni_net_ns,
+				    type == SOCKLND_CONN_CONTROL);
 		if (IS_ERR(sock)) {
 			rc = PTR_ERR(sock);
 			goto failed;
@@ -2013,18 +2024,15 @@ ksocknal_connect(struct ksock_conn_cb *conn_cb)
 				rc, &peer_ni->ksnp_id.nid,
 				(struct sockaddr *)&conn_cb->ksnr_addr);
 			goto failed;
+		} else if (rc > 0) {
+			/* A +ve RC means I have to retry because I lost the connection
+			 * race or I have to renegotiate protocol version
+			 */
+			conn_cb->ksnr_retry_count++;
+			retry_later = true;
+		} else {
+			conn_cb->ksnr_retry_count = 0;
 		}
-
-		if (rc == EALREADY &&
-		    ksocknal_get_conn_count_by_type(conn_cb, type) > 0)
-			conn_cb->ksnr_busy_retry_count += 1;
-		else
-			conn_cb->ksnr_busy_retry_count = 0;
-
-		/* A +ve RC means I have to retry because I lost the connection
-		 * race or I have to renegotiate protocol version
-		 */
-		retry_later = (rc != 0);
 
 		if (retry_later)
 			CDEBUG(D_NET, "peer_ni %s: conn race, retry later. rc %d\n",
@@ -2036,7 +2044,7 @@ ksocknal_connect(struct ksock_conn_cb *conn_cb)
 	conn_cb->ksnr_scheduled = 0;
 	conn_cb->ksnr_connecting = 0;
 
-	if (conn_cb->ksnr_busy_retry_count >= SOCKNAL_MAX_BUSY_RETRIES &&
+	if (conn_cb->ksnr_retry_count >= SOCKNAL_MAX_RETRIES &&
 	    type > SOCKLND_CONN_NONE) {
 		/* After so many retries due to EALREADY assume that
 		 * the peer doesn't support as many connections as we want
@@ -2133,41 +2141,36 @@ ksocknal_connect(struct ksock_conn_cb *conn_cb)
  * be updated if failed to create, so caller wouldn't keep try while
  * running out of resource.
  */
-static int
-ksocknal_connd_check_start(time64_t sec, long *timeout)
+static void ksocknal_connd_check_start(time64_t sec, long *timeout)
 {
 	int rc;
 	int total = ksocknal_data.ksnd_connd_starting +
 		    ksocknal_data.ksnd_connd_running;
 
-	if (unlikely(ksocknal_data.ksnd_init < SOCKNAL_INIT_ALL)) {
-		/* still in initializing */
-		return 0;
-	}
+	/* still in initializing */
+	if (unlikely(ksocknal_data.ksnd_init < SOCKNAL_INIT_ALL))
+		return;
 
+	/* can't create more connd, or still have enough
+	 * threads to handle more connecting
+	 */
 	if (total >= *ksocknal_tunables.ksnd_nconnds_max ||
-	    total > ksocknal_data.ksnd_connd_connecting + SOCKNAL_CONND_RESV) {
-		/* can't create more connd, or still have enough
-		 * threads to handle more connecting
-		 */
-		return 0;
-	}
+	    total > ksocknal_data.ksnd_connd_connecting + SOCKNAL_CONND_RESV)
+		return;
 
-	if (list_empty(&ksocknal_data.ksnd_connd_routes)) {
-		/* no pending connecting request */
-		return 0;
-	}
+	/* no pending connecting request */
+	if (list_empty(&ksocknal_data.ksnd_connd_routes))
+		return;
 
+	/* may run out of resource, retry later */
 	if (sec - ksocknal_data.ksnd_connd_failed_stamp <= 1) {
-		/* may run out of resource, retry later */
 		*timeout = cfs_time_seconds(1);
-		return 0;
+		return;
 	}
 
-	if (ksocknal_data.ksnd_connd_starting > 0) {
-		/* serialize starting to avoid flood */
-		return 0;
-	}
+	/* serialize starting to avoid flood */
+	if (ksocknal_data.ksnd_connd_starting > 0)
+		return;
 
 	ksocknal_data.ksnd_connd_starting_stamp = sec;
 	ksocknal_data.ksnd_connd_starting++;
@@ -2179,14 +2182,14 @@ ksocknal_connd_check_start(time64_t sec, long *timeout)
 
 	spin_lock_bh(&ksocknal_data.ksnd_connd_lock);
 	if (rc == 0)
-		return 1;
+		return;
 
 	/* we tried ... */
 	LASSERT(ksocknal_data.ksnd_connd_starting > 0);
 	ksocknal_data.ksnd_connd_starting--;
 	ksocknal_data.ksnd_connd_failed_stamp = ktime_get_real_seconds();
 
-	return 1;
+	return;
 }
 
 /* check whether current thread can exit, it will return 1 if there are too
@@ -2260,9 +2263,7 @@ int
 ksocknal_connd(void *arg)
 {
 	spinlock_t *connd_lock = &ksocknal_data.ksnd_connd_lock;
-	struct ksock_connreq *cr;
 	wait_queue_entry_t wait;
-	int cons_retry = 0;
 
 	init_wait(&wait);
 
@@ -2276,7 +2277,7 @@ ksocknal_connd(void *arg)
 		struct ksock_conn_cb *conn_cb = NULL;
 		time64_t sec = ktime_get_real_seconds();
 		long timeout = MAX_SCHEDULE_TIMEOUT;
-		bool dropped_lock = false;
+		struct ksock_connreq *cr = NULL;
 
 		if (ksocknal_connd_check_stop(sec, &timeout)) {
 			/* wakeup another one to check stop */
@@ -2284,10 +2285,8 @@ ksocknal_connd(void *arg)
 			break;
 		}
 
-		if (ksocknal_connd_check_start(sec, &timeout)) {
-			/* created new thread */
-			dropped_lock = true;
-		}
+		/* Start new thread? */
+		ksocknal_connd_check_start(sec, &timeout);
 
 		cr = list_first_entry_or_null(&ksocknal_data.ksnd_connd_connreqs,
 					      struct ksock_connreq, ksncr_list);
@@ -2295,7 +2294,6 @@ ksocknal_connd(void *arg)
 			/* Connection accepted by the listener */
 			list_del(&cr->ksncr_list);
 			spin_unlock_bh(connd_lock);
-			dropped_lock = true;
 
 			ksocknal_create_conn(cr->ksncr_ni, NULL,
 					     cr->ksncr_sock, SOCKLND_CONN_NONE);
@@ -2316,45 +2314,29 @@ ksocknal_connd(void *arg)
 		if (conn_cb) {
 			list_del(&conn_cb->ksnr_connd_list);
 			ksocknal_data.ksnd_connd_connecting++;
+
 			spin_unlock_bh(connd_lock);
-			dropped_lock = true;
-
-			if (ksocknal_connect(conn_cb)) {
-				/* consecutive retry */
-				if (cons_retry++ > SOCKNAL_INSANITY_RECONN) {
-					CWARN("massive consecutive re-connecting to %pISc\n",
-					      &conn_cb->ksnr_addr);
-					cons_retry = 0;
-				}
-			} else {
-				cons_retry = 0;
-			}
-
+			ksocknal_connect(conn_cb);
 			ksocknal_conn_cb_decref(conn_cb);
-
 			spin_lock_bh(connd_lock);
+
 			ksocknal_data.ksnd_connd_connecting--;
 		}
 
-		if (dropped_lock) {
-			if (!need_resched())
-				continue;
+		/* Nothing to do for 'timeout' */
+		if (!cr && !conn_cb) {
+			spin_unlock_bh(connd_lock);
+			set_current_state(TASK_INTERRUPTIBLE);
+			add_wait_queue_exclusive(&ksocknal_data.ksnd_connd_waitq,
+						 &wait);
+			schedule_timeout(timeout);
+			remove_wait_queue(&ksocknal_data.ksnd_connd_waitq, &wait);
+			spin_lock_bh(connd_lock);
+		} else if (need_resched()) {
 			spin_unlock_bh(connd_lock);
 			cond_resched();
 			spin_lock_bh(connd_lock);
-			continue;
 		}
-
-		/* Nothing to do for 'timeout'  */
-		set_current_state(TASK_INTERRUPTIBLE);
-		add_wait_queue_exclusive(&ksocknal_data.ksnd_connd_waitq,
-					 &wait);
-		spin_unlock_bh(connd_lock);
-
-		schedule_timeout(timeout);
-
-		remove_wait_queue(&ksocknal_data.ksnd_connd_waitq, &wait);
-		spin_lock_bh(connd_lock);
 	}
 	ksocknal_data.ksnd_connd_running--;
 	spin_unlock_bh(connd_lock);

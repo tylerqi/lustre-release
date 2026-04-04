@@ -44,9 +44,8 @@ struct ldlm_enqueue_info qsd_id_einfo = {
 
 /*
  * Return qsd_qtype_info structure associated with a global lock
- *
- * \param lock - is the global lock from which we should extract the qqi
- * \param reset - whether lock->l_ast_data should be cleared
+ * @lock: - is the global lock from which we should extract the qqi
+ * @reset: - whether lock->l_ast_data should be cleared
  */
 static struct qsd_qtype_info *qsd_glb_ast_data_get(struct ldlm_lock *lock,
 						   bool reset)
@@ -72,10 +71,8 @@ static struct qsd_qtype_info *qsd_glb_ast_data_get(struct ldlm_lock *lock,
 
 /*
  * Return lquota entry structure associated with a per-ID lock
- *
- * \param lock - is the per-ID lock from which we should extract the lquota
- *               entry
- * \param reset - whether lock->l_ast_data should be cleared
+ * @lock: is the per-ID lock from which we should extract the lquota entry
+ * @reset: whether lock->l_ast_data should be cleared
  */
 static struct lquota_entry *qsd_id_ast_data_get(struct ldlm_lock *lock,
 						bool reset)
@@ -102,15 +99,13 @@ static struct lquota_entry *qsd_id_ast_data_get(struct ldlm_lock *lock,
 /*
  * Glimpse callback handler for all quota locks. This function extracts
  * information from the glimpse request.
+ * @lock: is the lock targeted by the glimpse
+ * @data: is a pointer to the glimpse ptlrpc request
+ * @req:  is the glimpse request
+ * @desc: glimpse descriptor describing the purpose of the glimpse request.
+ * @lvb: is the pointer to the lvb in the reply buffer
  *
- * \param lock - is the lock targeted by the glimpse
- * \param data - is a pointer to the glimpse ptlrpc request
- * \param req  - is the glimpse request
- * \param desc - is the glimpse descriptor describing the purpose of the glimpse
- *               request.
- * \param lvb  - is the pointer to the lvb in the reply buffer
- *
- * \retval 0 on success and \desc, \lvb & \arg point to a valid structures,
+ * Return 0 on success and @desc, @lvb & @arg point to a valid structures,
  *         appropriate error on failure
  */
 static int qsd_common_glimpse_ast(struct ptlrpc_request *req,
@@ -150,13 +145,11 @@ static int qsd_common_glimpse_ast(struct ptlrpc_request *req,
 
 /*
  * Blocking callback handler for global index lock
- *
- * \param lock - is the lock for which ast occurred.
- * \param desc - is the description of a conflicting lock in case of blocking
- *               ast.
- * \param data - is the value of lock->l_ast_data
- * \param flag - LDLM_CB_BLOCKING or LDLM_CB_CANCELING. Used to distinguish
- *               cancellation and blocking ast's.
+ * @lock: is the lock for which ast occurred.
+ * @desc: is the description of a conflicting lock in case of blocking ast.
+ * @data: is the value of lock->l_ast_data
+ * @flag: LDLM_CB_BLOCKING or LDLM_CB_CANCELING. Used to distinguish
+ *        cancellation and blocking ast's.
  */
 static int qsd_glb_blocking_ast(struct ldlm_lock *lock,
 				struct ldlm_lock_desc *desc, void *data,
@@ -203,7 +196,7 @@ static int qsd_glb_blocking_ast(struct ldlm_lock *lock,
 		 * it's just local cancel (for stack clean up or eviction),
 		 * don't re-trigger the reintegration.
 		 */
-		if (!ldlm_is_local_only(lock))
+		if (!(lock->l_flags & LDLM_FL_LOCAL_ONLY))
 			qsd_start_reint_thread(qqi);
 
 		qqi_putref(qqi);
@@ -223,7 +216,7 @@ static int qsd_entry_def_iter_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
 	struct lquota_entry *lqe;
 
 	lqe = hlist_entry(hnode, struct lquota_entry, lqe_hash);
-	LASSERT(atomic_read(&lqe->lqe_ref) > 0);
+	LASSERT(kref_read(&lqe->lqe_ref) > 0);
 
 	if (lqe->lqe_id.qid_uid == 0 || !lqe->lqe_is_default)
 		return 0;
@@ -238,12 +231,13 @@ static int qsd_entry_def_iter_cb(struct cfs_hash *hs, struct cfs_hash_bd *bd,
 	return 0;
 }
 
-/* Update the quota entries after receiving default quota update
- *
- * \param qqi       - is the qsd_qtype_info associated with the quota entries
- * \param hardlimit - new hardlimit of default quota
- * \param softlimit - new softlimit of default quota
- * \param gracetime - new gracetime of default quota
+/**
+ * qsd_update_default_quota() - Update the quota entries after receiving default
+ *                              quota update
+ * @qqi: is the qsd_qtype_info associated with the quota entries
+ * @hardlimit: new hardlimit of default quota
+ * @softlimit: new softlimit of default quota
+ * @gracetime: new gracetime of default quota
  */
 void qsd_update_default_quota(struct qsd_qtype_info *qqi, __u64 hardlimit,
 			      __u64 softlimit, __u64 gracetime)
@@ -261,9 +255,8 @@ void qsd_update_default_quota(struct qsd_qtype_info *qqi, __u64 hardlimit,
 
 /*
  * Glimpse callback handler for global quota lock.
- *
- * \param lock - is the lock targeted by the glimpse
- * \param data - is a pointer to the glimpse ptlrpc request
+ * @lock: - is the lock targeted by the glimpse
+ * @data: - is a pointer to the glimpse ptlrpc request
  */
 static int qsd_glb_glimpse_ast(struct ldlm_lock *lock, void *data)
 {
@@ -311,8 +304,9 @@ static int qsd_glb_glimpse_ast(struct ldlm_lock *lock, void *data)
 	 * We can't afford disk io in the context of glimpse callback handling
 	 * thread, so the on-disk global limits update has to be deferred.
 	 */
-	qsd_upd_schedule(qqi, NULL, &desc->gl_id, (union lquota_rec *)&rec,
-			 desc->gl_ver, true);
+	if (!CFS_FAIL_CHECK(OBD_FAIL_QUOTA_DROP_VER_UPDATE))
+		qsd_upd_schedule(qqi, NULL, &desc->gl_id,
+				 (union lquota_rec *)&rec, desc->gl_ver, true);
 	EXIT;
 out_qqi:
 	qqi_putref(qqi);
@@ -322,14 +316,14 @@ out:
 }
 
 /**
- * Blocking callback handler for per-ID lock
+ * qsd_id_blocking_ast() - Blocking callback handler for per-ID lock
+ * @lock: is the lock for which ast occurred.
+ * @desc: is the description of a conflicting lock in case of blocking ast.
+ * @data: is the value of lock->l_ast_data
+ * @flag: Used to distinguish cancellation and blocking ast's.
+ *        (LDLM_CB_BLOCKING or LDLM_CB_CANCELING.)
  *
- * \param lock - is the lock for which ast occurred.
- * \param desc - is the description of a conflicting lock in case of blocking
- *               ast.
- * \param data - is the value of lock->l_ast_data
- * \param flag - LDLM_CB_BLOCKING or LDLM_CB_CANCELING. Used to distinguish
- *               cancellation and blocking ast's.
+ * Return %0 on success, appropriate errors on failure
  */
 static int qsd_id_blocking_ast(struct ldlm_lock *lock,
 			       struct ldlm_lock_desc *desc,
@@ -380,27 +374,12 @@ static int qsd_id_blocking_ast(struct ldlm_lock *lock,
 		 * don't release quota space for local cancel (stack clean
 		 * up or eviction)
 		 */
-		if (!ldlm_is_local_only(lock)) {
-			/* allocate environment */
-			OBD_ALLOC_PTR(env);
-			if (!env) {
-				lqe_putref(lqe);
+		if (!(lock->l_flags & LDLM_FL_LOCAL_ONLY)) {
+			env = lu_env_find();
+			if (env)
+				rc = qsd_adjust(env, lqe);
+			else
 				rc = -ENOMEM;
-				break;
-			}
-
-			/* initialize environment */
-			rc = lu_env_init(env, LCT_DT_THREAD);
-			if (rc) {
-				OBD_FREE_PTR(env);
-				lqe_putref(lqe);
-				break;
-			}
-
-			rc = qsd_adjust(env, lqe);
-
-			lu_env_fini(env);
-			OBD_FREE_PTR(env);
 		}
 
 		/* release lqe reference grabbed by qsd_id_ast_data_get() */
@@ -416,9 +395,8 @@ static int qsd_id_blocking_ast(struct ldlm_lock *lock,
 
 /*
  * Glimpse callback handler for per-ID quota locks.
- *
- * \param lock - is the lock targeted by the glimpse
- * \param data - is a pointer to the glimpse ptlrpc request
+ * @lock: - is the lock targeted by the glimpse
+ * @data: - is a pointer to the glimpse ptlrpc request
  */
 static int qsd_id_glimpse_ast(struct ldlm_lock *lock, void *data)
 {
@@ -446,10 +424,18 @@ static int qsd_id_glimpse_ast(struct ldlm_lock *lock, void *data)
 	lqe_write_lock(lqe);
 	lvb->lvb_id_rel = 0;
 	if (desc->gl_qunit != 0 && desc->gl_qunit != lqe->lqe_qunit) {
+		struct lu_env *env;
 		long long space;
 
 		/* extract new qunit from glimpse request */
 		qsd_set_qunit(lqe, desc->gl_qunit);
+
+		lqe_write_unlock(lqe);
+		env = lu_env_find();
+		if (env)
+			qsd_refresh_usage(env, lqe);
+		lqe_write_lock(lqe);
+		lqe2qqi(lqe)->qqi_qsd->qsd_glimpse_refresh++;
 
 		space  = lqe->lqe_granted - lqe->lqe_pending_rel;
 		space -= lqe->lqe_usage;
@@ -499,13 +485,14 @@ out:
 }
 
 /**
- * Check whether a slave already own a ldlm lock for the quota identifier \qid.
+ * qsd_id_lock_match() - Check whether a slave already own a ldlm lock for the
+ *                       quota identifier(QID)
+ * @lockh: local lock handle from lquota entry.
+ * @rlockh: remote lock handle of the matched lock, if any.
  *
- * \param lockh  - is the local lock handle from lquota entry.
- * \param rlockh - is the remote lock handle of the matched lock, if any.
- *
- * \retval 0      : on successful look up and \lockh contains the lock handle.
- * \retval -ENOENT: no lock found
+ * Return:
+ * * %0 on successful look up and \lockh contains the lock handle.
+ * * %-ENOENT no lock found
  */
 int qsd_id_lock_match(struct lustre_handle *lockh, struct lustre_handle *rlockh)
 {

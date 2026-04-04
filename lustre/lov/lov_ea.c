@@ -17,7 +17,6 @@
 
 #include <linux/math64.h>
 #include <linux/sort.h>
-#include <libcfs/libcfs.h>
 
 #include <obd_class.h>
 #include "lov_internal.h"
@@ -78,7 +77,7 @@ static int lsm_lmm_verify_v1v3(struct lov_mds_md *lmm, size_t lmm_size,
 		goto out;
 	}
 
-	if (!lov_pattern_supported(lov_pattern(pattern))) {
+	if (!lov_pattern_available(pattern)) {
 		static int nr;
 		static ktime_t time2_clear_nr;
 		ktime_t now = ktime_get();
@@ -132,7 +131,7 @@ static void lsme_free(struct lov_stripe_md_entry *lsme)
 	if (!lsme_inited(lsme) ||
 	    lsme->lsme_pattern & LOV_PATTERN_F_RELEASED ||
 	    !lov_supported_comp_magic(lsme->lsme_magic) ||
-	    !lov_pattern_supported(lov_pattern(lsme->lsme_pattern)))
+	    !lov_pattern_available(lsme->lsme_pattern))
 		stripe_count = 0;
 	for (i = 0; i < stripe_count; i++)
 		OBD_SLAB_FREE_PTR(lsme->lsme_oinfo[i], lov_oinfo_slab);
@@ -141,8 +140,10 @@ static void lsme_free(struct lov_stripe_md_entry *lsme)
 	OBD_FREE_LARGE(lsme, lsme_size);
 }
 
-void lsm_free(struct lov_stripe_md *lsm)
+void lsm_free(struct kref *kref)
 {
+	struct lov_stripe_md *lsm = container_of(kref, struct lov_stripe_md,
+						 lsm_refc);
 	unsigned int entry_count = lsm->lsm_entry_count;
 	unsigned int i;
 	size_t lsm_size;
@@ -170,6 +171,7 @@ lsme_unpack(struct lov_obd *lov, struct lov_mds_md *lmm, size_t buf_size,
 	    const char *pool_name, bool inited, struct lov_ost_data_v1 *objects,
 	    loff_t *maxbytes)
 {
+	struct lu_tgt_descs *ltd = &lov->lov_ost_descs;
 	struct lov_stripe_md_entry *lsme;
 	size_t lsme_size;
 	loff_t min_stripe_maxbytes = 0;
@@ -187,7 +189,7 @@ lsme_unpack(struct lov_obd *lov, struct lov_mds_md *lmm, size_t buf_size,
 
 	pattern = le32_to_cpu(lmm->lmm_pattern);
 	if (pattern & LOV_PATTERN_F_RELEASED || !inited ||
-	    !lov_pattern_supported(lov_pattern(pattern)))
+	    !lov_pattern_available(pattern))
 		stripe_count = 0;
 	else
 		stripe_count = le16_to_cpu(lmm->lmm_stripe_count);
@@ -239,7 +241,7 @@ lsme_unpack(struct lov_obd *lov, struct lov_mds_md *lmm, size_t buf_size,
 
 	for (i = 0; i < stripe_count; i++) {
 		struct lov_oinfo *loi;
-		struct lov_tgt_desc *ltd = NULL;
+		struct lov_tgt_desc *tgt = NULL;
 		static time64_t next_print;
 		unsigned int level;
 
@@ -256,8 +258,8 @@ lsme_unpack(struct lov_obd *lov, struct lov_mds_md *lmm, size_t buf_size,
 			continue;
 
 retry_new_ost:
-		if (unlikely((u32)loi->loi_ost_idx >= lov->desc.ld_tgt_count ||
-			     !(ltd = lov->lov_tgts[loi->loi_ost_idx]))) {
+		if (unlikely((u32)loi->loi_ost_idx >= ltd->ltd_tgts_size ||
+			     !(tgt = lov_tgt(lov, loi->loi_ost_idx)))) {
 			time64_t now = ktime_get_seconds();
 
 			/* print message on the first hit, error if giving up */
@@ -272,18 +274,19 @@ retry_new_ost:
 
 			/* log debug every loop, just to see it is trying */
 			CDEBUG_LIMIT(level,
-				(u32)loi->loi_ost_idx < lov->desc.ld_tgt_count ?
-				"%s: FID "DOSTID" OST index %d/%u missing\n" :
-				"%s: FID "DOSTID" OST index %d more than OST count %u\n",
-				lov->desc.ld_uuid.uuid, POSTID(&loi->loi_oi),
-				loi->loi_ost_idx, lov->desc.ld_tgt_count);
+				     (u32)loi->loi_ost_idx < ltd->ltd_tgts_size ?
+				     "%s: FID "DOSTID" OST index %d/%u missing\n" :
+				     "%s: FID "DOSTID" OST index %d more than OST count %u\n",
+				     ltd->ltd_lov_desc.ld_uuid.uuid,
+				     POSTID(&loi->loi_oi), loi->loi_ost_idx,
+				     ltd->ltd_tgts_size);
 
 			if ((u32)loi->loi_ost_idx >= LOV_V1_INSANE_STRIPE_INDEX)
 				GOTO(out_lsme, rc = -EINVAL);
 
 			if (now > next_print) {
 				LCONSOLE_INFO("%s: wait %ds while client connects to new OST\n",
-					      lov->desc.ld_uuid.uuid,
+					      ltd->ltd_lov_desc.ld_uuid.uuid,
 					      (int)(retry_limit - now));
 				next_print = retry_limit + 600;
 			}
@@ -296,7 +299,7 @@ retry_new_ost:
 			GOTO(out_lsme, rc = -EINVAL);
 		}
 
-		lov_bytes = lov_tgt_maxbytes(ltd);
+		lov_bytes = lov_tgt_maxbytes(tgt);
 		if (min_stripe_maxbytes == 0 || lov_bytes < min_stripe_maxbytes)
 			min_stripe_maxbytes = lov_bytes;
 	}
@@ -307,7 +310,7 @@ retry_new_ost:
 
 		if (stripe_count == 0)
 			stripe_count = lsme->lsme_stripe_count <= 0 ?
-					    lov->desc.ld_tgt_count :
+					    ltd->ltd_lov_desc.ld_tgt_count :
 					    lsme->lsme_stripe_count;
 
 		if (min_stripe_maxbytes <= LLONG_MAX / stripe_count) {
@@ -373,7 +376,7 @@ lov_stripe_md *lsm_unpackmd_v1v3(struct lov_obd *lov, struct lov_mds_md *lmm,
 	if (!lsm)
 		GOTO(out_lsme, rc = -ENOMEM);
 
-	atomic_set(&lsm->lsm_refc, 1);
+	kref_init(&lsm->lsm_refc);
 	spin_lock_init(&lsm->lsm_lock);
 	lsm->lsm_maxbytes = maxbytes;
 	lmm_oi_le_to_cpu(&lsm->lsm_oi, &lmm->lmm_oi);
@@ -564,7 +567,7 @@ lsm_unpackmd_comp_md_v1(struct lov_obd *lov, void *buf, size_t buf_size)
 	if (!lsm)
 		return ERR_PTR(-ENOMEM);
 
-	atomic_set(&lsm->lsm_refc, 1);
+	kref_init(&lsm->lsm_refc);
 	spin_lock_init(&lsm->lsm_lock);
 	lsm->lsm_magic = le32_to_cpu(lcm->lcm_magic);
 	lsm->lsm_layout_gen = le32_to_cpu(lcm->lcm_layout_gen);
@@ -622,9 +625,12 @@ lsm_unpackmd_comp_md_v1(struct lov_obd *lov, void *buf, size_t buf_size)
 		lsm->lsm_entries[i] = lsme;
 		lsme->lsme_id = le32_to_cpu(lcme->lcme_id);
 		lsme->lsme_flags = le32_to_cpu(lcme->lcme_flags);
-		if (lsme->lsme_flags & LCME_FL_NOSYNC)
-			lsme->lsme_timestamp =
-				le64_to_cpu(lcme->lcme_timestamp);
+		lsme->lsme_timestamp = lcme_timestamp_time_unpack(
+				le64_to_cpu(lcme->lcme_time_and_id));
+		lsme->lsme_mirror_link_id = lcme_timestamp_id_unpack(
+					le64_to_cpu(lcme->lcme_time_and_id));
+		lsme->lsme_dstripe_count = lcme->lcme_dstripe_count;
+		lsme->lsme_cstripe_count = lcme->lcme_cstripe_count;
 		lu_extent_le_to_cpu(&lsme->lsme_extent, &lcme->lcme_extent);
 
 		if (i == entry_count - 1) {
@@ -672,7 +678,7 @@ lov_stripe_md *lsm_unpackmd_foreign(struct lov_obd *lov, void *buf,
 	if (lsm == NULL)
 		RETURN(ERR_PTR(-ENOMEM));
 
-	atomic_set(&lsm->lsm_refc, 1);
+	kref_init(&lsm->lsm_refc);
 	spin_lock_init(&lsm->lsm_lock);
 	lsm->lsm_magic = le32_to_cpu(lfm->lfm_magic);
 	lsm->lsm_foreign_size = lov_foreign_size_le(lfm);
@@ -720,7 +726,7 @@ void dump_lsm(unsigned int level, const struct lov_stripe_md *lsm)
 	CDEBUG_LIMIT(level,
 		     "lsm %p, objid "DOSTID", maxbytes %#llx, magic 0x%08X, refc: %d, entry: %u, mirror: %u, flags: %u,layout_gen %u\n",
 	       lsm, POSTID(&lsm->lsm_oi), lsm->lsm_maxbytes, lsm->lsm_magic,
-	       atomic_read(&lsm->lsm_refc), lsm->lsm_entry_count,
+	       kref_read(&lsm->lsm_refc), lsm->lsm_entry_count,
 	       lsm->lsm_mirror_count, lsm->lsm_flags, lsm->lsm_layout_gen);
 
 	if (lsm->lsm_magic == LOV_MAGIC_FOREIGN) {
@@ -747,16 +753,16 @@ void dump_lsm(unsigned int level, const struct lov_stripe_md *lsm)
 				   (int)sizeof(lse->lsme_uuid), lse->lsme_uuid);
 		} else {
 			CDEBUG_LIMIT(level,
-				   DEXT ": id: %u, flags: %x, magic 0x%08X, layout_gen %u, stripe count %u, sstripe size %u, pool: ["LOV_POOLNAMEF"]\n",
+				   DEXT ": id: %u, flags: %x, magic 0x%08X, layout_gen %u, stripe count %u (%u/%u), stripe size %u, pool: ["LOV_POOLNAMEF"]\n",
 				   PEXT(&lse->lsme_extent), lse->lsme_id,
 				   lse->lsme_flags, lse->lsme_magic,
 				   lse->lsme_layout_gen, lse->lsme_stripe_count,
+				   lse->lsme_dstripe_count, lse->lsme_cstripe_count,
 				   lse->lsme_stripe_size, lse->lsme_pool_name);
 			if (!lsme_inited(lse) ||
 			    lse->lsme_pattern & LOV_PATTERN_F_RELEASED ||
 			    !lov_supported_comp_magic(lse->lsme_magic) ||
-			    !lov_pattern_supported(
-				    	lov_pattern(lse->lsme_pattern)))
+			    !lov_pattern_available(lse->lsme_pattern))
 				continue;
 			for (j = 0; j < lse->lsme_stripe_count; j++) {
 				CDEBUG_LIMIT(level,

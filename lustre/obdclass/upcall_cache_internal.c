@@ -1,31 +1,13 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2023, Whamcloud.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
  */
+
 #define DEBUG_SUBSYSTEM S_SEC
 
 #include <lustre_idmap.h>
@@ -95,11 +77,11 @@ restart:
 			/* Do not place user's group ID in group list */
 			supp_in_ginfo[i] = true;
 		} else if (ginfo_ngroups) {
-			atomic_inc(&identity->mi_ginfo->usage);
+			upcall_group_usage_inc(identity->mi_ginfo);
 			supp_in_ginfo[i] =
 				lustre_groups_search(identity->mi_ginfo,
 						     uc->uc_suppgids[i]);
-			atomic_dec(&identity->mi_ginfo->usage);
+			upcall_group_usage_dec(identity->mi_ginfo);
 		}
 	}
 
@@ -137,9 +119,9 @@ restart:
 		 * just start over.
 		 */
 		if (ginfo_ngroups) {
-			atomic_inc(&identity->mi_ginfo->usage);
+			upcall_group_usage_inc(identity->mi_ginfo);
 			lustre_list_from_groups(glist_p, identity->mi_ginfo);
-			atomic_dec(&identity->mi_ginfo->usage);
+			upcall_group_usage_dec(identity->mi_ginfo);
 		} else if (identity->mi_ginfo && identity->mi_ginfo->ngroups) {
 			CFS_FREE_PTR_ARRAY(groups, groups_num + ginfo_ngroups);
 			groups = NULL;

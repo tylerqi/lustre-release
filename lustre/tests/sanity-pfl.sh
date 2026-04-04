@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Run select tests by setting ONLY, or as arguments to the script.
 # Skip specific tests by setting EXCEPT.
@@ -719,7 +719,7 @@ test_11a() {
 	rm -f $comp_file
 
 	# only 1st component instantiated
-	$LFS setstripe -E 1M -S 1M -E 2M -E 3M -E -1 $comp_file ||
+	$LFS setstripe -E 1M -S 1M -E 2M -E 3M -E 4M -E -1 $comp_file ||
 		error "Create $comp_file failed"
 
 	local f1=$($LFS getstripe -I1 $comp_file | grep "l_fid")
@@ -753,14 +753,18 @@ test_11a() {
 	f4=$($LFS getstripe -I4 $comp_file | grep "l_fid")
 	[[ -n $f4 ]] && error "3: 4th component instantiated"
 
-	# all 4 components instantiated, using append write
+	# 4 of 5 components instantiated, using append write
 	dd if=/dev/zero of=$comp_file bs=1k count=1 seek=2k
+
 	ls -l $comp_file
 	rwv -f $comp_file -w -a -n 2 $((1024*1023)) 1
 	ls -l $comp_file
 
 	f4=$($LFS getstripe -I4 $comp_file | grep "l_fid")
 	[[ -z $f4 ]] && error "4: 4th component uninstantiated"
+
+	local f5=$($LFS getstripe -I5 $comp_file | grep "l_fid")
+	[[ -n $f5 ]] && error "3: 5th component instantiated"
 
 	return 0
 }
@@ -1025,7 +1029,7 @@ test_16b() {
 	local dir=$DIR/$tdir/dir
 	local temp=$DIR/$tdir/template
 	# We know OSTCOUNT < (LOV_MAX_STRIPE_COUNT / 2), so this is overstriping
-	local large_count=$((LOV_MAX_STRIPE_COUNT / 2 + 10))
+	local large_count=$((LOV_MAX_STRIPE_COUNT / 2))
 
 	rm -rf $DIR/$tdir
 	test_mkdir $DIR/$tdir
@@ -1053,8 +1057,12 @@ test_16b() {
 	#	                    3. PFL dir + overstriping
 	# set stripe for source dir
 	test_mkdir $dir
-	$LFS setstripe -E1m -S 1M -o 0,0 -E2m -C $large_count -E-1 $dir ||
-		error "setstripe $dir failed"
+	$LFS setstripe -E1m -S 1M -o 0,0 -E2m -C $large_count -E-1 $dir || {
+		$LFS df -v $dir
+		$LFS df -i $dir
+		getfattr -d -m - -e hex $dir
+	 	error "setstripe -E2m -C $large_count -E-1 $dir failed" 
+	}
 
 	test_mkdir $dir.copy
 	echo "3. PFL dir"
@@ -1792,7 +1800,7 @@ test_20c() {
 	stack_trap "ost_watermarks_clear_enospc $tfile $ost_idx1 $wms" EXIT
 	stack_trap "ost_watermarks_clear_enospc $tfile $ost_idx2 $wms2" EXIT
 
-	dd if=/dev/zero of=$comp_file bs=1M count=1 seek=120 &&
+	dd if=/dev/urandom of=$comp_file bs=1M count=1 seek=120 &&
 		error "dd should fail with ENOSPC"
 
 	flg_opts="--comp-flags init"
@@ -1940,8 +1948,8 @@ test_21b() {
 	test_mkdir -p $DIR/$tdir
 
 	# DoM, extendable component, further extendable component
-	$LFS setstripe -E 1M -L mdt -E 256M -i 0 -z 64M -E -1 -z 128M \
-		$comp_file || error "Create $comp_file failed"
+	$LFS setstripe -E 1M -L mdt -S 1M -E 256M -i 0 -z 64M -S 1M -E -1 \
+		-z 128M $comp_file || error "Create $comp_file failed"
 
 	found=$($LFS find --comp-start 1M -E 1M $flg_opts $comp_file | wc -l)
 	[ $found -eq 1 ] || error "Write: Zero length component not found"
@@ -2295,16 +2303,16 @@ test_23a() {
 	dd if=/dev/zero bs=1M oflag=append count=1 of=$comp_file ||
 		error "dd append failed"
 
-	local flg_opts="--comp-start 0 -E EOF --comp-flags init"
+	local flg_opts="--comp-start 0 -E 64M --comp-flags init"
 	local found=$($LFS find $flg_opts $comp_file | wc -l)
-	[ $found -eq 1 ] || error "Append: first component (0-EOF) not found"
+	[ $found -eq 1 ] || error "Append: first component (0-64M) not found"
 
 	local ost_idx=$($LFS getstripe -I2 -i $comp_file)
-	[ "$ost_idx" != "" ] && error "Append: second component still exists"
+	[ "$ost_idx" == "" ] && error "Append: second component doesn't exist"
 
-	sel_layout_sanity $comp_file 1
+	sel_layout_sanity $comp_file 2
 }
-run_test 23a "Append: remove EXT comp"
+run_test 23a "Append: EXT comp in place"
 
 test_23b() {
 	[ $OSTCOUNT -lt 2 ] && skip "needs >= 2 OSTs"
@@ -2317,19 +2325,19 @@ test_23b() {
 	$LFS setstripe -E 64m -E -1 -z 64M $comp_file ||
 		error "Create $comp_file failed"
 
-	dd if=/dev/zero bs=1M oflag=append count=1 of=$comp_file ||
+	dd if=/dev/zero bs=1M oflag=append count=2 seek=63 of=$comp_file ||
 		error "dd append failed"
 
-	local flg_opts="--comp-start 64M -E EOF --comp-flags init"
+	local flg_opts="--comp-start 64M -E 128M --comp-flags init"
 	local found=$($LFS find $flg_opts $comp_file | wc -l)
-	[ $found -eq 1 ] || error "Append: component (64M-EOF) not found"
+	[ $found -eq 1 ] || error "Append: component (64M-128M) not found"
 
 	local ost_idx=$($LFS getstripe -I3 -i $comp_file)
-	[ "$ost_idx" != "" ] && error "Append: third component still exists"
+	[ "$ost_idx" == "" ] && error "Append: third component doesn't exist"
 
-	sel_layout_sanity $comp_file 2
+	sel_layout_sanity $comp_file 3
 }
-run_test 23b "Append with 0-length comp: remove EXT comp"
+run_test 23b "Append with 0-length comp: shorten EXT comp"
 
 test_23c() {
 	[ $OSTCOUNT -lt 2 ] && skip "needs >= 2 OSTs"
@@ -2348,20 +2356,20 @@ test_23c() {
 		error "Create $comp_file failed"
 
 	local wms=$(ost_watermarks_set_low_space 0 | grep "watermarks")
-	dd if=/dev/zero bs=1M oflag=append count=1 of=$comp_file
+	dd if=/dev/zero bs=1M oflag=append count=1 seek=64 of=$comp_file
 	RC=$?
 
 	ost_watermarks_clear_enospc $tfile 0 $wms
 	[ $RC -eq 0 ] || error "dd append failed: $RC"
 
-	local flg_opts="--comp-start 64M -E EOF --comp-flags init"
+	local flg_opts="--comp-start 64M -E 128M --comp-flags init"
 	local found=$($LFS find $flg_opts $comp_file | wc -l)
-	[ $found -eq 1 ] || error "Append: component (64M-EOF) not found"
+	[ $found -eq 1 ] || error "Append: component (64M-128M) not found"
 
 	local ost_idx=$($LFS getstripe -I3 -i $comp_file)
-	[ "$ost_idx" != "" ] && error "Append: EXT component still exists"
+	[ "$ost_idx" == "" ] && error "Append: EXT component doesn't exist"
 
-	sel_layout_sanity $comp_file 2
+	sel_layout_sanity $comp_file 3
 }
 run_test 23c "Append with low on space + 0-length comp: force extension"
 
@@ -2379,16 +2387,16 @@ test_23d() {
 	dd if=/dev/zero bs=1M oflag=append count=1 of=$comp_file ||
 		error "dd append failed"
 
-	flg_opts="--comp-start 64M -E 640M --comp-flags init"
+	flg_opts="--comp-start 64M -E 640M --comp-flags extension"
 	found=$($LFS find $flg_opts $comp_file | wc -l)
 	[ $found -eq 1 ] || error "Append: component (64M-640M) not found"
 
 	ost_idx=$($LFS getstripe -I3 -i $comp_file)
-	[ "$ost_idx" != "" ] && error "Append: third component still exists"
+	[ "$ost_idx" == "" ] && error "Append: third component doesn't exist"
 
-	sel_layout_sanity $comp_file 3
+	sel_layout_sanity $comp_file 4
 }
-run_test 23d "Append with 0-length comp + next real comp: remove EXT comp"
+run_test 23d "Append with 0-length comp + next real comp: EXT comp in place"
 
 test_23e() {
 	[ $OSTCOUNT -lt 2 ] && skip "needs >= 2 OSTs"
@@ -2409,7 +2417,7 @@ test_23e() {
 
 	local wms=$(ost_watermarks_set_low_space 0 | grep "watermarks")
 
-	dd if=/dev/zero bs=1M oflag=append count=1 of=$comp_file
+	dd if=/dev/zero bs=1M oflag=append count=1 seek=64 of=$comp_file
 	RC=$?
 
 	ost_watermarks_clear_enospc $tfile 0 $wms
@@ -2429,8 +2437,8 @@ test_23e() {
 run_test 23e "Append with next real comp: spillover and backward extension"
 
 test_23f() {
-	[ $OSTCOUNT -lt 2 ] && skip "needs >= 2 OSTs"
-	[ "$MDS1_VERSION" -lt $(version_code $SEL_VER) ] &&
+	(( $OSTCOUNT >= 2 )) || skip "needs >= 2 OSTs"
+	(( "$MDS1_VERSION" >= $(version_code $SEL_VER) )) ||
 		skip "skipped for lustre < $SEL_VER"
 
 	local comp_file=$DIR/$tdir/$tfile
@@ -2441,23 +2449,37 @@ test_23f() {
 
 	local ost_idx=$($LFS getstripe -I1 -i $comp_file)
 	local wms=$(ost_watermarks_set_low_space $ost_idx | grep "watermarks")
+	stack_trap "ost_watermarks_clear_enospc $tfile $ost_idx $wms" EXIT
 
 	dd if=/dev/zero bs=1M oflag=append count=1 of=$comp_file
 	RC=$?
 
-	ost_watermarks_clear_enospc $tfile $ost_idx $wms
-	[ $RC -eq 0 ] || error "dd append failed"
+	(( $RC == 0 )) || error "dd append failed"
 
-	local flg_opts="--comp-start 64M -E EOF --comp-flags init"
+	local flg_opts="--comp-start 64M -E EOF --comp-flags extension"
 	local found=$($LFS find $flg_opts $comp_file | wc -l)
-	[ $found -eq 1 ] || error "Append: component (64M-EOF) not found"
+	(( $found == 1 )) || error "Append: EXT component (64M-EOF) not found"
 
 	ost_idx=$($LFS getstripe -I2 -i $comp_file)
-	[ "$ost_idx" != "" ] && error "Append: extension component still exists"
+	[ "$ost_idx" == "" ] && error "Append: EXT component doesn't exist"
 
 	sel_layout_sanity $comp_file 2
+
+	dd if=/dev/zero bs=1M oflag=append count=1 seek=64 of=$comp_file
+	RC=$?
+
+	(( $RC == 0 )) || error "dd append failed"
+
+	local flg_opts="--comp-start 64M -E 128M --comp-flags init"
+	local found=$($LFS find $flg_opts $comp_file | wc -l)
+	(( $found == 1 )) || error "Append: EXT component (64M-128M) not found"
+
+	ost_idx=$($LFS getstripe -I2 -i $comp_file)
+	[ "$ost_idx" == "" ] && error "Append: EXT component doesn't exist"
+
+	sel_layout_sanity $comp_file 3
 }
-run_test 23f "Append with low on space: repeat and remove EXT comp"
+run_test 23f "Append with low on space: repeat comp"
 
 OLDIFS="$IFS"
 cleanup_24() {
@@ -2595,6 +2617,24 @@ test_26c() {
 	[ $? != 0 ] || error "append must return an error"
 }
 run_test 26c "Append to not-existend component, crossing the component border"
+
+test_26d() {
+	$LFS setstripe -E 1m -S 1M -c 1 -E 10M $DIR/$tfile
+	dd if=/dev/urandom bs=1M count=1 >> $DIR/$tfile
+	[ $? == 0 ] || error "append failed on 1st dd"
+
+	local id=$($LFS getstripe -I2 $DIR/$tfile | grep "l_fid")
+	[[ -n $id ]] && error "2nd component instantiated"
+
+	dd if=/dev/urandom bs=1M count=5 >> $DIR/$tfile
+	[ $? == 0 ] || error "append failed on 2nd dd"
+
+	id=$($LFS getstripe -I2 $DIR/$tfile | grep "l_fid")
+	[[ -z $id ]] && error "2nd component uninstantiated"
+
+	return 0
+}
+run_test 26d "Append to existend component, not fully specified layout"
 
 test_27() {
 	[[ $($LCTL get_param mdc.*.import) =~ connect_flags.*overstriping ]] ||

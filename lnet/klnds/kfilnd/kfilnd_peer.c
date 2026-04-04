@@ -73,13 +73,13 @@ static void kfilnd_peer_del(struct kfilnd_peer *kp)
 
 /**
  * kfilnd_peer_purge_old_peer() - Delete the specified peer from the cache
- * if we haven't heard from it within 5x LND timeouts.
+ * if we haven't heard from it within KP_PURGE_LIMIT seconds.
  * @kp: The peer to be checked or purged
  */
 static void kfilnd_peer_purge_old_peer(struct kfilnd_peer *kp)
 {
 	if (ktime_after(ktime_get_seconds(),
-			kp->kp_last_alive + (lnet_get_lnd_timeout() * 5))) {
+			kp->kp_last_alive + KP_PURGE_LIMIT)) {
 		CDEBUG(D_NET,
 		       "Haven't heard from %s(%p):0x%llx in %lld seconds\n",
 		       libcfs_nid2str(kp->kp_nid), kp, kp->kp_addr,
@@ -204,19 +204,19 @@ again:
 	}
 
 	/* Allocate a new peer for the cache. */
-	kp = kzalloc(sizeof(*kp), GFP_KERNEL);
+	kp = kzalloc(sizeof(*kp), GFP_NOFS);
 	if (!kp) {
 		rc = -ENOMEM;
 		goto err;
 	}
 
-	node = kasprintf(GFP_KERNEL, "%#x", nid_addr);
+	node = kasprintf(GFP_NOFS, "%#x", nid_addr);
 	if (!node) {
 		rc = -ENOMEM;
 		goto err_free_peer;
 	}
 
-	service = kasprintf(GFP_KERNEL, "%u", net_num);
+	service = kasprintf(GFP_NOFS, "%u", net_num);
 	if (!service) {
 		rc = -ENOMEM;
 		goto err_free_node_str;

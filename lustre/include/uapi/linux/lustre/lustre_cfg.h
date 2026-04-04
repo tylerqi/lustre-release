@@ -31,6 +31,13 @@
 #define LUSTRE_CFG_VERSION 0x1cf60001
 #define LUSTRE_CFG_MAX_BUFCOUNT 8
 
+/*
+ * Target name "general" calls on all targets
+ * when set at (struct) lustre_cfg_bufs[0].
+ * See lustre_cfg_bufs_set_string() and lustre_cfg_bufs_reset()
+ */
+#define LUSTRE_CFG_ALL_TARGETS "general"
+
 #define LCFG_HDR_SIZE(count) \
 	__ALIGN_KERNEL(offsetof(struct lustre_cfg, lcfg_buflens[(count)]), 8)
 
@@ -102,6 +109,8 @@ enum lcfg_command_type {
 	LCFG_NODEMAP_ADMIN	  = 0x00ce049, /**< allow cluster to use id 0 */
 	LCFG_NODEMAP_ADD_PROJIDMAP	  = 0x00ce04a, /**< add a projidmap */
 	LCFG_NODEMAP_DEL_PROJIDMAP	  = 0x00ce04b, /**< delete projidmap */
+	LCFG_NODEMAP_ADD_OFFSET	  = 0x00ce04c, /**< UID/GID/PROJID add offset */
+	LCFG_NODEMAP_DEL_OFFSET	  = 0x00ce04d, /**< UID/GID/PROJID del offset */
 	LCFG_NODEMAP_TRUSTED	  = 0x00ce050, /**< trust a clusters ids */
 	LCFG_NODEMAP_SQUASH_UID	  = 0x00ce051, /**< default map uid */
 	LCFG_NODEMAP_SQUASH_GID	  = 0x00ce052, /**< default map gid */
@@ -124,6 +133,16 @@ enum lcfg_command_type {
 	LCFG_NODEMAP_SQUASH_PROJID	= 0x00ce05d, /**< default map projid */
 	LCFG_NODEMAP_READONLY_MOUNT	= 0x00ce05e, /**< read-only mount */
 	LCFG_NODEMAP_RBAC	  = 0x00ce05f, /**< rbac */
+	LCFG_NODEMAP_DENY_MOUNT	  = 0x00ce060, /**< deny mount */
+	LCFG_NODEMAP_RAISE_PRIVS	= 0x00ce061, /**< sub-nm raise privs */
+	LCFG_NODEMAP_FILESET_ADD  = 0x00ce062, /**< add fileset */
+	LCFG_NODEMAP_SET_CAPS	  = 0x00ce063, /**< user capabilities */
+	LCFG_NODEMAP_FILESET_DEL  = 0x00ce064, /**< del fileset */
+	LCFG_NODEMAP_GSS_IDENTIFY	= 0x00ce065, /**< gss identification */
+	LCFG_NODEMAP_LOOKUP_SHA		= 0x00ce066, /**< lookup nm sha */
+	LCFG_NODEMAP_FILESET_MODIFY	= 0x00ce067, /**< modify fileset */
+	LCFG_NODEMAP_BANLIST_ADD  = 0x00ce068, /**< add ban list */
+	LCFG_NODEMAP_BANLIST_DEL  = 0x00ce069, /**< del ban list */
 };
 
 struct lustre_cfg_bufs {
@@ -318,11 +337,11 @@ static inline int lustre_cfg_sanity_check(void *buf, __kernel_size_t len)
 		return -EINVAL;
 
 	/* check that the buflens are valid */
-	if (len < LCFG_HDR_SIZE(lcfg->lcfg_bufcount))
+	if (LCFG_HDR_SIZE(lcfg->lcfg_bufcount) > len)
 		return -EINVAL;
 
 	/* make sure all the pointers point inside the data */
-	if (len < lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens))
+	if (lustre_cfg_len(lcfg->lcfg_bufcount, lcfg->lcfg_buflens) > len)
 		return -EINVAL;
 
 	return 0;

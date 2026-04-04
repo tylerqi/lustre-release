@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/obdclass/idmap.c
  *
  * Lustre user identity mapping.
  *
@@ -73,48 +53,6 @@ int lustre_groups_search(struct group_info *group_info, gid_t grp)
 	return 0;
 }
 EXPORT_SYMBOL(lustre_groups_search);
-
-void lustre_groups_from_list(struct group_info *ginfo, gid_t *glist)
-{
-#ifdef HAVE_GROUP_INFO_GID
-	memcpy(ginfo->gid, glist, ginfo->ngroups * sizeof(__u32));
-#else
-	int i;
-	int count = ginfo->ngroups;
-
-	/* fill group_info from gid array */
-	for (i = 0; i < ginfo->nblocks && count > 0; i++) {
-		int cp_count = min(CFS_NGROUPS_PER_BLOCK, count);
-		int off = i * CFS_NGROUPS_PER_BLOCK;
-		int len = cp_count * sizeof(*glist);
-
-		memcpy(ginfo->blocks[i], glist + off, len);
-		count -= cp_count;
-	}
-#endif
-}
-EXPORT_SYMBOL(lustre_groups_from_list);
-
-void lustre_list_from_groups(gid_t *glist, struct group_info *ginfo)
-{
-#ifdef HAVE_GROUP_INFO_GID
-	memcpy(glist, ginfo->gid, ginfo->ngroups * sizeof(__u32));
-#else
-	int i;
-	int count = ginfo->ngroups;
-
-	/* fill in gid array from group_info */
-	for (i = 0; i < ginfo->nblocks && count > 0; i++) {
-		int cp_count = min(CFS_NGROUPS_PER_BLOCK, count);
-		int off = i * CFS_NGROUPS_PER_BLOCK;
-		int len = cp_count * sizeof(*glist);
-
-		memcpy(glist + off, ginfo->blocks[i], len);
-		count -= cp_count;
-	}
-#endif
-}
-EXPORT_SYMBOL(lustre_list_from_groups);
 
 /* groups_sort() is copied from linux kernel! */
 /* a simple shell-metzner sort */

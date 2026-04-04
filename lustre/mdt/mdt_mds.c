@@ -1,39 +1,19 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
+// SPDX-License-Identifier: GPL-2.0
 
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License version 2 for more details.  A copy is
- * included in the COPYING file that accompanied this code.
-
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * GPL HEADER END
- */
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2013, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_mds.c
  *
  * Lustre Metadata Service Layer
  *
  * Author: Di Wang <di.wang@whamcloud.com>
- **/
+ */
 
 #define DEBUG_SUBSYSTEM S_MDS
 
@@ -80,7 +60,7 @@ module_param(mds_cpu_bind, uint, 0444);
 MODULE_PARM_DESC(mds_cpu_bind,
 		 "bind MDS threads to particular CPU partitions");
 
-int mds_max_io_threads = 512;
+static int mds_max_io_threads = 512;
 module_param(mds_max_io_threads, int, 0444);
 MODULE_PARM_DESC(mds_max_io_threads,
 		 "maximum number of MDS IO service threads");
@@ -115,6 +95,11 @@ static char *mds_rdpg_num_cpts;
 module_param(mds_rdpg_num_cpts, charp, 0444);
 MODULE_PARM_DESC(mds_rdpg_num_cpts,
 		 "CPU partitions MDS readpage threads should run on");
+
+unsigned int mdt_enable_flr_ec = 1;
+module_param(mdt_enable_flr_ec, uint, 0644);
+MODULE_PARM_DESC(mdt_enable_flr_ec,
+		 "enable FLR EC connect flag, on by default");
 
 /* device init/fini methods */
 static void mds_stop_ptlrpc_service(struct mds_device *m)
@@ -663,9 +648,11 @@ static int mds_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 {
 	struct obd_device *obd = exp->exp_obd;
 	struct obd_ioctl_data *data;
+	bool dynamic = true;
 	int rc = 0;
 
 	ENTRY;
+
 	CDEBUG(D_IOCTL, "%s: cmd=%x len=%u karg=%pK uarg=%pK\n",
 	       obd->obd_name, cmd, len, karg, uarg);
 
@@ -674,7 +661,7 @@ static int mds_iocontrol(unsigned int cmd, struct obd_export *exp, int len,
 	if (cmd != OBD_IOC_NODEMAP)
 		GOTO(out, rc = -EINVAL);
 
-	rc = server_iocontrol_nodemap(obd, data, true);
+	rc = server_iocontrol_nodemap(obd, data, &dynamic, NULL, NULL);
 	if (rc)
 		GOTO(out, rc);
 

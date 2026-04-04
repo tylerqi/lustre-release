@@ -1,27 +1,9 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2020 Intel Corporation.
  */
+
 /*
  * Foreign symlink implementation.
  *
@@ -318,16 +300,7 @@ failed:
 	RETURN(rc);
 }
 
-#ifdef HAVE_SYMLINK_OPS_USE_NAMEIDATA
-static void ll_foreign_put_link(struct dentry *dentry,
-			struct nameidata *nd, void *cookie)
-#else
-# ifdef HAVE_IOP_GET_LINK
 static void ll_foreign_put_link(void *cookie)
-# else
-static void ll_foreign_put_link(struct inode *unused, void *cookie)
-# endif
-#endif
 {
 	/* to avoid allocating an unnecessary big buffer, and since ways to
 	 * build the symlink path from foreign LOV/LMV can be multiple and
@@ -338,37 +311,6 @@ static void ll_foreign_put_link(struct inode *unused, void *cookie)
 	OBD_FREE_LARGE(cookie, strlen(cookie) + 1);
 }
 
-#ifdef HAVE_SYMLINK_OPS_USE_NAMEIDATA
-static void *ll_foreign_follow_link(struct dentry *dentry,
-				      struct nameidata *nd)
-{
-	struct inode *inode = dentry->d_inode;
-	int rc;
-	char *symname = NULL;
-
-	ENTRY;
-
-	CDEBUG(D_VFSTRACE, "VFS Op\n");
-	/*
-	 * Limit the recursive symlink depth to 5 instead of default
-	 * 8 links when kernel has 4k stack to prevent stack overflow.
-	 * For 8k stacks we need to limit it to 7 for local servers.
-	 */
-	if (THREAD_SIZE < 8192 && current->link_count >= 6)
-		rc = -ELOOP;
-	else if (THREAD_SIZE == 8192 && current->link_count >= 8)
-		rc = -ELOOP;
-	else
-		rc = ll_foreign_readlink_internal(inode, &symname);
-
-	if (rc)
-		symname = ERR_PTR(rc);
-
-	nd_set_link(nd, symname);
-	RETURN(symname);
-}
-
-#elif defined(HAVE_IOP_GET_LINK)
 static const char *ll_foreign_get_link(struct dentry *dentry,
 				       struct inode *inode,
 				       struct delayed_call *done)
@@ -392,30 +334,6 @@ static const char *ll_foreign_get_link(struct dentry *dentry,
 	set_delayed_call(done, ll_foreign_put_link, symname);
 	RETURN(rc ? ERR_PTR(rc) : symname);
 }
-
-# else /* !HAVE_IOP_GET_LINK */
-static const char *ll_foreign_follow_link(struct dentry *dentry,
-					    void **cookie)
-{
-	struct inode *inode = d_inode(dentry);
-	char *symname = NULL;
-	int rc;
-
-	ENTRY;
-
-	CDEBUG(D_VFSTRACE, "VFS Op\n");
-	rc = ll_foreign_readlink_internal(inode, &symname);
-	if (rc < 0)
-		return ERR_PTR(rc);
-
-	/* XXX need to also return symname in cookie in order to delay
-	 * its release ??
-	 */
-
-	RETURN(symname);
-}
-
-#endif /* HAVE_SYMLINK_OPS_USE_NAMEIDATA, HAVE_IOP_GET_LINK */
 
 /*
  * Should only be called for already in-use/cache foreign dir inode
@@ -799,8 +717,10 @@ failed:
 }
 
 /* foreign fake-symlink version of ll_getattr() */
+static int ll_foreign_symlink_getattr(
 #if defined(HAVE_USER_NAMESPACE_ARG)
-static int ll_foreign_symlink_getattr(struct mnt_idmap *map,
+				      struct mnt_idmap *map,
+#endif
 				      const struct path *path,
 				      struct kstat *stat, u32 request_mask,
 				      unsigned int flags)
@@ -808,63 +728,20 @@ static int ll_foreign_symlink_getattr(struct mnt_idmap *map,
 	return ll_getattr_dentry(path->dentry, stat, request_mask, flags,
 				 true);
 }
-#elif defined(HAVE_INODEOPS_ENHANCED_GETATTR)
-static int ll_foreign_symlink_getattr(const struct path *path,
-				      struct kstat *stat, u32 request_mask,
-				      unsigned int flags)
-{
-	return ll_getattr_dentry(path->dentry, stat, request_mask, flags,
-				 true);
-}
-#else
-static int ll_foreign_symlink_getattr(struct vfsmount *mnt, struct dentry *de,
-				      struct kstat *stat)
-{
-	return ll_getattr_dentry(de, stat, STATX_BASIC_STATS,
-				 AT_STATX_SYNC_AS_STAT, true);
-}
-#endif
 
 struct inode_operations ll_foreign_file_symlink_inode_operations = {
-#ifdef HAVE_IOP_GENERIC_READLINK
-	.readlink	= generic_readlink,
-#endif
 	.setattr	= ll_setattr,
-#ifdef HAVE_IOP_GET_LINK
 	.get_link	= ll_foreign_get_link,
-#else
-	.follow_link	= ll_foreign_follow_link,
-	/* .put_link method required since need to release symlink copy buf */
-	.put_link	= ll_foreign_put_link,
-#endif
 	.getattr	= ll_foreign_symlink_getattr,
 	.permission	= ll_inode_permission,
-#ifdef HAVE_IOP_XATTR
-	.setxattr	= ll_setxattr,
-	.getxattr	= ll_getxattr,
-	.removexattr	= ll_removexattr,
-#endif
 	.listxattr	= ll_listxattr,
 };
 
 struct inode_operations ll_foreign_dir_symlink_inode_operations = {
 	.lookup		= ll_foreign_dir_lookup,
-#ifdef HAVE_IOP_GENERIC_READLINK
-	.readlink	= generic_readlink,
-#endif
 	.setattr	= ll_setattr,
-#ifdef HAVE_IOP_GET_LINK
 	.get_link	= ll_foreign_get_link,
-#else
-	.follow_link	= ll_foreign_follow_link,
-	.put_link	= ll_foreign_put_link,
-#endif
 	.getattr	= ll_foreign_symlink_getattr,
 	.permission	= ll_inode_permission,
-#ifdef HAVE_IOP_XATTR
-	.setxattr	= ll_setxattr,
-	.getxattr	= ll_getxattr,
-	.removexattr	= ll_removexattr,
-#endif
 	.listxattr	= ll_listxattr,
 };

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 PROG=$(basename $0)
 [ "$1" = "-h" -o "$1" = "--help" ] && echo "usage: $PROG [patch dir]" && exit 0
 [ "$1" = "-v" ] && shift && VERBOSE="echo" || VERBOSE=":"
@@ -12,7 +12,7 @@ PATCHPATH=${PATCHPATH:-$BASEDIR/patches}
 [ ! -d "$SERIESPATH" ] && echo "$PROG: missing series '$SERIESPATH'" && exit 2
 [ ! -d "$PATCHPATH" ] && echo "$PROG: missing patches '$PATCHPATH'" && exit 3
 
-for SERIES in $(ls $SERIESPATH | egrep -v "~$|.orig|.rej") ; do
+for SERIES in $(ls $SERIESPATH | grep -E -v "~$|.orig|.rej") ; do
 	$VERBOSE "series: $SERIES"
 	for PATCH in $(grep -v "^#" $SERIESPATH/$SERIES); do
 		$VERBOSE $PATCH

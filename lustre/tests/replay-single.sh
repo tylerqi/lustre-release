@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 set -e
 
@@ -1640,6 +1640,7 @@ run_test 60 "test llog post recovery init vs llog unlink"
 #test race  llog recovery thread vs llog cleanup
 test_61a() {	# was test_61
 	remote_ost_nodsh && skip "remote OST with nodsh" && return 0
+	local osts=$(osts_nodes)
 
 	mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
 	createmany -o $DIR/$tdir/$tfile-%d 800 ||
@@ -1647,12 +1648,12 @@ test_61a() {	# was test_61
 	replay_barrier ost1
 	unlinkmany $DIR/$tdir/$tfile-%d 800
 	#   OBD_FAIL_OST_LLOG_RECOVERY_TIMEOUT 0x221
-	set_nodes_failloc "$(osts_nodes)" 0x80000221
+	set_nodes_failloc $osts 0x80000221
 	facet_failover ost1
 	sleep 10
 	fail ost1
 	sleep 30
-	set_nodes_failloc "$(osts_nodes)" 0x0
+	set_nodes_failloc $osts 0x0
 
 	$CHECKSTAT -t file $DIR/$tdir/$tfile-* &&
 		error "$CHECKSTAT $DIR/$tdir/$tfile attribute check should fail"
@@ -1678,11 +1679,11 @@ test_61c() {
 
 	#   OBD_FAIL_OST_CANCEL_COOKIE_TIMEOUT 0x222
 	touch $DIR/$tfile || error "touch $DIR/$tfile failed"
-	set_nodes_failloc "$(osts_nodes)" 0x80000222
+	set_nodes_failloc $(osts_nodes) 0x80000222
 	rm $DIR/$tfile
 	sleep 10
 	fail ost1
-	set_nodes_failloc "$(osts_nodes)" 0x0
+	set_nodes_failloc $(osts_nodes) 0x0
 }
 run_test 61c "test race mds llog sync vs llog cleanup"
 
@@ -1964,10 +1965,14 @@ test_68 () #bug 13813
     remote_ost_nodsh && skip "remote OST with nodsh" && return 0
 
     at_start || return 0
-    local ldlm_enqueue_min=$(find /sys -name ldlm_enqueue_min)
-    [ -z "$ldlm_enqueue_min" ] && skip "missing /sys/.../ldlm_enqueue_min" && return 0
-    local ldlm_enqueue_min_r=$(do_facet ost1 "find /sys -name ldlm_enqueue_min")
-    [ -z "$ldlm_enqueue_min_r" ] && skip "missing /sys/.../ldlm_enqueue_min in the ost1" && return 0
+    local ldlm_enqueue_min=$(find /sys/module -name ldlm_enqueue_min)
+    [ -z "$ldlm_enqueue_min" ] &&
+	    skip "missing /sys/module/.../ldlm_enqueue_min" && return 0
+    local ldlm_enqueue_min_r=$(do_facet ost1 "find /sys/module \
+			       -name ldlm_enqueue_min")
+    [ -z "$ldlm_enqueue_min_r" ] &&
+	    skip "missing /sys/module/.../ldlm_enqueue_min in the ost1" &&
+	    return 0
     local ENQ_MIN=$(cat $ldlm_enqueue_min)
     local ENQ_MIN_R=$(do_facet ost1 "cat $ldlm_enqueue_min_r")
 	echo $TIMEOUT >> $ldlm_enqueue_min
@@ -3257,6 +3262,8 @@ test_89() {
 	(( $write_size >= 1024 )) || write_size=1024
 	dd if=/dev/zero bs=${write_size}k count=10 of=$DIR/$tdir/$tfile
 	sync
+	# Acquire the OST lock so we can delete while the OST is offline
+	ls -la $DIR/$tdir/$tfile
 	stop ost1
 	facet_failover $SINGLEMDS
 	rm $DIR/$tdir/$tfile
@@ -5062,7 +5069,7 @@ test_136() {
 	sync;sync;sync
 
 #define OBD_FAIL_OUT_DROP_DESTROY      0x170b
-	local mdts=$(comma_list $(mdts_nodes))
+	local mdts=$(mdts_nodes)
 	do_nodes $mdts $LCTL set_param fail_loc=0x170b
 	rmdir $DIR/$tdir &
 	sleep 0.5
@@ -5343,8 +5350,9 @@ test_201() {
 			error "mount mds2 failed"
 	echo "Umount took $duration seconds"
 
-	#Valid timeout is 8 for MDTs + 8 for OSTs + 4 some for other umount
-	(( duration < 20 )) || error "Cascading timeouts on disconnect"
+	# Valid timeout is 8s for MDT0000-lwp-MDT0001
+	# + 8s for osp devices MDTs/OSTs + (4s + OSTCOUNTs) for other umount
+	(( duration <= (20 + OSTCOUNT) )) || error "Cascading timeouts on disconnect"
 }
 run_test 201 "MDT umount cascading disconnects timeouts"
 
@@ -5352,11 +5360,20 @@ test_202() {
 	local td=$DIR/$tdir
 	local tf=$td/$tfile
 
-	(( $MDS1_VERSION >= $(version_code 2.16.0) )) ||
-	   (( $MDS1_VERSION < $(version_code v2_15_55-64-g13557aa869) &&
-	   $MDS1_VERSION >= $(version_code 2.14.0-ddn178) )) ||
-	   (( $MDS1_VERSION < $(version_code 2.14.0-ddn87-14-gf1bd967799) )) ||
-		skip "need MDS with LU-18416 fix for layout version"
+	if ! do_facet $SINGLEMDS $LCTL get_param version | grep "ddn"; then
+		# master and b2_15
+		(( $MDS1_VERSION >= $(version_code v2_16_50-35-gc66a7dea85) )) ||
+		(( $MDS1_VERSION < $(version_code v2_15_55-64-g13557aa869) &&
+		   $MDS1_VERSION >= $(version_code v2_15_6-RC1) )) ||
+			skip "need MDS with LU-18435 fix for layout version"
+	else
+		# b_es6_0 and b_es5_2
+		(( $MDS1_VERSION >= $(version_code 2.14.0-ddn180) )) ||
+		(( $MDS1_VERSION < $(version_code 2.14.0-ddn86-14-gf1bd967799) &&
+		   $MDS1_VERSION >= $(version_code 2.14.0-ddn1) )) ||
+		(( $MDS1_VERSION < $(version_code 2.12.9-ddn19-4-g3455e9100f) )) ||
+			skip "need MDS with LU-18435 fix for layout version"
+	fi
 
 	mkdir_on_mdt0 $td || error "can't mkdir"
 	$LFS setstripe -E128M -c1 -Eeof -c2 $td || error "can't setstripe"
@@ -5370,6 +5387,31 @@ test_202() {
 }
 run_test 202 "pfl replay should recovery layout generation"
 
+test_203() {
+	mount_client $MOUNT2
+	stack_trap "umount_client $MOUNT2"
+
+	local start=$SECONDS
+#define OBD_FAIL_MDS_PAUSE_GETATTR		0x2403
+	do_facet mds1 "$LCTL set_param fail_loc=0x80002403 fail_val=2"
+	echo "STAT"
+	stat $MOUNT/$tfile &
+	local PID=$!
+
+	sleep 0.5
+
+	echo "SETSTRIPE"
+	$LFS setstripe -E 1MB -c -1 -E 2MB -c -1 -E 3MB -c -1 -E 4MB -c -1 \
+		-E 5MB -c -1 -E 6MB -c -1 -E 7MB -c -1 -E 8MB -c -1 \
+		-E 9MB -c -1 -E 10MB -c -1 -E 11MB -c -1 -E eof -c -1 \
+		$MOUNT2/$tfile
+
+	wait $PID
+	do_facet mds1 "$LCTL set_param fail_loc=0 fail_val=0"
+	(( SECONDS-start < TIMEOUT/2 )) ||
+		error "took too long: $((SECONDS-start)) >= $((TIMEOUT/2))"
+}
+run_test 203 "resend can hit original request"
 
 complete_test $SECONDS
 check_and_cleanup_lustre

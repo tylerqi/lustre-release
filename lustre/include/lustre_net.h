@@ -29,7 +29,7 @@
 #include <linux/kobject.h>
 #include <linux/rhashtable.h>
 #include <linux/uio.h>
-#include <libcfs/libcfs.h>
+#include <linux/pm_qos.h>
 #include <lnet/api.h>
 #include <lnet/lib-types.h>
 #include <uapi/linux/lnet/nidstr.h>
@@ -73,14 +73,7 @@
  * RPC count.
  */
 #define PTLRPC_BULK_OPS_MASK	(~((__u64)PTLRPC_BULK_OPS_COUNT - 1))
-/*
- * Unaligned DIO adjust MD size for alignment to the interop page size
- * Enable page alignmen interop range:
- *  MD_MAX_INTEROP_PAGE_SIZE(64k) <-> MD_MIN_INTEROP_PAGE_SIZE(4k)
- */
-#define MD_MIN_INTEROP_PAGE_SHIFT	12
-#define MD_MIN_INTEROP_PAGE_SIZE	(1u << MD_MIN_INTEROP_PAGE_SHIFT)
-#define MD_MAX_INTEROP_PAGE_SIZE	(1u << 16)
+#define PTLRPC_BULK_INTEROP_PAGE_SIZE	4096
 /**
  * Define maxima for bulk I/O.
  *
@@ -527,18 +520,47 @@ struct ptlrpc_replay_async_args {
 	int		praa_old_status;
 };
 
+/* max latency being allowed when connection is busy */
+#define CPU_MAX_RESUME_LATENCY_US 20
+/* default time during which low latency will be set */
+#define DEFAULT_CPU_LATENCY_TIMEOUT_US 3000
+
+/**
+ * Structure for PM QoS management.
+ */
+struct cpu_latency_qos {
+	struct dev_pm_qos_request *pm_qos_req;
+	struct delayed_work delayed_work;
+	/* current/last time being active, in jiffies */
+	u64 deadline;
+	/* max timeout value already used, in usecs */
+	u64 max_time;
+	struct mutex lock;
+};
+
+/* per-cpu PM QoS management */
+extern struct cpu_latency_qos *cpus_latency_qos;
+
+/* whether we should use PM-QoS to lower CPUs resume latency during I/O */
+extern bool ptlrpc_enable_pmqos;
+
+/* max CPUs power resume latency to be used during I/O */
+extern int ptlrpc_pmqos_latency_max_usec;
+
+/* default timeout to end CPUs resume latency constraint */
+extern u64 ptlrpc_pmqos_default_duration_usec;
+
+/* whether we should use PM-QoS to lower CPUs resume latency during I/O */
+extern bool ptlrpc_pmqos_use_stats_for_duration;
+
 /**
  * Structure to single define portal connection.
  */
 struct ptlrpc_connection {
 	/** linkage for connections hash table */
 	struct rhash_head	c_hash;
-	/** Our own lnet nid for this connection */
-	struct lnet_nid		c_self;
 	/** Remote side nid for this connection */
 	struct lnet_processid	c_peer;
-	/** UUID of the other side */
-	struct obd_uuid		c_remote_uuid;
 	/** reference counter for this connection */
 	atomic_t		c_refcount;
 };
@@ -575,7 +597,7 @@ union ptlrpc_async_args {
 struct ptlrpc_request_set;
 typedef int (*set_producer_func)(struct ptlrpc_request_set *, void *);
 
-/**
+/*
  * Definition of request set structure.
  * Request set is a list of requests (not necessary to the same target) that
  * once populated with RPCs could be sent in parallel.
@@ -587,32 +609,32 @@ typedef int (*set_producer_func)(struct ptlrpc_request_set *, void *);
  * returned.
  */
 struct ptlrpc_request_set {
-	atomic_t		set_refcount;
-	/** number of in queue requests */
+	struct kref		set_refcount;
+	/* number of in queue requests */
 	atomic_t		set_new_count;
-	/** number of uncompleted requests */
+	/* number of uncompleted requests. */
 	atomic_t		set_remaining;
-	/** wait queue to wait on for request events */
+	/* wait queue to wait on for request events */
 	wait_queue_head_t	set_waitq;
-	/** List of requests in the set */
+	/* List of requests in the set */
 	struct list_head	set_requests;
-	/**
+	/*
 	 * Lock for \a set_new_requests manipulations
 	 * locked so that any old caller can communicate requests to
 	 * the set holder who can then fold them into the lock-free set
 	 */
 	spinlock_t		set_new_req_lock;
-	/** List of new yet unsent requests. Only used with ptlrpcd now. */
+	/* List of new yet unsent requests. Only used with ptlrpcd now. */
 	struct list_head	set_new_requests;
 
-	/** rq_status of requests that have been freed already */
+	/* rq_status of requests that have been freed already */
 	int			set_rc;
-	/** Additional fields used by the flow control extension */
-	/** Maximum number of RPCs in flight */
+	/* Additional fields used by the flow control extension */
+	/* Maximum number of RPCs in flight */
 	int			set_max_inflight;
-	/** Callback function used to generate RPCs */
+	/* Callback function used to generate RPCs */
 	set_producer_func	set_producer;
-	/** opaq argument passed to the producer callback */
+	/* opaq argument passed to the producer callback */
 	void			*set_producer_arg;
 	unsigned int		 set_allow_intr:1;
 };
@@ -669,7 +691,7 @@ struct ptlrpc_reply_state {
 	unsigned long		rs_prealloc:1; /* rs from prealloc list */
 	/* transaction committed and rs dispatched by ptlrpc_commit_replies */
 	unsigned long		rs_committed:1;
-	atomic_t		rs_refcount; /* number of users */
+	struct kref		rs_refcount; /* number of users */
 	/** Number of locks awaiting client ACK */
 	int			rs_nlocks;
 
@@ -782,13 +804,13 @@ struct ptlrpc_cli_req {
 	/** optional time limit for send attempts. This is a timeout
 	 *  not a timestamp so timeout_t (s32) is used instead of time64_t
 	 */
-	timeout_t			 cr_delay_limit;
+	ktime_t				 cr_delay_limit_ns;
 	/** time request was first queued */
-	time64_t			 cr_queued_time;
+	ktime_t				 cr_queued_time_ns;
 	/** request sent in nanoseconds */
 	ktime_t				 cr_sent_ns;
 	/** time for request really sent out */
-	time64_t			 cr_sent_out;
+	ktime_t				 cr_sent_out_ns;
 	/** when req reply unlink must finish. */
 	time64_t			 cr_reply_deadline;
 	/** when req bulk unlink must finish. */
@@ -848,10 +870,10 @@ struct ptlrpc_cli_req {
  * be removed step by step to avoid potential abuse
  */
 #define rq_bulk			rq_cli.cr_bulk
-#define rq_delay_limit		rq_cli.cr_delay_limit
-#define rq_queued_time		rq_cli.cr_queued_time
+#define rq_delay_limit_ns	rq_cli.cr_delay_limit_ns
+#define rq_queued_time_ns	rq_cli.cr_queued_time_ns
 #define rq_sent_ns		rq_cli.cr_sent_ns
-#define rq_real_sent		rq_cli.cr_sent_out
+#define rq_real_sent_ns		rq_cli.cr_sent_out_ns
 #define rq_reply_deadline	rq_cli.cr_reply_deadline
 #define rq_bulk_deadline	rq_cli.cr_bulk_deadline
 #define rq_req_deadline		rq_cli.cr_req_deadline
@@ -1003,7 +1025,8 @@ struct ptlrpc_request {
 		/* bulk request, sent to server, but uncommitted */
 		rq_unstable:1,
 		rq_early_free_repbuf:1, /* free reply buffer in advance */
-		rq_allow_intr:1;
+		rq_allow_intr:1,
+		rq_pause_after_reply:1;
 	/** @} */
 
 	/** server-side flags are serialized by rq_lock @{ */
@@ -1392,12 +1415,12 @@ extern const struct ptlrpc_bulk_frag_ops ptlrpc_bulk_kiov_nopin_ops;
 struct ptlrpc_bulk_desc {
 	unsigned int	bd_refs; /* number MD's assigned including zero-sends */
 	/** completed with failure */
-	unsigned long bd_failure:1;
+	unsigned long bd_failure:1,
 	/** client side */
-	unsigned short bd_md_offset; /* offset in 4k pages ranged [0, 15] */
-	unsigned int bd_registered:1,
-	/* bulk request is RDMA transfer, use page->host as real address */
-		     bd_is_rdma:1;
+		    bd_registered:1,
+	/* bulk request is GPU RDMA transfer, use page->host as real address */
+		     bd_is_rdma:1,
+		     bd_is_srv:1; /* export or import should be used */
 	/** For serialization with callback */
 	spinlock_t bd_lock;
 	/** {put,get}{source,sink}{kvec,kiov} */
@@ -1918,7 +1941,7 @@ extern void reply_in_callback(struct lnet_event *ev);
 extern void client_bulk_callback(struct lnet_event *ev);
 extern void request_in_callback(struct lnet_event *ev);
 extern void reply_out_callback(struct lnet_event *ev);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 extern void server_bulk_callback(struct lnet_event *ev);
 #endif
 /** @} */
@@ -1963,36 +1986,12 @@ int ptlrpc_connection_init(void);
 void ptlrpc_connection_fini(void);
 extern lnet_pid_t ptl_get_pid(void);
 
-/*
- * Check if the peer connection is on the local node.  We need to use GFP_NOFS
- * for requests from a local client to avoid recursing into the filesystem
- * as we might end up waiting on a page sent in the request we're serving.
- *
- * Use __GFP_HIGHMEM so that the pages can use all of the available memory
- * on 32-bit machines.  Use more aggressive GFP_HIGHUSER flags from non-local
- * clients to be able to generate more memory pressure on the OSS and allow
- * inactive pages to be reclaimed, since it doesn't have any other processes
- * or allocations that generate memory reclaim pressure.
- *
- * See b=17576 (bdf50dc9) and b=19529 (3dcf18d3) for details.
- */
-static inline bool ptlrpc_connection_is_local(struct ptlrpc_connection *conn)
-{
-	if (!conn)
-		return false;
-
-	if (nid_same(&conn->c_peer.nid, &conn->c_self))
-		return true;
-
-	RETURN(LNetIsPeerLocal(&conn->c_peer.nid));
-}
-
 /* ptlrpc/niobuf.c */
 /**
  * Actual interfacing with LNet to put/get/register/unregister stuff
  * @{
  */
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 struct ptlrpc_bulk_desc *ptlrpc_prep_bulk_exp(struct ptlrpc_request *req,
 					      unsigned int nfrags,
 					      unsigned int max_brw,
@@ -2105,7 +2104,6 @@ ptlrpc_request_alloc_pack(struct obd_import *imp,
 int ptlrpc_request_bufs_pack(struct ptlrpc_request *request,
 			     __u32 version, int opcode, char **bufs,
 			     struct ptlrpc_cli_ctx *ctx);
-#define ptlrpc_req_finished(rq) ptlrpc_req_put(rq)
 void ptlrpc_req_put(struct ptlrpc_request *request);
 void ptlrpc_req_put_with_imp_lock(struct ptlrpc_request *request);
 struct ptlrpc_request *ptlrpc_request_addref(struct ptlrpc_request *req);
@@ -2132,12 +2130,6 @@ __u64 ptlrpc_sample_next_xid(void);
 __u64 ptlrpc_req_xid(struct ptlrpc_request *request);
 void ptlrpc_get_mod_rpc_slot(struct ptlrpc_request *req);
 void ptlrpc_put_mod_rpc_slot(struct ptlrpc_request *req);
-
-/* Set of routines to run a function in ptlrpcd context */
-void *ptlrpcd_alloc_work(struct obd_import *imp,
-			 int (*cb)(const struct lu_env *, void *), void *data);
-void ptlrpcd_destroy_work(void *handler);
-int ptlrpcd_queue_work(void *handler);
 
 /** @} */
 struct ptlrpc_service_buf_conf {
@@ -2225,10 +2217,12 @@ struct ptlrpc_service *ptlrpc_register_service(
 int ptlrpc_unregister_service(struct ptlrpc_service *service);
 int ptlrpc_service_health_check(struct ptlrpc_service *service);
 void ptlrpc_server_drop_request(struct ptlrpc_request *req);
+void ptlrpc_del_exp_list(struct ptlrpc_request *req);
 void ptlrpc_request_change_export(struct ptlrpc_request *req,
 				  struct obd_export *export);
-void ptlrpc_update_export_timer(struct obd_export *exp,
-				time64_t extra_delay);
+void ptlrpc_update_export_timer(struct ptlrpc_request *req);
+timeout_t ptlrpc_export_prolong_timeout(struct ptlrpc_request *req,
+					bool recovery);
 
 int ptlrpc_hr_init(void);
 void ptlrpc_hr_fini(void);
@@ -2290,7 +2284,7 @@ int lustre_pack_reply_flags(struct ptlrpc_request *, int count, __u32 *lens,
 int lustre_shrink_msg(struct lustre_msg *msg, int segment,
 		      unsigned int newlen, int move_data);
 int lustre_grow_msg(struct lustre_msg *msg, int segment, unsigned int newlen);
-void lustre_free_reply_state(struct ptlrpc_reply_state *rs);
+void lustre_free_reply_state(struct kref *kref);
 int __lustre_unpack_msg(struct lustre_msg *m, int len);
 __u32 lustre_msg_hdr_size(__u32 magic, __u32 count);
 __u32 lustre_msg_size(__u32 magic, int count, __u32 *lengths);
@@ -2330,6 +2324,7 @@ __u32 lustre_msg_get_conn_cnt(struct lustre_msg *msg);
 __u32 lustre_msg_get_magic(struct lustre_msg *msg);
 timeout_t lustre_msg_get_timeout(struct lustre_msg *msg);
 timeout_t lustre_msg_get_service_timeout(struct lustre_msg *msg);
+int lustre_msg_get_projid(struct lustre_msg *msg, __u32 *projid);
 int lustre_msg_get_uid_gid(struct lustre_msg *msg, __u32 *uid, __u32 *gid);
 char *lustre_msg_get_jobid(struct lustre_msg *msg);
 __u32 lustre_msg_get_cksum(struct lustre_msg *msg);
@@ -2360,6 +2355,7 @@ struct job_info {
 };
 
 void lustre_msg_set_jobinfo(struct lustre_msg *msg, const struct job_info *ji);
+void lustre_msg_set_projid(struct lustre_msg *msg, __u32 projid);
 void lustre_msg_set_cksum(struct lustre_msg *msg, __u32 cksum);
 void lustre_msg_set_mbits(struct lustre_msg *msg, __u64 mbits);
 
@@ -2497,21 +2493,6 @@ ptlrpc_client_wake_req(struct ptlrpc_request *req)
 		wake_up(&req->rq_set->set_waitq);
 }
 
-static inline void
-ptlrpc_rs_addref(struct ptlrpc_reply_state *rs)
-{
-	LASSERT(atomic_read(&rs->rs_refcount) > 0);
-	atomic_inc(&rs->rs_refcount);
-}
-
-static inline void
-ptlrpc_rs_decref(struct ptlrpc_reply_state *rs)
-{
-	LASSERT(atomic_read(&rs->rs_refcount) > 0);
-	if (atomic_dec_and_test(&rs->rs_refcount))
-		lustre_free_reply_state(rs);
-}
-
 /* Should only be called once per req */
 static inline void ptlrpc_req_drop_rs(struct ptlrpc_request *req)
 {
@@ -2525,7 +2506,7 @@ static inline void ptlrpc_req_drop_rs(struct ptlrpc_request *req)
 	req->rq_repmsg = NULL;
 	spin_unlock(&req->rq_early_free_lock);
 
-	ptlrpc_rs_decref(req->rq_reply_state);
+	kref_put(&req->rq_reply_state->rs_refcount, lustre_free_reply_state);
 	req->rq_reply_state = NULL;
 }
 
@@ -2536,8 +2517,8 @@ static inline __u32 lustre_request_magic(struct ptlrpc_request *req)
 
 static inline int ptlrpc_send_limit_expired(struct ptlrpc_request *req)
 {
-	if (req->rq_delay_limit != 0 &&
-	    req->rq_queued_time + req->rq_delay_limit < ktime_get_seconds())
+	if (req->rq_delay_limit_ns != 0 &&
+	    req->rq_queued_time_ns + req->rq_delay_limit_ns < ktime_get_real())
 		return 1;
 	return 0;
 }
@@ -2567,7 +2548,7 @@ ptlrpc_req2svc(struct ptlrpc_request *req)
  * @{
  */
 int client_obd_setup(struct obd_device *obd, struct lustre_cfg *lcfg);
-int client_obd_cleanup(struct obd_device *obd);
+void client_obd_cleanup(struct obd_device *obd);
 int client_connect_import(const struct lu_env *env,
 			  struct obd_export **exp, struct obd_device *obd,
 			  struct obd_uuid *cluuid, struct obd_connect_data *ocd,
@@ -2579,14 +2560,13 @@ int client_import_dyn_add_conn(struct obd_import *imp, struct obd_uuid *uuid,
 			       struct lnet_nid *prim_nid, int priority);
 int client_import_add_nids_to_conn(struct obd_import *imp,
 				   struct lnet_nid *nidlist,
-				   int nid_count, int nid_size,
-				   struct obd_uuid *uuid);
+				   int nid_count, struct obd_uuid *uuid);
 int client_import_del_conn(struct obd_import *imp, struct obd_uuid *uuid);
 int import_set_conn_priority(struct obd_import *imp, struct obd_uuid *uuid);
 void client_destroy_import(struct obd_import *imp);
 /** @} */
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 int server_disconnect_export(struct obd_export *exp);
 #endif
 
@@ -2616,7 +2596,6 @@ void ptlrpcd_stop(struct ptlrpcd_ctl *pc, int force);
 void ptlrpcd_free(struct ptlrpcd_ctl *pc);
 void ptlrpcd_wake(struct ptlrpc_request *req);
 void ptlrpcd_add_req(struct ptlrpc_request *req);
-void ptlrpcd_add_rqset(struct ptlrpc_request_set *set);
 int ptlrpcd_addref(void);
 void ptlrpcd_decref(void);
 

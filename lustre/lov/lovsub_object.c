@@ -19,13 +19,7 @@
 
 #include "lov_cl_internal.h"
 
-/** \addtogroup lov
- *  @{
- */
-
-/**
- * Lovsub object operations.
- */
+/* lovsub (LOV sub-object) operations. */
 
 static int lovsub_object_init(const struct lu_env *env, struct lu_object *obj,
 			      const struct lu_object_conf *conf)
@@ -95,7 +89,8 @@ static int lovsub_object_print(const struct lu_env *env, void *cookie,
 }
 
 static int lovsub_attr_update(const struct lu_env *env, struct cl_object *obj,
-			      const struct cl_attr *attr, unsigned valid)
+			      const struct cl_attr *attr,
+			      enum cl_attr_valid valid)
 {
 	struct lovsub_object *los = cl2lovsub(obj);
 	struct lov_object *lov = cl2lovsub(obj)->lso_super;
@@ -116,9 +111,14 @@ static int lovsub_object_glimpse(const struct lu_env *env,
 }
 
 /**
+ * lovsub_req_attr_set() - Set request attributes
+ * @env: lustre environment
+ * @obj: file object
+ * @attr: attribute to set
+ *
  * Implementation of struct cl_object_operations::coo_req_attr_set() for lovsub
- * layer. Lov and lovsub are responsible only for struct obdo::o_stripe_idx
- * field, which is filled there.
+ * layer. LOV and lovsub (LOV sub-object) are responsible only for
+ * struct obdo::o_stripe_idx field, which is filled there.
  */
 static void lovsub_req_attr_set(const struct lu_env *env, struct cl_object *obj,
 				struct cl_req_attr *attr)
@@ -140,10 +140,21 @@ static void lovsub_req_attr_set(const struct lu_env *env, struct cl_object *obj,
 	EXIT;
 }
 
+static void lovsub_req_projid_set(const struct lu_env *env,
+				  struct cl_object *obj, __u32 *projid)
+{
+	struct lovsub_object *subobj = cl2lovsub(obj);
+
+	ENTRY;
+	cl_req_projid_set(env, &subobj->lso_super->lo_cl, projid);
+	EXIT;
+}
+
 static const struct cl_object_operations lovsub_ops = {
-	.coo_attr_update  = lovsub_attr_update,
-	.coo_glimpse      = lovsub_object_glimpse,
-	.coo_req_attr_set = lovsub_req_attr_set
+	.coo_attr_update	= lovsub_attr_update,
+	.coo_glimpse		= lovsub_object_glimpse,
+	.coo_req_attr_set	= lovsub_req_attr_set,
+	.coo_req_projid_set	= lovsub_req_projid_set,
 };
 
 static const struct lu_object_operations lovsub_lu_obj_ops = {

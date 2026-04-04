@@ -32,14 +32,13 @@
 int mdd_acl_chmod(const struct lu_env *env, struct mdd_object *o, __u32 mode,
 		  struct thandle *handle)
 {
-	struct lu_buf            buf;
-	posix_acl_xattr_header  *head;
-	posix_acl_xattr_entry   *entry;
-	int                      entry_count;
-	int                      rc;
+	struct lu_buf buf;
+	struct posix_acl_xattr_header *head;
+	struct posix_acl_xattr_entry *entry;
+	int entry_count;
+	int rc;
 
 	ENTRY;
-
 	lu_buf_check_and_alloc(&mdd_env_info(env)->mdi_xattr_buf,
 			min_t(unsigned int,
 			      mdd_obj2mdd_dev(o)->mdd_dt_conf.ddp_max_ea_size,
@@ -58,10 +57,10 @@ int mdd_acl_chmod(const struct lu_env *env, struct mdd_object *o, __u32 mode,
 		RETURN(rc);
 
 	buf.lb_len = rc;
-	head = (posix_acl_xattr_header *)(buf.lb_buf);
-	entry = GET_POSIX_ACL_XATTR_ENTRY(head);
+	head = (struct posix_acl_xattr_header *)(buf.lb_buf);
+	entry = (void *)(head + 1);
 	entry_count = (buf.lb_len - sizeof(head->a_version)) /
-		sizeof(posix_acl_xattr_entry);
+		      sizeof(struct posix_acl_xattr_entry);
 	if (entry_count <= 0)
 		RETURN(0);
 
@@ -77,20 +76,20 @@ int mdd_acl_chmod(const struct lu_env *env, struct mdd_object *o, __u32 mode,
 int mdd_acl_set(const struct lu_env *env, struct mdd_object *obj,
 		struct lu_attr *la, const struct lu_buf *buf, int fl)
 {
-	struct mdd_device	*mdd = mdd_obj2mdd_dev(obj);
-	struct thandle		*handle;
-	posix_acl_xattr_header	*head;
-	posix_acl_xattr_entry	*entry;
-	int			 entry_count;
-	bool			 not_equiv, mode_change;
-	mode_t			 mode;
-	int			 rc;
-	ENTRY;
+	struct mdd_device *mdd = mdd_obj2mdd_dev(obj);
+	struct thandle *handle;
+	struct posix_acl_xattr_header *head;
+	struct posix_acl_xattr_entry *entry;
+	int entry_count;
+	bool not_equiv, mode_change;
+	mode_t mode;
+	int rc;
 
-	head = (posix_acl_xattr_header *)(buf->lb_buf);
-	entry = GET_POSIX_ACL_XATTR_ENTRY(head);
+	ENTRY;
+	head = (struct posix_acl_xattr_header *)(buf->lb_buf);
+	entry = (void *)(head + 1);
 	entry_count = (buf->lb_len - sizeof(head->a_version)) /
-		sizeof(posix_acl_xattr_entry);
+		sizeof(struct posix_acl_xattr_entry);
 	if (entry_count <= 0)
 		RETURN(0);
 
@@ -152,25 +151,29 @@ stop:
 }
 
 /**
- * Fix mode and ACL according to the default ACL(buf)
- * \retval = 0 ACL does not need to be reset.
- * \retval = 1 ACL needs to be reset.
- * \retval < 0 error.
- **/
+ * __mdd_fix_mode_acl() - Fix mode and ACL according to the default ACL(@buf)
+ * @env: current lustre environment
+ * @buf: buffer holding ACL data
+ * @mode: permission [out]
+ *
+ * Returns:
+ * * %0 ACL does not need to be reset
+ * * %1 ACL needs to be reset
+ * * %negative on error
+ */
 int __mdd_fix_mode_acl(const struct lu_env *env, struct lu_buf *buf,
-		       __u32 *mode)
+		       u32 *mode)
 {
-	posix_acl_xattr_header  *head;
-	posix_acl_xattr_entry   *entry;
-	int                      entry_count;
-	int			 rc;
+	struct posix_acl_xattr_header *head;
+	struct posix_acl_xattr_entry *entry;
+	int entry_count;
+	int rc;
 
 	ENTRY;
-
-	head = (posix_acl_xattr_header *)(buf->lb_buf);
-	entry = GET_POSIX_ACL_XATTR_ENTRY(head);
+	head = (struct posix_acl_xattr_header *)(buf->lb_buf);
+	entry = (void *)(head + 1);
 	entry_count = (buf->lb_len - sizeof(head->a_version)) /
-		      sizeof(posix_acl_xattr_entry);
+		      sizeof(struct posix_acl_xattr_entry);
 	if (entry_count <= 0)
 		RETURN(0);
 
@@ -189,13 +192,13 @@ static int mdd_check_acl(const struct lu_env *env, struct mdd_object *obj,
 {
 #ifdef CONFIG_LUSTRE_FS_POSIX_ACL
 	struct lu_ucred  *uc  = lu_ucred_assert(env);
-	posix_acl_xattr_header *head;
-	posix_acl_xattr_entry *entry;
+	struct posix_acl_xattr_header *head;
+	struct posix_acl_xattr_entry *entry;
 	struct lu_buf buf;
 	int entry_count;
 	int rc;
-	ENTRY;
 
+	ENTRY;
 	lu_buf_check_and_alloc(&mdd_env_info(env)->mdi_xattr_buf,
 			min_t(unsigned int,
 			      mdd_obj2mdd_dev(obj)->mdd_dt_conf.ddp_max_ea_size,
@@ -212,8 +215,8 @@ static int mdd_check_acl(const struct lu_env *env, struct mdd_object *obj,
 		RETURN(rc ? : -EACCES);
 
 	buf.lb_len = rc;
-	head = (posix_acl_xattr_header *)(buf.lb_buf);
-	entry = GET_POSIX_ACL_XATTR_ENTRY(head);
+	head = (struct posix_acl_xattr_header *)(buf.lb_buf);
+	entry = (void *)(head + 1);
 	entry_count = posix_acl_xattr_count(buf.lb_len);
 
 	/* Disregard empty ACLs and fall back to
@@ -278,6 +281,12 @@ int __mdd_permission_internal(const struct lu_env *env, struct mdd_object *obj,
 			mode >>= 3;
 	}
 
+	CDEBUG(D_SEC,
+	       "Checking permissions for "DFID" mask %x la_mode %05o mode %05o la_uid %u la_gid %u, fsuid %u, fsgid %u, suppgids %d %d\n",
+	       PFID(mdd_object_fid(obj)), may_mask, la->la_mode, mode,
+	       la->la_uid, la->la_gid, uc->uc_fsuid, uc->uc_fsgid,
+	       uc->uc_suppgids[0], uc->uc_suppgids[1]);
+
 	if (((mode & may_mask & S_IRWXO) == may_mask))
 		RETURN(0);
 
@@ -292,8 +301,8 @@ check_capabilities:
 		if (cap_raised(uc->uc_cap, CAP_DAC_READ_SEARCH))
 			RETURN(0);
 
-	CDEBUG(D_SEC, "permission denied, mode %x, fsuid %u, uid %u\n",
-	       la->la_mode, uc->uc_fsuid, la->la_uid);
+	CDEBUG(D_SEC, "permission denied for "DFID"\n",
+	       PFID(mdd_object_fid(obj)));
 
 	RETURN(-EACCES);
 }

@@ -1,28 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2013, 2017, Intel Corporation.
  * Use is subject to license terms.
+ */
+
+/*
+ * This file is part of Lustre, http://www.lustre.org/
  *
  * Author: Di Wang <di.wang@intel.com>
  */
@@ -84,10 +68,15 @@ int linkea_init_with_rec(struct linkea_data *ldata)
 EXPORT_SYMBOL(linkea_init_with_rec);
 
 /**
- * Pack a link_ea_entry.
+ * linkea_entry_pack() - Pack a link_ea_entry.
+ * @lee: pointer to link_ea_entry which will be packed with data
+ * @lname: name of the link + length
+ * @pfid: parent dir containing the link
+ *
  * All elements are stored as chars to avoid alignment issues.
  * Numbers are always big-endian
- * \retval record length
+ *
+ * Return record length
  */
 int linkea_entry_pack(struct link_ea_entry *lee, const struct lu_name *lname,
 		      const struct lu_fid *pfid)
@@ -139,8 +128,12 @@ bool linkea_will_overflow(struct linkea_data *ldata,
 EXPORT_SYMBOL(linkea_will_overflow);
 
 /**
- * Add a record to the end of link ea buf
- **/
+ * linkea_add_buf() - Add a record to the end of link ea buf
+ * @ldata: linkea_data where new hard link will be added
+ * @lname: name of link + length to be added
+ * @pfid: parent dir containing the link
+ * @err_on_overflow: if true return -EOVERFLOW if no space is left
+ */
 int linkea_add_buf(struct linkea_data *ldata, const struct lu_name *lname,
 		   const struct lu_fid *pfid, bool err_on_overflow)
 {
@@ -164,8 +157,8 @@ int linkea_add_buf(struct linkea_data *ldata, const struct lu_name *lname,
 			leh->leh_overflow_time++;
 
 		CDEBUG(D_INODE, "No enough space to hold linkea entry '"
-		       DFID": %.*s' at %u\n", PFID(pfid), lname->ln_namelen,
-		       lname->ln_name, leh->leh_overflow_time);
+		       DFID": "DNAME"' at %u\n", PFID(pfid),
+		       encode_fn_luname(lname), leh->leh_overflow_time);
 		return err_on_overflow ? -EOVERFLOW : 0;
 	}
 
@@ -186,8 +179,8 @@ int linkea_add_buf(struct linkea_data *ldata, const struct lu_name *lname,
 		       "New link_ea name '"DFID":<encrypted (%d)>' is added\n",
 		       PFID(pfid), lname->ln_namelen);
 	else
-		CDEBUG(D_INODE, "New link_ea name '"DFID":%.*s' is added\n",
-		       PFID(pfid), lname->ln_namelen, lname->ln_name);
+		CDEBUG(D_INODE, "New link_ea name '"DFID":"DNAME"' is added\n",
+		       PFID(pfid), encode_fn_luname(lname));
 	return 0;
 }
 EXPORT_SYMBOL(linkea_add_buf);
@@ -209,8 +202,8 @@ void linkea_del_buf(struct linkea_data *ldata, const struct lu_name *lname,
 		       "Old link_ea name '<encrypted (%d)>' is removed\n",
 		       lname->ln_namelen);
 	else
-		CDEBUG(D_INODE, "Old link_ea name '%.*s' is removed\n",
-		       lname->ln_namelen, lname->ln_name);
+		CDEBUG(D_INODE, "Old link_ea name '"DNAME"' is removed\n",
+		       encode_fn_luname(lname));
 
 	if ((char *)ldata->ld_lee >= ((char *)ldata->ld_leh +
 				      ldata->ld_leh->leh_len))
@@ -232,6 +225,9 @@ int linkea_links_new(struct linkea_data *ldata, struct lu_buf *buf,
 EXPORT_SYMBOL(linkea_links_new);
 
 /**
+ * linkea_overflow_shrink() - Mark linkEA as overflow
+ * @ldata: linkea which is to be marked as overflow
+ *
  * Mark the linkEA as overflow with current timestamp,
  * and remove the last linkEA entry.
  *
@@ -274,24 +270,24 @@ int linkea_overflow_shrink(struct linkea_data *ldata)
 
 	linkea_entry_unpack(ldata->ld_lee, &ldata->ld_reclen, &tname, &tfid);
 	CDEBUG(D_INODE, "No enough space to hold the last linkea entry '"
-	       DFID": %.*s', shrink it, left %d linkea entries, size %llu\n",
-	       PFID(&tfid), tname.ln_namelen, tname.ln_name,
-	       leh->leh_reccount, leh->leh_len);
+	       DFID": "DNAME"', shrink it, left %d linkea entries, size %llu\n",
+	       PFID(&tfid), encode_fn_luname(&tname), leh->leh_reccount,
+	       leh->leh_len);
 
 	return leh->leh_len;
 }
 EXPORT_SYMBOL(linkea_overflow_shrink);
 
 /**
- * Check if such a link exists in linkEA.
+ * linkea_links_find() - Check if such a link exists in linkEA.
+ * @ldata: link data the search to be done on
+ * @lname: name in the parent's directory entry pointing to this object
+ * @pfid: parent fid the link to be found for
  *
- * \param ldata link data the search to be done on
- * \param lname name in the parent's directory entry pointing to this object
- * \param pfid parent fid the link to be found for
- *
- * \retval   0 success
- * \retval -ENOENT link does not exist
- * \retval -ve on error
+ * Return:
+ * * %0 success
+ * * %-ENOENT link does not exist
+ * * %negative on error
  */
 int linkea_links_find(struct linkea_data *ldata, const struct lu_name *lname,
 		      const struct lu_fid  *pfid)
@@ -319,8 +315,8 @@ int linkea_links_find(struct linkea_data *ldata, const struct lu_name *lname,
 	}
 
 	if (count == ldata->ld_leh->leh_reccount) {
-		CDEBUG(D_INODE, "Old link_ea name '%.*s' not found\n",
-		       lname->ln_namelen, lname->ln_name);
+		CDEBUG(D_INODE, "Old link_ea name '"DNAME"' not found\n",
+		       encode_fn_luname(lname));
 		ldata->ld_lee = NULL;
 		ldata->ld_reclen = 0;
 		return -ENOENT;

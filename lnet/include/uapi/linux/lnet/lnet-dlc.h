@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: LGPL-2.1 WITH Linux-syscall-note */
+/* SPDX-License-Identifier: LGPL-2.1+ WITH Linux-syscall-note */
 
 /* Copyright (c) 2014, 2017, Intel Corporation. */
 
@@ -61,6 +61,9 @@ enum lnet_commands {
 	LNET_CMD_PEER_FAIL	= 10,
 	LNET_CMD_DBG_RECOV	= 11,
 	LNET_CMD_FAULT		= 12,
+	LNET_CMD_ROUTING	= 13,
+	LNET_CMD_BUFFERS	= 14,
+	LNET_CMD_NUMA		= 15,
 
 	__LNET_CMD_MAX_PLUS_ONE
 };
@@ -108,6 +111,12 @@ struct lnet_ioctl_config_kfilnd_tunables {
 	__u32 lnd_auth_key;
 	char lnd_traffic_class_str[LNET_MAX_STR_LEN];
 	__u32 lnd_traffic_class;
+	__u32 lnd_timeout;
+};
+
+struct lnet_ioctl_config_efalnd_tunables {
+	__u32 lnd_version;
+	__u32 lnd_nqps;
 };
 
 struct lnet_ioctl_config_socklnd_tunables {
@@ -126,6 +135,7 @@ struct lnet_ioctl_config_gnilnd_tunables {
 struct lnet_lnd_tunables {
 	union {
 		struct lnet_ioctl_config_o2iblnd_tunables lnd_o2ib;
+		struct lnet_ioctl_config_efalnd_tunables lnd_efa;
 		struct lnet_ioctl_config_socklnd_tunables lnd_sock;
 		struct lnet_ioctl_config_kfilnd_tunables lnd_kfi;
 		struct lnet_ioctl_config_gnilnd_tunables lnd_gni;

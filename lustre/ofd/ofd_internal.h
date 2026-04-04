@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -37,6 +19,7 @@
 #include <dt_object.h>
 #include <md_object.h>
 #include <lustre_fid.h>
+#include <lustre_nodemap.h>
 
 #define OFD_INIT_OBJID	0
 #define OFD_PRECREATE_BATCH_DEFAULT (OBJ_SUBDIR_COUNT * 4)
@@ -57,6 +40,13 @@
  * by OFD_ATIME_DIFF or more
  */
 #define OFD_DEF_ATIME_DIFF	0 /* disabled */
+
+/* Special mode value for OST objects with unset attributes */
+#define OFD_UNSET_ATTRS_MODE (S_IFREG | S_ISUID | S_ISGID | S_ISVTX | 0666)
+
+/* Resource ID repair default and limit values */
+#define OFD_ID_REPAIR_QUEUE_COUNT_LIMIT 65536
+#define OFD_ID_REPAIR_QUEUE_COUNT_DEFAULT 1024
 
 /* request stats */
 enum {
@@ -81,17 +71,28 @@ enum {
 static inline void ofd_counter_incr(struct obd_export *exp, int opcode,
 				    char *jobid, long amount)
 {
-	if (exp->exp_obd && exp->exp_obd->obd_stats)
+	struct lu_nodemap *nm;
+
+	if (unlikely(!exp->exp_obd))
+		return;
+
+	if (likely(exp->exp_obd->obd_stats))
 		lprocfs_counter_add(exp->exp_obd->obd_stats, opcode, amount);
 
-	if (exp->exp_obd && obd2obt(exp->exp_obd)->obt_jobstats.ojs_hash &&
+	if (obd2obt(exp->exp_obd)->obt_jobstats.ojs_cntr_num &&
 	    (exp_connect_flags(exp) & OBD_CONNECT_JOBSTATS))
 		lprocfs_job_stats_log(exp->exp_obd, jobid, opcode, amount);
 
 	if (exp->exp_nid_stats != NULL &&
-	    exp->exp_nid_stats->nid_stats != NULL) {
+	    exp->exp_nid_stats->nid_stats != NULL)
 		lprocfs_counter_add(exp->exp_nid_stats->nid_stats, opcode,
 				    amount);
+
+	nm = nodemap_get_from_exp(exp);
+	if (!IS_ERR_OR_NULL(nm)) {
+		if (likely(nm->nm_dt_stats))
+			lprocfs_counter_add(nm->nm_dt_stats, opcode, amount);
+		nodemap_putref(nm);
 	}
 }
 
@@ -143,7 +144,8 @@ struct ofd_device {
 				 ofd_record_fid_accessed:1,
 				 ofd_lfsck_verify_pfid:1,
 				 ofd_skip_lfsck:1,
-				 ofd_readonly:1;
+				 ofd_readonly:1,
+				 ofd_enable_resource_id_repair:1;
 	struct seq_server_site	 ofd_seq_site;
 	/* the limit of SOFT_SYNC RPCs that will trigger a soft sync */
 	unsigned int		 ofd_soft_sync_limit;
@@ -158,6 +160,13 @@ struct ofd_device {
 	struct attribute	*ofd_read_cache_max_filesize;
 	struct attribute	*ofd_write_cache_enable;
 	time64_t		 ofd_atime_diff;
+	/* Object ID repair */
+	struct task_struct	*ofd_id_repair_task;
+	struct list_head	 ofd_id_repair_list;
+	spinlock_t		 ofd_id_repair_lock;
+	wait_queue_head_t	 ofd_id_repair_waitq;
+	atomic_t		 ofd_id_repair_queued;
+	unsigned int		 ofd_id_repair_queue_count;
 };
 
 static inline struct ofd_device *ofd_dev(struct lu_device *d)
@@ -193,7 +202,8 @@ struct ofd_object {
 	struct filter_fid	ofo_ff;
 	time64_t		ofo_atime_ondisk;
 	unsigned int		ofo_pfid_checking:1,
-				ofo_pfid_verified:1;
+				ofo_pfid_verified:1,
+				ofo_resource_ids_set:1;
 };
 
 static inline struct ofd_object *ofd_obj(struct lu_object *o)
@@ -229,17 +239,17 @@ static inline struct ofd_device *ofd_obj2dev(const struct ofd_object *fo)
 static inline void ofd_read_lock(const struct lu_env *env,
 				 struct ofd_object *fo)
 {
-	struct dt_object  *next = ofd_object_child(fo);
+	struct dt_object *next = ofd_object_child(fo);
 
-	next->do_ops->do_read_lock(env, next, 0);
+	dt_read_lock(env, next, 0);
 }
 
 static inline void ofd_read_unlock(const struct lu_env *env,
 				   struct ofd_object *fo)
 {
-	struct dt_object  *next = ofd_object_child(fo);
+	struct dt_object *next = ofd_object_child(fo);
 
-	next->do_ops->do_read_unlock(env, next);
+	dt_read_unlock(env, next);
 }
 
 static inline void ofd_write_lock(const struct lu_env *env,
@@ -247,15 +257,15 @@ static inline void ofd_write_lock(const struct lu_env *env,
 {
 	struct dt_object *next = ofd_object_child(fo);
 
-	next->do_ops->do_write_lock(env, next, 0);
+	dt_write_lock(env, next, 0);
 }
 
 static inline void ofd_write_unlock(const struct lu_env *env,
 				    struct ofd_object *fo)
 {
-	struct dt_object  *next = ofd_object_child(fo);
+	struct dt_object *next = ofd_object_child(fo);
 
-	next->do_ops->do_write_unlock(env, next);
+	dt_write_unlock(env, next);
 }
 
 /*
@@ -305,6 +315,10 @@ void ofd_access_log_delete(struct ofd_access_log *oal);
 void ofd_access(const struct lu_env *env, struct ofd_device *m,
 		const struct lu_fid *parent_fid, __u64 begin, __u64 end,
 		unsigned int size, unsigned int segment_count, int rw);
+
+/* ofd_oss.c */
+int oss_mod_init(void);
+void oss_mod_exit(void);
 
 /* ofd_dev.c */
 extern struct lu_context_key ofd_thread_key;
@@ -382,7 +396,8 @@ ofd_stats_counter_init(struct lprocfs_stats *stats,
 struct ofd_object *ofd_object_find(const struct lu_env *env,
 				   struct ofd_device *ofd,
 				   const struct lu_fid *fid);
-int ofd_object_ff_load(const struct lu_env *env, struct ofd_object *fo);
+int ofd_object_ff_load(const struct lu_env *env, struct ofd_object *fo,
+		       bool force);
 int ofd_object_ff_update(const struct lu_env *env, struct ofd_object *fo,
 			 const struct obdo *oa, struct filter_fid *ff);
 int ofd_precreate_objects(const struct lu_env *env, struct ofd_device *ofd,
@@ -407,6 +422,14 @@ int ofd_attr_get(const struct lu_env *env, struct ofd_object *fo,
 		 struct lu_attr *la);
 int ofd_attr_handle_id(const struct lu_env *env, struct ofd_object *fo,
 			 struct lu_attr *la, int is_setattr);
+int ofd_id_repair_start_thread(struct ofd_device *ofd);
+void ofd_id_repair_stop_thread(struct ofd_device *ofd);
+int ofd_check_resource_ids(const struct lu_env *env, struct ofd_object *fo,
+			   const struct obdo *oa);
+void ofd_repair_resource_ids(const struct lu_env *env, struct ofd_object *fo,
+			     const struct obdo *oa, bool force);
+int ofd_check_repair_resource_ids(const struct lu_env *env,
+				  struct ofd_object *fo, const struct obdo *oa);
 
 static inline
 struct ofd_object *ofd_object_find_exists(const struct lu_env *env,

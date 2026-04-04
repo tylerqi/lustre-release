@@ -10,8 +10,7 @@
 #define DEBUG_SUBSYSTEM S_LNET
 
 #include <linux/uaccess.h>
-
-#include <libcfs/libcfs.h>
+#include <linux/libcfs/libcfs.h>
 #include <lnet/lib-lnet.h>
 
 #define LNET_LOFFT_BITS		(sizeof(loff_t) * 8)
@@ -191,6 +190,23 @@ out_no_ctrs:
 	return rc;
 }
 
+static char *
+ln_routing2str(void)
+{
+	switch (the_lnet.ln_routing) {
+	case LNET_ROUTING_DISABLED:
+		return "Routing disabled\n";
+	case LNET_ROUTING_ENABLED:
+		return "Routing enabled\n";
+	case LNET_ROUTING_STARTING:
+		return "Routing starting\n";
+	case LNET_ROUTING_STOPPING:
+		return "Routing stopping\n";
+	default:
+		return "Routing unknown\n";
+	}
+}
+
 static int
 proc_lnet_routes(const struct ctl_table *table, int write,
 		 void __user *buffer, size_t *lenp, loff_t *ppos)
@@ -220,8 +236,8 @@ proc_lnet_routes(const struct ctl_table *table, int write,
 	s = tmpstr; /* points to current position in tmpstr[] */
 
 	if (*ppos == 0) {
-		s += scnprintf(s, tmpstr + tmpsiz - s, "Routing %s\n",
-			       the_lnet.ln_routing ? "enabled" : "disabled");
+		s += scnprintf(s, tmpstr + tmpsiz - s, ln_routing2str());
+
 		LASSERT(tmpstr + tmpsiz - s > 0);
 
 		s += scnprintf(s, tmpstr + tmpsiz - s, "%-8s %4s %8s %7s %s\n",
@@ -539,7 +555,7 @@ proc_lnet_peers(const struct ctl_table *table, int write,
 			p = NULL;
 			hoff = 1;
 			hash++;
-                }
+		}
 
 		if (peer != NULL) {
 			struct lnet_nid nid = peer->lpni_nid;
@@ -738,14 +754,11 @@ proc_lnet_nis(const struct ctl_table *table, int write,
 			int i;
 			int j;
 
-			if (the_lnet.ln_routing)
+			if (lnet_routing_enabled())
 				last_alive = now - ni->ni_net->net_last_alive;
 
-			lnet_ni_lock(ni);
-			LASSERT(ni->ni_status != NULL);
-			stat = (lnet_ni_get_status_locked(ni) ==
+			stat = (lnet_ni_get_status(ni) ==
 				LNET_NI_STATUS_UP) ? "up" : "down";
-			lnet_ni_unlock(ni);
 
 			/* @lo forever alive */
 			if (ni->ni_net->net_lnd->lnd_type == LOLND) {
@@ -885,6 +898,8 @@ static int proc_lnet_portal_rotor(const struct ctl_table *table,
 		return rc;
 	}
 
+	if (nob > USHRT_MAX)
+		return -E2BIG;
 	buf = memdup_user_nul(buffer, nob);
 	if (IS_ERR(buf))
 		return PTR_ERR(buf);

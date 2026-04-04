@@ -19,6 +19,7 @@
 #include <linux/kernel.h>
 #include <linux/sunrpc/addr.h>
 #include <net/addrconf.h>
+
 #include "socklnd.h"
 
 static const struct lnet_lnd the_ksocklnd;
@@ -38,7 +39,7 @@ static int ksocknal_ip2index(struct sockaddr *addr, struct lnet_ni *ni,
 
 	rcu_read_lock();
 	for_each_netdev_rcu(ni->ni_net_ns, dev) {
-		int flags = dev_get_flags(dev);
+		int flags = netif_get_flags(dev);
 		struct in_device *in_dev;
 
 		if (flags & IFF_LOOPBACK) /* skip the loopback IF */
@@ -107,21 +108,9 @@ ksocknal_create_conn_cb(struct sockaddr *addr)
 		return NULL;
 
 	refcount_set(&conn_cb->ksnr_refcount, 1);
-	conn_cb->ksnr_peer = NULL;
-	conn_cb->ksnr_retry_interval = 0;         /* OK to connect at any time */
 	rpc_copy_addr((struct sockaddr *)&conn_cb->ksnr_addr, addr);
 	rpc_set_port((struct sockaddr *)&conn_cb->ksnr_addr,
 		     rpc_get_port(addr));
-	conn_cb->ksnr_scheduled = 0;
-	conn_cb->ksnr_connecting = 0;
-	conn_cb->ksnr_connected = 0;
-	conn_cb->ksnr_deleted = 0;
-	conn_cb->ksnr_conn_count = 0;
-	conn_cb->ksnr_ctrl_conn_count = 0;
-	conn_cb->ksnr_blki_conn_count = 0;
-	conn_cb->ksnr_blko_conn_count = 0;
-	conn_cb->ksnr_max_conns = 0;
-	conn_cb->ksnr_busy_retry_count = 0;
 
 	return conn_cb;
 }
@@ -226,20 +215,6 @@ ksocknal_find_peer_locked(struct lnet_ni *ni, struct lnet_processid *id)
 		return peer_ni;
 	}
 	return NULL;
-}
-
-struct ksock_peer_ni *
-ksocknal_find_peer(struct lnet_ni *ni, struct lnet_processid *id)
-{
-	struct ksock_peer_ni *peer_ni;
-
-	read_lock(&ksocknal_data.ksnd_global_lock);
-	peer_ni = ksocknal_find_peer_locked(ni, id);
-	if (peer_ni != NULL)			/* +1 ref for caller? */
-		ksocknal_peer_addref(peer_ni);
-	read_unlock(&ksocknal_data.ksnd_global_lock);
-
-	return peer_ni;
 }
 
 static void
@@ -779,6 +754,19 @@ ksocknal_accept(struct lnet_ni *ni, struct socket *sock)
 	return 0;
 }
 
+static int
+ksocknal_tun_defaults(struct lnet_lnd_tunables *tunables,
+		      struct lnet_ioctl_config_lnd_cmn_tunables *cmn)
+{
+	/* sync to latest module settings */
+	ksocknal_tunables_setup(tunables, cmn);
+
+	memcpy(&tunables->lnd_tun_u.lnd_sock, &ksock_default_tunables,
+	       sizeof(ksock_default_tunables));
+
+	return 0;
+}
+
 static const struct ln_key_list ksocknal_tunables_keys = {
 	.lkl_maxattr			= LNET_NET_SOCKLND_TUNABLES_ATTR_MAX,
 	.lkl_list			= {
@@ -798,7 +786,8 @@ static const struct ln_key_list ksocknal_tunables_keys = {
 };
 
 static int
-ksocknal_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
+ksocknal_nl_get(int cmd, struct sk_buff *msg, int type, void *data,
+		bool export_backup)
 {
 	struct lnet_lnd_tunables *tun;
 	struct lnet_ni *ni = data;
@@ -812,33 +801,13 @@ ksocknal_nl_get(int cmd, struct sk_buff *msg, int type, void *data)
 	tun = &ni->ni_lnd_tunables;
 	nla_put_u16(msg, LNET_NET_SOCKLND_TUNABLES_ATTR_CONNS_PER_PEER,
 		    tun->lnd_tun_u.lnd_sock.lnd_conns_per_peer);
-	nla_put_u32(msg, LNET_NET_SOCKLND_TUNABLES_ATTR_LND_TIMEOUT,
-		    ksocknal_timeout());
+	if (!export_backup)
+		nla_put_u32(msg, LNET_NET_SOCKLND_TUNABLES_ATTR_LND_TIMEOUT,
+			    ksocknal_timeout());
 	nla_put_s16(msg, LNET_NET_SOCKLND_TUNABLES_ATTR_LND_TOS,
 		    tun->lnd_tun_u.lnd_sock.lnd_tos);
 
 	return 0;
-}
-
-static inline void
-ksocknal_nl_set_default(int cmd, int type, void *data)
-{
-	struct lnet_lnd_tunables *tunables = data;
-	struct lnet_ioctl_config_socklnd_tunables *lt;
-	struct lnet_ioctl_config_socklnd_tunables *df;
-
-	lt = &tunables->lnd_tun_u.lnd_sock;
-	df = &ksock_default_tunables;
-	switch (type) {
-	case LNET_NET_SOCKLND_TUNABLES_ATTR_CONNS_PER_PEER:
-		lt->lnd_conns_per_peer = df->lnd_conns_per_peer;
-		break;
-	case LNET_NET_SOCKLND_TUNABLES_ATTR_LND_TIMEOUT:
-		lt->lnd_timeout = df->lnd_timeout;
-		fallthrough;
-	default:
-		break;
-	}
 }
 
 static int
@@ -851,12 +820,7 @@ ksocknal_nl_set(int cmd, struct nlattr *attr, int type, void *data)
 	if (cmd != LNET_CMD_NETS)
 		return -EOPNOTSUPP;
 
-	if (!attr) {
-		ksocknal_nl_set_default(cmd, type, data);
-		return 0;
-	}
-
-	if (nla_type(attr) != LN_SCALAR_ATTR_INT_VALUE)
+	if (!attr || nla_type(attr) != LN_SCALAR_ATTR_INT_VALUE)
 		return -EINVAL;
 
 	switch (type) {
@@ -869,8 +833,7 @@ ksocknal_nl_set(int cmd, struct nlattr *attr, int type, void *data)
 			rc = -ERANGE;
 		break;
 	case LNET_NET_SOCKLND_TUNABLES_ATTR_LND_TIMEOUT:
-		num = nla_get_s64(attr);
-		tunables->lnd_tun_u.lnd_sock.lnd_timeout = num;
+		/* Ignore */
 		break;
 	case LNET_NET_SOCKLND_TUNABLES_ATTR_LND_TOS:
 		num = nla_get_s64(attr);
@@ -1091,8 +1054,6 @@ ksocknal_create_conn(struct lnet_ni *ni, struct ksock_conn_cb *conn_cb,
 	}
 
 	switch (rc) {
-	default:
-		LBUG();
 	case 0:
 		break;
 	case EALREADY:
@@ -1101,6 +1062,8 @@ ksocknal_create_conn(struct lnet_ni *ni, struct ksock_conn_cb *conn_cb,
 	case EPROTO:
 		warn = "retry with different protocol version";
 		goto failed_2;
+	default:
+		LBUG();
 	}
 
 	/* Refuse to duplicate an existing connection, unless this is a
@@ -1989,6 +1952,7 @@ ksocknal_handle_link_state_change(struct net_device *dev,
 	u32 ni_state_before;
 	bool update_ping_buf = false;
 	int state;
+	struct net *dev_netns = dev_net(dev);
 
 	link_down = !((operstate == IF_OPER_UP) || (operstate == IF_OPER_UNKNOWN));
 	ifindex = dev->ifindex;
@@ -2000,6 +1964,14 @@ ksocknal_handle_link_state_change(struct net_device *dev,
 				 ksnn_list) {
 		ksi = &net->ksnn_interface;
 		found_ip = false;
+		ni = net->ksnn_ni;
+
+		/* Skip devices from a different namespace */
+		if (!net_eq(dev_netns, ni->ni_net_ns)) {
+			CDEBUG(D_NET, "Skipping device %s from namespace %p (expected %p)\n",
+			       dev->name, dev_netns, ni->ni_net_ns);
+			continue;
+		}
 
 		if (strcmp(ksi->ksni_name, dev->name))
 			continue;
@@ -2024,8 +1996,6 @@ ksocknal_handle_link_state_change(struct net_device *dev,
 			ksi->ksni_index = -1;
 			goto out;
 		}
-
-		ni = net->ksnn_ni;
 
 		sa = (void *)&ksi->ksni_addr;
 		switch (sa->sa_family) {
@@ -2093,7 +2063,7 @@ ksocknal_handle_link_state_change(struct net_device *dev,
 		if (link_down) {
 			ni_state_before = lnet_set_link_fatal_state(ni, 1);
 		} else {
-			state = (lnet_get_link_status(dev) == 0);
+			state = (lnet_get_link_status_locked(dev) == 0);
 			ni_state_before = lnet_set_link_fatal_state(ni,
 								    state);
 		}
@@ -2123,6 +2093,7 @@ ksocknal_handle_inetaddr_change(struct net_device *event_netdev, unsigned long e
 	u32 ni_state_before;
 	bool update_ping_buf = false;
 	bool link_down;
+	struct net *dev_netns = dev_net(event_netdev);
 
 	if (!ksocknal_data.ksnd_nnets)
 		goto out;
@@ -2133,12 +2104,19 @@ ksocknal_handle_inetaddr_change(struct net_device *event_netdev, unsigned long e
 				 ksnn_list) {
 		ksi = &net->ksnn_interface;
 		sa = (void *)&ksi->ksni_addr;
+		ni = net->ksnn_ni;
+
+		/* Skip devices from a different namespace */
+		if (!net_eq(dev_netns, ni->ni_net_ns)) {
+			CDEBUG(D_NET, "Skipping device %s from namespace %p (expected %p)\n",
+			       event_netdev->name, dev_netns, ni->ni_net_ns);
+			continue;
+		}
 
 		if (ksi->ksni_index != ifindex ||
 		    strcmp(ksi->ksni_name, event_netdev->name))
 			continue;
 
-		ni = net->ksnn_ni;
 		if (nid_is_nid4(&ni->ni_nid) ^ (sa->sa_family == AF_INET))
 			continue;
 
@@ -2166,11 +2144,13 @@ static int ksocknal_device_event(struct notifier_block *unused,
 {
 	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	unsigned char operstate;
+	struct net *dev_netns = dev_net(dev);
 
 	operstate = dev->operstate;
 
-	CDEBUG(D_NET, "devevent: status=%s, iface=%s ifindex %d state %u\n",
-	       netdev_cmd_to_name(event), dev->name, dev->ifindex, operstate);
+	CDEBUG(D_NET, "devevent: status=%s, iface=%s ifindex %d state %u ns %p \n",
+	       netdev_cmd_to_name(event), dev->name, dev->ifindex, operstate,
+	       dev_netns);
 
 	switch (event) {
 	case NETDEV_UP:
@@ -2192,10 +2172,11 @@ static int ksocknal_inetaddr_event(struct notifier_block *unused,
 				   unsigned long event, void *ptr)
 {
 	struct in_ifaddr *ifa = ptr;
+	struct net *dev_netns = dev_net(ifa->ifa_dev->dev);
 
-	CDEBUG(D_NET, "addrevent: status %s device %s, ip addr %pI4, netmask %pI4.\n",
+	CDEBUG(D_NET, "addrevent: status %s device %s, ip addr %pI4, netmask %pI4 ns %p.\n",
 		netdev_cmd_to_name(event), ifa->ifa_dev->dev->name,
-		&ifa->ifa_address, &ifa->ifa_mask);
+		&ifa->ifa_address, &ifa->ifa_mask, dev_netns);
 
 	switch (event) {
 	case NETDEV_UP:
@@ -2221,9 +2202,11 @@ static int ksocknal_inet6addr_event(struct notifier_block *this,
 				    unsigned long event, void *ptr)
 {
 	struct inet6_ifaddr *ifa6 = ptr;
+	struct net *dev_netns = dev_net(ifa6->idev->dev);
 
-	CDEBUG(D_NET, "addr6event: status %s, device %s, ip addr %pISc\n",
-		netdev_cmd_to_name(event), ifa6->idev->dev->name, &ifa6->addr);
+	CDEBUG(D_NET, "addr6event: status %s, device %s, ip addr %pISc, ns %p\n",
+		netdev_cmd_to_name(event), ifa6->idev->dev->name, &ifa6->addr,
+		dev_netns);
 
 	switch (event) {
 	case NETDEV_UP:
@@ -2497,6 +2480,8 @@ ksocknal_shutdown(struct lnet_ni *ni)
 	/* Delete all peers */
 	ksocknal_del_peer(ni, NULL);
 
+	lnet_acceptor_remove_sockets(net->ksnn_interface.ksni_name);
+
 	/* Wait for all peer_ni state to clean up */
 	wait_var_event_warning(&net->ksnn_npeers,
 			       atomic_read(&net->ksnn_npeers) ==
@@ -2626,6 +2611,7 @@ ksocknal_startup(struct lnet_ni *ni)
 	struct lnet_inetdev *ifaces = NULL;
 	int rc, if_idx;
 	int dev_status;
+	__u32 ipaddr = 0;
 
 	LASSERT(ni->ni_net->net_lnd == &the_ksocklnd);
 	if (ksocknal_data.ksnd_init == SOCKNAL_INIT_NOTHING) {
@@ -2639,8 +2625,6 @@ ksocknal_startup(struct lnet_ni *ni)
 
 	net->ksnn_incarnation = ktime_get_real_ns();
 	ni->ni_data = net;
-
-	ksocknal_tunables_setup(ni);
 
 	rc = lnet_inet_enumerate(&ifaces, ni->ni_net_ns,
 				 the_lnet.ln_nis_use_large_nids);
@@ -2661,6 +2645,18 @@ ksocknal_startup(struct lnet_ni *ni)
 		if (rc < 0)
 			CWARN("ksocklnd failed to allocate ni_interface\n");
 	}
+
+	if (!ni->ni_lnd_tunables_set)
+		memcpy(&ni->ni_lnd_tunables.lnd_tun_u.lnd_sock,
+		       &ksock_default_tunables, sizeof(ksock_default_tunables));
+
+	ksocknal_tunables_setup(&ni->ni_lnd_tunables,
+				&ni->ni_net->net_tunables);
+
+	/* conns_per_peer requires access to the interface to query it. */
+	if (!ni->ni_lnd_tunables.lnd_tun_u.lnd_sock.lnd_conns_per_peer)
+		ni->ni_lnd_tunables.lnd_tun_u.lnd_sock.lnd_conns_per_peer =
+			ksocklnd_lookup_conns_per_peer(ni);
 
 	ni->ni_dev_cpt = ifaces[if_idx].li_cpt;
 	ksi->ksni_index = ifaces[if_idx].li_index;
@@ -2685,6 +2681,7 @@ ksocknal_startup(struct lnet_ni *ni)
 		ksi->ksni_netmask = ifaces[if_idx].li_netmask;
 		ni->ni_nid.nid_size = 0;
 		ni->ni_nid.nid_addr[0] = sa->sin_addr.s_addr;
+		ipaddr = sa->sin_addr.s_addr;
 	}
 	strscpy(ksi->ksni_name, ifaces[if_idx].li_name, sizeof(ksi->ksni_name));
 
@@ -2698,6 +2695,12 @@ ksocknal_startup(struct lnet_ni *ni)
 				&dev_status) < 0) ||
 	     (dev_status <= 0))
 		lnet_set_link_fatal_state(ni, 1);
+
+	rc = lnet_acceptor_add_sockets(ksi->ksni_name,
+				       (struct sockaddr *)&ksi->ksni_addr,
+				       ksi->ksni_index, ni->ni_net_ns);
+	if (rc != 0)
+		goto out_net;
 
 	list_add(&net->ksnn_list, &ksocknal_data.ksnd_nets);
 	net->ksnn_ni = ni;
@@ -2730,8 +2733,10 @@ static const struct lnet_lnd the_ksocklnd = {
 	.lnd_recv		= ksocknal_recv,
 	.lnd_notify_peer_down	= ksocknal_notify_gw_down,
 	.lnd_accept		= ksocknal_accept,
+	.lnd_tun_defaults	= ksocknal_tun_defaults,
 	.lnd_nl_get		= ksocknal_nl_get,
 	.lnd_nl_set		= ksocknal_nl_set,
+	.lnd_get_timeout	= ksocknal_timeout,
 	.lnd_keys		= &ksocknal_tunables_keys,
 };
 
@@ -2761,5 +2766,5 @@ MODULE_DESCRIPTION("TCP Socket LNet Network Driver");
 MODULE_VERSION("2.8.0");
 MODULE_LICENSE("GPL");
 
-module_init(ksocklnd_init);
+late_initcall_sync(ksocklnd_init);
 module_exit(ksocklnd_exit);

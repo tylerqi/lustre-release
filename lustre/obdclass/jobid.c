@@ -1,24 +1,5 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -26,24 +7,30 @@
  * Copyright (c) 2011, 2014, Intel Corporation.
  *
  * Copyright 2017 Cray Inc, all rights reserved.
- * Author: Ben Evans.
+ */
+
+/*
+ * This file is part of Lustre, http://www.lustre.org/
  *
  * Store PID->JobID mappings
+ *
+ * Author: Ben Evans.
  */
 
 #define DEBUG_SUBSYSTEM S_RPC
+
 #include <linux/user_namespace.h>
 #include <linux/uidgid.h>
 #include <linux/utsname.h>
 
-#include <libcfs/libcfs.h>
+#include <cfs_hash.h>
 #include <obd_support.h>
 #include <obd_class.h>
 #include <lustre_net.h>
 
 static struct cfs_hash *jobid_hash;
 static struct cfs_hash_ops jobid_hash_ops;
-spinlock_t jobid_hash_lock;
+static spinlock_t jobid_hash_lock;
 
 #define RESCAN_INTERVAL 30
 #define DELETE_INTERVAL 300
@@ -120,7 +107,7 @@ int jobid_set_current(char *jobid)
 	int ret;
 	int len = strlen(jobid);
 
-	sj = kmalloc(sizeof(*sj) + len + 1, GFP_KERNEL);
+	OBD_ALLOC(sj, sizeof(*sj) + len + 1);
 	if (!sj)
 		return -ENOMEM;
 	rcu_read_lock();
@@ -139,7 +126,7 @@ int jobid_set_current(char *jobid)
 
 	if (IS_ERR(origsj)) {
 		put_pid(sj->sj_session);
-		kfree(sj);
+		OBD_FREE(sj, sizeof(*sj) + strlen(sj->sj_jobid) + 1);
 		rcu_read_unlock();
 		return PTR_ERR(origsj);
 	}
@@ -149,13 +136,13 @@ int jobid_set_current(char *jobid)
 				      jobid_params);
 	if (ret) {
 		put_pid(sj->sj_session);
-		kfree(sj);
+		OBD_FREE(sj, sizeof(*sj) + strlen(sj->sj_jobid) + 1);
 		rcu_read_unlock();
 		return ret;
 	}
 	put_pid(origsj->sj_session);
 	rcu_read_unlock();
-	kfree_rcu(origsj, sj_rcu);
+	OBD_FREE_RCU(origsj, sizeof(*sj) + strlen(origsj->sj_jobid) + 1, sj_rcu);
 	jobid_prune_expedite();
 
 	return 0;
@@ -166,7 +153,7 @@ static void jobid_free(void *vsj, void *arg)
 	struct session_jobid *sj = vsj;
 
 	put_pid(sj->sj_session);
-	kfree(sj);
+	OBD_FREE(sj, sizeof(*sj) + strlen(sj->sj_jobid) + 1);;
 }
 
 static void jobid_prune(struct work_struct *work);
@@ -195,7 +182,8 @@ static void jobid_prune(struct work_struct *work)
 					   &sj->sj_linkage,
 					   jobid_params) == 0) {
 			put_pid(sj->sj_session);
-			kfree_rcu(sj, sj_rcu);
+			OBD_FREE_RCU(sj, sizeof(*sj) + strlen(sj->sj_jobid) + 1,
+				     sj_rcu);
 		}
 	}
 	rhashtable_walk_stop(&iter);
@@ -242,13 +230,9 @@ static int cfs_access_process_vm(struct task_struct *tsk,
 		rc = get_user_pages(addr, 1, write ? FOLL_WRITE : 0, &page);
 		if (rc > 0)
 			vma = vma_lookup(mm, addr);
-#elif defined(HAVE_GET_USER_PAGES_GUP_FLAGS)
+#else
 		rc = get_user_pages(addr, 1, write ? FOLL_WRITE : 0, &page,
 				    &vma);
-#elif defined(HAVE_GET_USER_PAGES_6ARG)
-		rc = get_user_pages(addr, 1, write, 1, &page, &vma);
-#else
-		rc = get_user_pages(tsk, mm, addr, 1, write, 1, &page, &vma);
 #endif
 		if (rc <= 0 || !vma)
 			break;
@@ -267,7 +251,7 @@ static int cfs_access_process_vm(struct task_struct *tsk,
 			copy_from_user_page(vma, page, addr,
 					    buf, maddr + offset, bytes);
 		}
-		kunmap(page);
+		kunmap(kmap_to_page(maddr));
 		put_page(page);
 		len -= bytes;
 		buf += bytes;
@@ -696,6 +680,9 @@ static int jobid_print_current_comm(char *jobid, ssize_t joblen)
  *   %p = pid
  *   %u = uid
  *
+ * Truncation can also be interpreted by writing .n between % and field, for
+ * example %.3h to print only the 3 first characaters.
+ *
  * Unknown escape strings are dropped.  Other characters are copied through,
  * excluding whitespace (to avoid making jobid parsing difficult).
  *
@@ -708,7 +695,8 @@ static int jobid_interpret_string(const char *jobfmt, char *jobid,
 	char c;
 
 	while ((c = *jobfmt++) && joblen > 1) {
-		char f, *p;
+		long width = joblen;
+		char *p;
 		int l;
 
 		if (isspace(c)) /* Don't allow embedded spaces */
@@ -722,29 +710,40 @@ static int jobid_interpret_string(const char *jobfmt, char *jobid,
 			continue;
 		}
 
-		switch ((f = *jobfmt++)) {
+		if (*jobfmt == '.') {
+			long w = 0;
+			int size = 0;
+
+			jobfmt++;
+			if (sscanf(jobfmt, "%ld%n", &w, &size) == 1)
+				jobfmt += size;
+			if (w > 0)
+				width = min(w+1, joblen);
+		}
+
+		switch (*jobfmt++) {
 		case 'e': /* executable name */
-			l = jobid_print_current_comm(jobid, joblen);
+			l = jobid_print_current_comm(jobid, width);
 			break;
 		case 'g': /* group ID */
-			l = snprintf(jobid, joblen, "%u",
+			l = snprintf(jobid, width, "%u",
 				     from_kgid(&init_user_ns, current_fsgid()));
 			break;
 		case 'h': /* hostname */
-			l = snprintf(jobid, joblen, "%s",
+			l = snprintf(jobid, width, "%s",
 				     init_utsname()->nodename);
 			break;
 		case 'H': /* short hostname. Cut at first dot */
-			l = snprintf(jobid, joblen, "%s",
+			l = snprintf(jobid, width, "%s",
 				     init_utsname()->nodename);
-			p = strnchr(jobid, joblen, '.');
+			p = strnchr(jobid, width, '.');
 			if (p) {
 				*p = '\0';
 				l = p - jobid;
 			}
 			break;
 		case 'j': /* jobid stored in process environment */
-			l = jobid_get_from_cache(jobid, joblen);
+			l = jobid_get_from_cache(jobid, width);
 			if (l < 0)
 				l = 0;
 			if (*jobfmt == '?') {
@@ -755,10 +754,10 @@ static int jobid_interpret_string(const char *jobfmt, char *jobid,
 			}
 			break;
 		case 'p': /* process ID */
-			l = snprintf(jobid, joblen, "%u", current->pid);
+			l = snprintf(jobid, width, "%u", current->pid);
 			break;
 		case 'u': /* user ID */
-			l = snprintf(jobid, joblen, "%u",
+			l = snprintf(jobid, width, "%u",
 				     from_kuid(&init_user_ns, current_fsuid()));
 			break;
 		case '\0': /* '%' at end of format string */
@@ -768,9 +767,9 @@ static int jobid_interpret_string(const char *jobfmt, char *jobid,
 			l = 0;
 			break;
 		}
-		/* truncate jobid if it is too long */
-		if (l > joblen)
-			l = joblen;
+		if (l >= width)
+			l = width-1;
+
 		jobid += l;
 		joblen -= l;
 	}

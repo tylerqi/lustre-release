@@ -390,14 +390,14 @@ static int lfsck_namespace_store(const struct lu_env *env,
 	if (IS_ERR(handle))
 		GOTO(log, rc = PTR_ERR(handle));
 
-	rc = dt_declare_xattr_set(env, obj,
+	rc = dt_declare_xattr_set(env, obj, NULL,
 				  lfsck_buf_get(env, com->lc_file_disk, len),
 				  XATTR_NAME_LFSCK_NAMESPACE, 0, handle);
 	if (rc != 0)
 		GOTO(out, rc);
 
 	if (bitmap != NULL) {
-		rc = dt_declare_xattr_set(env, obj,
+		rc = dt_declare_xattr_set(env, obj, NULL,
 				lfsck_buf_get(env, bitmap, nbits >> 3),
 				XATTR_NAME_LFSCK_BITMAP, 0, handle);
 		if (rc != 0)
@@ -613,7 +613,7 @@ static int lfsck_declare_namespace_exec_dir(const struct lu_env *env,
 	rc = dt_declare_xattr_del(env, obj, XATTR_NAME_LINK, handle);
 	if (rc == 0)
 		/* For insert new linkEA entry. */
-		rc = dt_declare_xattr_set(env, obj,
+		rc = dt_declare_xattr_set(env, obj, NULL,
 			lfsck_buf_get_const(env, NULL, MAX_LINKEA_SIZE),
 			XATTR_NAME_LINK, 0, handle);
 	return rc;
@@ -998,7 +998,7 @@ again:
 			GOTO(stop, rc);
 	}
 
-	rc = dt_declare_xattr_set(env, orphan, &linkea_buf,
+	rc = dt_declare_xattr_set(env, orphan, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -1116,7 +1116,7 @@ static int lfsck_lmv_set(const struct lu_env *env,
 	if (IS_ERR(th))
 		RETURN(PTR_ERR(th));
 
-	rc = dt_declare_xattr_set(env, obj, &buf, XATTR_NAME_LMV, 0, th);
+	rc = dt_declare_xattr_set(env, obj, NULL, &buf, XATTR_NAME_LMV, 0, th);
 	if (rc)
 		GOTO(stop, rc);
 
@@ -1328,8 +1328,8 @@ static int lfsck_namespace_insert_normal(const struct lu_env *env,
 	}
 
 	if (parent_lmv_lost) {
-		rc = dt_declare_xattr_set(env, parent, &buf, XATTR_NAME_LMV,
-					  0, th);
+		rc = dt_declare_xattr_set(env, parent, NULL, &buf,
+					  XATTR_NAME_LMV, 0, th);
 		if (rc)
 			GOTO(stop, rc);
 	}
@@ -1570,15 +1570,15 @@ again:
 		lmv->lmv_master_mdt_index = lfsck_dev_idx(lfsck);
 		lfsck_lmv_header_cpu_to_le(lmv2, lmv);
 		lfsck_buf_init(&lmv_buf, lmv2, sizeof(*lmv2));
-		rc = dt_declare_xattr_set(env, orphan, &lmv_buf, XATTR_NAME_LMV,
-					  0, th);
+		rc = dt_declare_xattr_set(env, orphan, NULL, &lmv_buf,
+					  XATTR_NAME_LMV, 0, th);
 		if (rc != 0)
 			GOTO(stop, rc);
 	}
 
 	lfsck_buf_init(&linkea_buf, ldata.ld_buf->lb_buf,
 		       ldata.ld_leh->leh_len);
-	rc = dt_declare_xattr_set(env, orphan, &linkea_buf,
+	rc = dt_declare_xattr_set(env, orphan, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -1732,7 +1732,7 @@ again:
 		GOTO(unlock1, rc = PTR_ERR(th));
 
 	if (buflen != 0)
-		rc = dt_declare_xattr_set(env, obj, &linkea_buf,
+		rc = dt_declare_xattr_set(env, obj, NULL, &linkea_buf,
 					  XATTR_NAME_LINK, 0, th);
 	else
 		rc = dt_declare_xattr_del(env, obj, XATTR_NAME_LINK, th);
@@ -2139,7 +2139,7 @@ int lfsck_namespace_rebuild_linkea(const struct lu_env *env,
 
 	lfsck_buf_init(&linkea_buf, ldata->ld_buf->lb_buf,
 		       ldata->ld_leh->leh_len);
-	rc = dt_declare_xattr_set(env, obj, &linkea_buf,
+	rc = dt_declare_xattr_set(env, obj, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -2401,7 +2401,7 @@ static int lfsck_namespace_repair_unmatched_pairs(const struct lu_env *env,
 	if (rc != 0)
 		GOTO(stop, rc);
 
-	rc = dt_declare_xattr_set(env, obj, &linkea_buf,
+	rc = dt_declare_xattr_set(env, obj, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -3499,7 +3499,7 @@ static int lfsck_namespace_linkea_clear_overflow(const struct lu_env *env,
 	if (IS_ERR(th))
 		GOTO(log, rc = PTR_ERR(th));
 
-	rc = dt_declare_xattr_set(env, obj,
+	rc = dt_declare_xattr_set(env, obj, NULL,
 			lfsck_buf_get_const(env, NULL, MAX_LINKEA_SIZE),
 			XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
@@ -3634,7 +3634,7 @@ static int lfsck_namespace_check_agent_entry(const struct lu_env *env,
 
 		lfsck_buf_init(&linkea_buf, ldata.ld_buf->lb_buf,
 			       ldata.ld_leh->leh_len);
-		rc = dt_declare_xattr_set(env, obj, &linkea_buf,
+		rc = dt_declare_xattr_set(env, obj, NULL, &linkea_buf,
 				XATTR_NAME_LINK, LU_XATTR_REPLACE, handle);
 		if (rc)
 			GOTO(stop, rc);
@@ -4345,7 +4345,6 @@ static void lfsck_namespace_close_dir(const struct lu_env *env,
 	struct lu_attr *la = &lfsck_env_info(env)->lti_la2;
 	__u32 size = sizeof(*lnr) + LFSCK_TMPBUF_LEN;
 	int rc;
-	bool wakeup = false;
 
 	ENTRY;
 	if (llmv == NULL)
@@ -4383,9 +4382,8 @@ static void lfsck_namespace_close_dir(const struct lu_env *env,
 	lnr->lnr_type = lso->lso_attr.la_mode;
 
 	spin_lock(&lad->lad_lock);
-	if (lad->lad_assistant_status < 0 ||
-	    unlikely(!thread_is_running(&lfsck->li_thread) ||
-		     !thread_is_running(&lad->lad_thread))) {
+	if (lad->lad_assistant_status < 0 || lfsck_should_stop(lfsck) ||
+	    !lad->lad_task) {
 		spin_unlock(&lad->lad_lock);
 		lfsck_namespace_assistant_req_fini(env, &lnr->lnr_lar);
 		ns->ln_striped_dirs_skipped++;
@@ -4395,13 +4393,10 @@ static void lfsck_namespace_close_dir(const struct lu_env *env,
 
 	list_add_tail(&lnr->lnr_lar.lar_list, &lad->lad_req_list);
 	if (lad->lad_prefetched == 0)
-		wakeup = true;
+		wake_up_var(lfsck);
 
 	lad->lad_prefetched++;
 	spin_unlock(&lad->lad_lock);
-	if (wakeup)
-		wake_up(&lad->lad_thread.t_ctl_waitq);
-
 	EXIT;
 }
 
@@ -4706,17 +4701,11 @@ static int lfsck_namespace_exec_dir(const struct lu_env *env,
 	struct lfsck_instance *lfsck = com->lc_lfsck;
 	struct lfsck_namespace_req *lnr;
 	struct lfsck_bookmark *bk = &lfsck->li_bookmark_ram;
-	struct ptlrpc_thread *mthread = &lfsck->li_thread;
-	struct ptlrpc_thread *athread = &lad->lad_thread;
-	bool wakeup = false;
 
-	wait_event_idle(mthread->t_ctl_waitq,
-			lad->lad_prefetched < bk->lb_async_windows ||
-			!thread_is_running(mthread) ||
-			!thread_is_running(athread));
+	wait_var_event(lfsck, lad->lad_prefetched < bk->lb_async_windows ||
+			lfsck_should_stop(lfsck) || !lad->lad_task);
 
-	if (unlikely(!thread_is_running(mthread) ||
-		     !thread_is_running(athread)))
+	if (unlikely(lfsck_should_stop(lfsck) || !lad->lad_task))
 		return 0;
 
 	if (unlikely(lfsck_is_dead_obj(lfsck->li_obj_dir)))
@@ -4731,9 +4720,8 @@ static int lfsck_namespace_exec_dir(const struct lu_env *env,
 	}
 
 	spin_lock(&lad->lad_lock);
-	if (lad->lad_assistant_status < 0 ||
-	    unlikely(!thread_is_running(mthread) ||
-		     !thread_is_running(athread))) {
+	if (unlikely(lad->lad_assistant_status < 0 ||
+		     lfsck_should_stop(lfsck) || !lad->lad_task)) {
 		spin_unlock(&lad->lad_lock);
 		lfsck_namespace_assistant_req_fini(env, &lnr->lnr_lar);
 		return lad->lad_assistant_status;
@@ -4741,12 +4729,10 @@ static int lfsck_namespace_exec_dir(const struct lu_env *env,
 
 	list_add_tail(&lnr->lnr_lar.lar_list, &lad->lad_req_list);
 	if (lad->lad_prefetched == 0)
-		wakeup = true;
+		wake_up_var(lfsck);
 
 	lad->lad_prefetched++;
 	spin_unlock(&lad->lad_lock);
-	if (wakeup)
-		wake_up(&lad->lad_thread.t_ctl_waitq);
 
 	down_write(&com->lc_sem);
 	com->lc_new_checked++;
@@ -4991,22 +4977,21 @@ static int lfsck_namespace_double_scan(const struct lu_env *env,
 {
 	struct lfsck_namespace *ns = com->lc_file_ram;
 	struct lfsck_assistant_data *lad = com->lc_data;
-	struct lfsck_tgt_descs *ltds = &com->lc_lfsck->li_mdt_descs;
-	struct lfsck_tgt_desc *ltd;
-	struct lfsck_tgt_desc *next;
 	int rc;
 
 	rc = lfsck_double_scan_generic(env, com, ns->ln_status);
-	if (thread_is_stopped(&lad->lad_thread)) {
+	if (test_bit(LAD_STOPPED, &lad->lad_flags)) {
+		struct lfsck_instance *lfsck = com->lc_lfsck;
+		struct list_head *tmp;
+		struct list_head *next;
+
 		LASSERT(list_empty(&lad->lad_req_list));
 		LASSERT(list_empty(&lad->lad_mdt_phase1_list));
 
-		spin_lock(&ltds->ltd_lock);
-		list_for_each_entry_safe(ltd, next, &lad->lad_mdt_phase2_list,
-					 ltd_namespace_phase_list) {
-			list_del_init(&ltd->ltd_namespace_phase_list);
-		}
-		spin_unlock(&ltds->ltd_lock);
+		spin_lock(&lfsck->li_mdt_descs.ltd_lock);
+		list_for_each_safe(tmp, next, &lad->lad_mdt_phase2_list)
+			list_del_init(tmp);
+		spin_unlock(&lfsck->li_mdt_descs.ltd_lock);
 	}
 
 	return rc;
@@ -5021,8 +5006,7 @@ static void lfsck_namespace_data_release(const struct lu_env *env,
 	struct lfsck_tgt_desc *next;
 
 	LASSERT(lad != NULL);
-	LASSERT(thread_is_init(&lad->lad_thread) ||
-		thread_is_stopped(&lad->lad_thread));
+	LASSERT(!lad->lad_task);
 	LASSERT(list_empty(&lad->lad_req_list));
 
 	com->lc_data = NULL;
@@ -5053,30 +5037,16 @@ static void lfsck_namespace_quit(const struct lu_env *env,
 				 struct lfsck_component *com)
 {
 	struct lfsck_assistant_data *lad = com->lc_data;
-	struct lfsck_tgt_descs *ltds = &com->lc_lfsck->li_mdt_descs;
-	struct lfsck_tgt_desc *ltd;
-	struct lfsck_tgt_desc *next;
 
 	LASSERT(lad != NULL);
 
-	lfsck_quit_generic(env, com);
+	lfsck_stop_assistant(lad);
 
-	LASSERT(thread_is_init(&lad->lad_thread) ||
-		thread_is_stopped(&lad->lad_thread));
 	LASSERT(list_empty(&lad->lad_req_list));
+	LASSERT(list_empty(&lad->lad_mdt_phase1_list));
+	LASSERT(list_empty(&lad->lad_mdt_phase2_list));
 
 	lfsck_namespace_release_lmv(env, com);
-
-	spin_lock(&ltds->ltd_lock);
-	list_for_each_entry_safe(ltd, next, &lad->lad_mdt_phase1_list,
-				 ltd_namespace_phase_list) {
-		list_del_init(&ltd->ltd_namespace_phase_list);
-	}
-	list_for_each_entry_safe(ltd, next, &lad->lad_mdt_phase2_list,
-				 ltd_namespace_phase_list) {
-		list_del_init(&ltd->ltd_namespace_phase_list);
-	}
-	spin_unlock(&ltds->ltd_lock);
 }
 
 static int lfsck_namespace_in_notify(const struct lu_env *env,
@@ -5190,7 +5160,7 @@ static int lfsck_namespace_in_notify(const struct lu_env *env,
 		stop->ls_flags = lr->lr_param & ~LPF_BROADCAST;
 		lfsck_stop(env, lfsck->li_bottom, stop);
 	} else if (lfsck_phase2_next_ready(lad)) {
-		wake_up(&lad->lad_thread.t_ctl_waitq);
+		wake_up_var(lfsck);
 	}
 
 	RETURN(0);
@@ -5478,7 +5448,7 @@ int lfsck_namespace_repair_dangling(const struct lu_env *env,
 
 			lfsck_lmv_header_cpu_to_le(lmv2, lmv2);
 			lfsck_buf_init(&lmv_buf, lmv2, sizeof(*lmv2));
-			rc = dt_declare_xattr_set(env, child, &lmv_buf,
+			rc = dt_declare_xattr_set(env, child, NULL, &lmv_buf,
 						  XATTR_NAME_LMV, 0, th);
 			if (rc != 0)
 				GOTO(stop, rc);
@@ -5488,7 +5458,7 @@ int lfsck_namespace_repair_dangling(const struct lu_env *env,
 	/* 6a. insert linkEA for child */
 	lfsck_buf_init(&linkea_buf, ldata.ld_buf->lb_buf,
 		       ldata.ld_leh->leh_len);
-	rc = dt_declare_xattr_set(env, child, &linkea_buf,
+	rc = dt_declare_xattr_set(env, child, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -6313,7 +6283,6 @@ static void lfsck_namespace_scan_local_lpf(const struct lu_env *env,
 	struct lu_dirent *ent = (struct lu_dirent *)info->lti_key;
 	struct lu_seq_range *range = &info->lti_range;
 	struct lfsck_instance *lfsck = com->lc_lfsck;
-	struct ptlrpc_thread *thread = &lfsck->li_thread;
 	struct lfsck_bookmark *bk = &lfsck->li_bookmark_ram;
 	struct lfsck_namespace *ns = com->lc_file_ram;
 	struct dt_object *parent;
@@ -6356,9 +6325,9 @@ static void lfsck_namespace_scan_local_lpf(const struct lu_env *env,
 	else if (rc > 0)
 		rc = 0;
 
-	while (rc == 0) {
-		if (CFS_FAIL_TIMEOUT(OBD_FAIL_LFSCK_DELAY3, cfs_fail_val) &&
-		    unlikely(!thread_is_running(thread)))
+	while (rc == 0 && !lfsck_should_stop(lfsck)) {
+		if (LFSCK_FAIL_TIMEOUT(lfsck, OBD_FAIL_LFSCK_DELAY3,
+				       cfs_fail_val))
 			break;
 
 		rc = iops->rec(env, di, (struct dt_rec *)ent,
@@ -6435,11 +6404,6 @@ skip:
 
 next:
 		lfsck_control_speed_by_self(com);
-		if (unlikely(!thread_is_running(thread))) {
-			rc = 0;
-			break;
-		}
-
 		rc = iops->next(env, di);
 	}
 
@@ -6487,12 +6451,11 @@ static int lfsck_namespace_rescan_striped_dir(const struct lu_env *env,
 	struct dt_it *di;
 	struct lu_dirent *ent = (struct lu_dirent *)info->lti_key;
 	struct lfsck_bookmark *bk = &lfsck->li_bookmark_ram;
-	struct ptlrpc_thread *thread = &lfsck->li_thread;
 	struct lfsck_assistant_object *lso = NULL;
 	struct lfsck_namespace_req *lnr;
 	struct lfsck_assistant_req *lar;
-	int rc;
 	__u16 type;
+	int rc;
 
 	ENTRY;
 	LASSERT(list_empty(&lad->lad_req_list));
@@ -6506,7 +6469,7 @@ static int lfsck_namespace_rescan_striped_dir(const struct lu_env *env,
 	dir = lfsck->li_obj_dir;
 	di = lfsck->li_di_dir;
 	iops = &dir->do_index_ops->dio_it;
-	do {
+	while (rc == 0 && !lfsck_should_stop(lfsck)) {
 		rc = iops->rec(env, di, (struct dt_rec *)ent,
 			       lfsck->li_args_dir);
 		if (rc == 0)
@@ -6550,12 +6513,9 @@ static int lfsck_namespace_rescan_striped_dir(const struct lu_env *env,
 		if (rc != 0 && bk->lb_param & LPF_FAILOUT)
 			GOTO(out, rc);
 
-		if (unlikely(!thread_is_running(thread)))
-			GOTO(out, rc = 0);
-
 next:
 		rc = iops->next(env, di);
-	} while (rc == 0);
+	}
 
 out:
 	if (lso != NULL && !IS_ERR(lso))
@@ -6587,7 +6547,6 @@ lfsck_namespace_double_scan_one_trace_file(const struct lu_env *env,
 					   struct dt_object *obj, bool first)
 {
 	struct lfsck_instance *lfsck = com->lc_lfsck;
-	struct ptlrpc_thread *thread = &lfsck->li_thread;
 	struct lfsck_bookmark *bk = &lfsck->li_bookmark_ram;
 	struct lfsck_namespace *ns = com->lc_file_ram;
 	const struct dt_it_ops *iops = &obj->do_index_ops->dio_it;
@@ -6595,8 +6554,8 @@ lfsck_namespace_double_scan_one_trace_file(const struct lu_env *env,
 	struct dt_it *di;
 	struct dt_key *key;
 	struct lu_fid fid;
-	int rc;
 	__u8 flags = 0;
+	int rc;
 
 	ENTRY;
 	di = iops->init(env, obj, 0);
@@ -6620,9 +6579,10 @@ lfsck_namespace_double_scan_one_trace_file(const struct lu_env *env,
 			GOTO(put, rc);
 	}
 
-	do {
-		if (CFS_FAIL_TIMEOUT(OBD_FAIL_LFSCK_DELAY3, cfs_fail_val) &&
-		    unlikely(!thread_is_running(thread)))
+	rc = 0;
+	while (rc == 0 && !lfsck_should_stop(lfsck)) {
+		if (LFSCK_FAIL_TIMEOUT(lfsck, OBD_FAIL_LFSCK_DELAY3,
+				       cfs_fail_val))
 			GOTO(put, rc = 0);
 
 		key = iops->key(env, di);
@@ -6657,7 +6617,6 @@ lfsck_namespace_double_scan_one_trace_file(const struct lu_env *env,
 		}
 
 		lfsck_object_put(env, target);
-
 checkpoint:
 		down_write(&com->lc_sem);
 		com->lc_new_checked++;
@@ -6693,20 +6652,13 @@ checkpoint:
 		}
 
 		lfsck_control_speed_by_self(com);
-		if (unlikely(!thread_is_running(thread)))
-			GOTO(put, rc = 0);
-
 		rc = iops->next(env, di);
-	} while (rc == 0);
-
+	}
 	GOTO(put, rc);
-
 put:
 	iops->put(env, di);
-
 fini:
 	iops->fini(env, di);
-
 	return rc;
 }
 
@@ -6913,7 +6865,7 @@ out:
 	EXIT;
 }
 
-const struct lfsck_assistant_operations lfsck_namespace_assistant_ops = {
+static const struct lfsck_assistant_operations lfsck_namespace_assistant_ops = {
 	.la_handler_p1		= lfsck_namespace_assistant_handler_p1,
 	.la_handler_p2		= lfsck_namespace_assistant_handler_p2,
 	.la_fill_pos		= lfsck_namespace_assistant_fill_pos,
@@ -6986,7 +6938,7 @@ int lfsck_verify_linkea(const struct lu_env *env, struct lfsck_instance *lfsck,
 	if (IS_ERR(th))
 		RETURN(PTR_ERR(th));
 
-	rc = dt_declare_xattr_set(env, obj, &linkea_buf,
+	rc = dt_declare_xattr_set(env, obj, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, fl, th);
 	if (rc != 0)
 		GOTO(stop, rc);

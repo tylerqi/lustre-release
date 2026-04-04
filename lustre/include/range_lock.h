@@ -19,7 +19,7 @@
 #ifndef _RANGE_LOCK_H
 #define _RANGE_LOCK_H
 
-#include <libcfs/libcfs.h>
+#include <lustre_compat/linux/linux-misc.h>
 
 #define RL_FMT "[%llu, %llu]"
 #define RL_PARA(range)					\
@@ -48,7 +48,7 @@ struct range_lock {
 };
 
 struct range_lock_tree {
-	struct interval_tree_root	rlt_root;
+	struct rb_root_cached		rlt_root;
 	spinlock_t			rlt_lock;
 	__u64				rlt_sequence;
 };

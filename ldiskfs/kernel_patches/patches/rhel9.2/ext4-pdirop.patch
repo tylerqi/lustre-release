@@ -1,3 +1,6 @@
+commit 8e858671be59ed53fad2d340cf841b026943cc8a
+Author:     Liang Zhen <liang.zhen@intel.com>
+AuthorDate: Fri Jul 8 13:43:08 2011 -0400
 LU-50 ldiskfs: pdirops patch for ldiskfs
 
 Single directory performance is a critical for HPC workloads. In a
@@ -5,6 +8,7 @@ typical use case an application creates a separate output file for
 each node and task in a job. As nodes and tasks increase, hundreds
 of thousands of files may be created in a single directory within
 a short window of time.
+
 Today, both filename lookup and file system modifying operations
 (such as create and unlink) are protected with a single lock for
 an entire ldiskfs directory. PDO project will remove this
@@ -18,9 +22,10 @@ This patch contains:
   - integrate with osd-ldiskfs
 
 Signed-off-by: Liang Zhen <liang@whamcloud.com>
+Reviewed-by: Andreas Dilger <adilger@whamcloud.com>
 Change-Id: I269c0e3112e68f3acd79e860dab052a68c7d7aaa
 Reviewed-on: http://review.whamcloud.com/375
-Reviewed-by: Andreas Dilger <adilger@whamcloud.com>
+
 ---
  fs/ext4/Makefile |   1 +
  fs/ext4/ext4.h   |  78 ++++++++
@@ -502,10 +507,19 @@ index 54bbe22..9b20bc5 100644
  			ext4_warning_inode(dir,
  					   "dx entry: count %u beyond limit %u",
  					   count, dx_get_limit(entries));
-@@ -928,6 +1171,74 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
- 		frame->entries = entries;
- 		frame->at = at;
- 
+@@ -932,14 +1175,82 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
+ 		block = dx_get_block(at);
+ 		for (i = 0; i <= level; i++) {
+ 			if (blocks[i] == block) {
++				ext4_htree_spin_unlock(lck); /* release spin */
+ 				ext4_warning_inode(dir,
+ 					"dx entry: tree cycle block %u points back to block %u",
+ 					blocks[level], block);
+ 				goto fail;
+ 			}
+ 		}
+-		if (++level > indirect)
++
 +		if (indirect == level) { /* the last index level */
 +			struct ext4_dir_lock_data *ld;
 +			u64 myblock;
@@ -570,19 +584,9 @@ index 54bbe22..9b20bc5 100644
 +				ext4_htree_de_unlock(lck);
 +				continue;
 +			}
-+			return frame;
+ 			return frame;
 +		}
 +		dx = at;
-+
- 		block = dx_get_block(at);
- 		for (i = 0; i <= level; i++) {
- 			if (blocks[i] == block) {
-@@ -937,8 +1248,7 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
- 				goto fail;
- 			}
- 		}
--		if (++level > indirect)
--			return frame;
 +		++level;
  		blocks[level] = block;
  		frame++;

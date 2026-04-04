@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.htm
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * (C) Copyright 2012 Commissariat a l'energie atomique et aux energies
  *     alternatives
@@ -169,7 +149,6 @@ static int arc_fd = -1;
 static int err_major;
 static int err_minor;
 
-static char cmd_name[PATH_MAX];
 static char fs_name[MAX_OBD_NAME + 1];
 static int pid_file_fd = -1;
 
@@ -186,23 +165,23 @@ static inline double ct_now(void)
 
 #define CT_ERROR(_rc, _format, ...)					\
 	llapi_error(LLAPI_MSG_ERROR, _rc,				\
-		    "%f %s[%ld]: "_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+		    "%f [%ld]: "_format,				\
+		    ct_now(), syscall(SYS_gettid), ## __VA_ARGS__)
 
 #define CT_DEBUG(_format, ...)						\
 	llapi_error(LLAPI_MSG_DEBUG | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+		    "%f [%ld]: "_format,				\
+		    ct_now(), syscall(SYS_gettid), ## __VA_ARGS__)
 
 #define CT_WARN(_format, ...) \
 	llapi_error(LLAPI_MSG_WARN | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+		    "%f [%ld]: "_format,				\
+		    ct_now(), syscall(SYS_gettid), ## __VA_ARGS__)
 
 #define CT_TRACE(_format, ...)						\
 	llapi_error(LLAPI_MSG_INFO | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+		    "%f [%ld]: "_format,				\
+		    ct_now(), syscall(SYS_gettid), ## __VA_ARGS__)
 
 static void usage(const char *name, int rc)
 {
@@ -257,7 +236,7 @@ static void usage(const char *name, int rc)
 	"   -u, --update-interval <s> Interval between progress reports sent\n"
 	"                             to Coordinator\n"
 	"   -v, --verbose             Produce more verbose output\n",
-	cmd_name, cmd_name, cmd_name, cmd_name, cmd_name, cmd_name);
+	name, name, name, name, name, name);
 
 	exit(rc);
 }
@@ -410,7 +389,7 @@ repeat:
 			opt.o_event_fifo = optarg;
 			break;
 		case 'h':
-			usage(argv[0], 0);
+			usage(basename(argv[0]), 0);
 		case 'i':
 			opt.o_action = CA_IMPORT;
 			break;
@@ -2446,10 +2425,10 @@ int main(int argc, char **argv)
 {
 	int	rc;
 
-	snprintf(cmd_name, sizeof(cmd_name), "%s", basename(argv[0]));
 	rc = ct_parseopts(argc, argv);
 	if (rc < 0) {
-		CT_WARN("try '%s --help' for more information", cmd_name);
+		CT_WARN("try '%s --help' for more information",
+			basename(argv[0]));
 		return -rc;
 	}
 

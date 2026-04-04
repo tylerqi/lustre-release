@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 LUSTRE=${LUSTRE:-$(dirname $0)/..}
 . $LUSTRE/tests/test-framework.sh
@@ -6,6 +6,10 @@ init_test_env "$@"
 init_logging
 
 ALWAYS_EXCEPT="$LNET_SELFTEST_EXCEPT"
+
+if $FORCE_LARGE_NID; then
+	always_except LU-19364 smoke
+fi
 
 build_test_filter
 
@@ -43,7 +47,7 @@ esac
 
 LOAD_MODULES_REMOTE=true load_modules
 
-nodes=$(comma_list "$(osts_nodes) $(mdts_nodes)")
+nodes=$(tgts_nodes)
 lst_SERVERS=${lst_SERVERS:-$(comma_list "$(host_nids_address $nodes $NETTYPE)")}
 lst_CLIENTS=${lst_CLIENTS:-$(comma_list "$(host_nids_address $CLIENTS $NETTYPE)")}
 interim_umount=false
@@ -101,7 +105,7 @@ test_smoke_sub () {
 
 	local nc=$(echo ${clients//,/ } | wc -w)
 	local ns=$(echo ${servers//,/ } | wc -w)
-	echo '#!/bin/bash'
+	echo '#!/usr/bin/bash'
 	echo 'set -e'
 
 	echo 'cleanup () { trap 0; echo killing $1 ... ; kill -9 $1 || true; }'
@@ -109,6 +113,10 @@ test_smoke_sub () {
 	echo "$LST new_session --timeo 100000 hh"
 	echo "$LST add_group c $(nids_list $clients)"
 	echo "$LST add_group s $(nids_list $servers)"
+	echo "echo '====================================='"
+	echo "echo 'Listing of bad_group should not crash'"
+	echo "echo '====================================='"
+	echo "$LST list_group s bad_group c"
 	echo "$LST add_batch b"
 
 	declare -a tests

@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -779,16 +759,16 @@ const char * fmode2str(int mode)
  */
 static int t6(int argc, char *argv[])
 {
+	int rc = 0;
+	FILE *fp;
+	double stime;
+	char buf[T6BUF_SIZE+1];
 	struct flock lock = {
 		.l_whence = SEEK_SET,
 	};
 
-	int rc = 0;
-	char buf[T6BUF_SIZE+1];
-	double stime;
-
 	if (argc < 3) {
-		fprintf(stderr, "usage: flocks_test 6 file\n");
+		fprintf(stderr, "usage: flocks_test 6 file [cmdfile]\n");
 		return EXIT_FAILURE;
 	}
 
@@ -796,9 +776,20 @@ static int t6(int argc, char *argv[])
 	if (get_cfd() < 0)
 		return EXIT_FAILURE;
 
+	fp = stdin;
+	if (argc >= 4 && strcmp(argv[3], "-")) {
+		fp = fopen(argv[3], "r");
+		if (!fp) {
+			fprintf(stderr, "Open file %s error(%s)\n",
+				argv[3], strerror(errno));
+			put_fds();
+			return EXIT_FAILURE;
+		}
+	}
+
 	memset(buf, '\0', T6BUF_SIZE + 1);
 	stime = now();
-	while (fgets(buf, T6BUF_SIZE, stdin)) {
+	while (fgets(buf, T6BUF_SIZE, fp)) {
 		lock.l_whence = SEEK_SET,
 		rc = set_lock(&lock, buf);
 		if (rc == 0)
@@ -830,11 +821,14 @@ static int t6(int argc, char *argv[])
 				}
 				if (lock.l_type == F_UNLCK)
 					break;
-				printf("FLOCK %d: RWS:%s POS:%ld LEN:%ld PID:%d\n",
-				       i, fmode2str(lock.l_type), lock.l_start,
-				       lock.l_len, lock.l_pid);
+				if (i > 0)
+					printf(";");
+				printf("%s%ld,%ld", fmode2str(lock.l_type),
+				       lock.l_start, lock.l_len);
 				lock.l_start += lock.l_len;
 			}
+			if (lock.l_start > 0)
+				printf(".\n");
 			close(fd);
 			if (rc == EXIT_FAILURE)
 				break;
@@ -842,14 +836,14 @@ static int t6(int argc, char *argv[])
 		}
 		rc = t_fcntl(get_cfd(), F_OFD_SETLKW, &lock);
 		if (rc != 0) {
-			fprintf(stderr, "%d: cannot set lock: %s\n",
-				getpid(), strerror(errno));
+			fprintf(stderr, "%s: cannot set lock(%d): %s\n",
+				argv[0], errno, strerror(errno));
 			rc = EXIT_FAILURE;
 			break;
 		}
 	}
 	put_fds();
-	printf("Time for processing %.03lfs\n", now() - stime);
+	fprintf(stderr, "Time for processing %.03lfs\n", now() - stime);
 	return rc;
 }
 

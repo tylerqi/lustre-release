@@ -50,6 +50,8 @@
 #include <linux/in.h>
 #include <linux/nmi.h>
 
+#include <lustre_compat/linux/timer.h>
+#include <linux/libcfs/libcfs_fail.h>
 #include <lnet/lib-lnet.h>
 
 #include <gni_pub.h>
@@ -334,29 +336,28 @@ typedef enum kgn_dgram_type {
 #define GNILND_DGRAM_MAGIC   0x0DDBA11
 
 /*  kgn_msg_t - FMA/SMSG wire struct
-  v2:
-   * - added checksum to FMA
-   * moved seq before paylod
-   * __packed added for alignment
-  v3:
-   * added gnm_payload_len for FMA payload size
-  v4:
-   * added gncm_retval to completion, allowing return code transmission
-     on RDMA NAKs
-  v5:
-   * changed how CQID and TX ids are assigned
-  v6:
-   * added retval on CLOSE
-  v7:
-   * added payload checksumming
-  v8:
-   * reworked checksumming a bit, changed payload checksums
-*/
+ * v2:
+ * * added checksum to FMA
+ * * moved seq before paylod
+ * * __packed added for alignment
+ * v3:
+ * * added gnm_payload_len for FMA payload size
+ * v4:
+ * * add gncm_retval to completion, allow return code transmission on RDMA NAKs
+ * v5:
+ * * changed how CQID and TX ids are assigned
+ * v6:
+ * * added retval on CLOSE
+ * v7:
+ * * added payload checksumming
+ * v8:
+ * * reworked checksumming a bit, changed payload checksums
+ */
 #define GNILND_MSG_VERSION              8
 /* kgn_connreq_t connection request datagram wire struct
-  v2:
-   * added NAKs
-*/
+ * v2:
+ * * added NAKs
+ */
 
 #define GNILND_CONNREQ_VERSION          2
 
@@ -889,9 +890,7 @@ extern int _kgnilnd_schedule_delay_conn(kgn_conn_t *conn);
 
 static inline int kgnilnd_timeout(void)
 {
-	return *kgnilnd_tunables.kgn_timeout ?
-	       *kgnilnd_tunables.kgn_timeout :
-	       lnet_get_lnd_timeout();
+	return *kgnilnd_tunables.kgn_timeout ?: lnet_get_lnd_timeout();
 }
 
 /* Macro wrapper for _kgnilnd_schedule_conn. This will store the function
@@ -995,10 +994,11 @@ static inline void *kgnilnd_vzalloc(int size)
 {
 	void *ret;
 	if (*kgnilnd_tunables.kgn_vzalloc_noretry)
-		ret = __ll_vmalloc(size, __GFP_HIGHMEM | GFP_NOIO | __GFP_ZERO |
-				   __GFP_NORETRY);
+		ret = __compat_vmalloc(size, __GFP_HIGHMEM | GFP_NOIO |
+				       __GFP_ZERO | __GFP_NORETRY);
 	else
-		ret = __ll_vmalloc(size, __GFP_HIGHMEM | GFP_NOIO | __GFP_ZERO);
+		ret = __compat_vmalloc(size, __GFP_HIGHMEM | GFP_NOIO |
+				       __GFP_ZERO);
 
 	LIBCFS_ALLOC_POST(ret, size, "alloc");
 	return ret;
@@ -1759,6 +1759,8 @@ kgnilnd_find_net(lnet_nid_t nid, kgn_net_t **netp)
 #define KGNILND_POISON(ptr, c, s) memset(ptr, c, s)
 #endif
 
+#define CURRENT_LND_VERSION 1
+
 enum kgnilnd_ni_lnd_tunables_attr {
 	LNET_NET_GNILND_TUNABLES_ATTR_UNSPEC = 0,
 
@@ -1896,7 +1898,6 @@ int kgnilnd_set_conn_params(kgn_dgram_t *dgram);
  * out of the way but ensure we'll catch any updates to the enum/types
  * above */
 
-#define DO_TYPE(x) case x: return #x;
 static inline const char *
 kgnilnd_fmablk_state2str(kgn_fmablk_state_t state)
 {
@@ -1918,24 +1919,24 @@ static inline const char *
 kgnilnd_msgtype2str(int type)
 {
 	switch (type) {
-		DO_TYPE(GNILND_MSG_NONE);
-		DO_TYPE(GNILND_MSG_NOOP);
-		DO_TYPE(GNILND_MSG_IMMEDIATE);
-		DO_TYPE(GNILND_MSG_PUT_REQ);
-		DO_TYPE(GNILND_MSG_PUT_NAK);
-		DO_TYPE(GNILND_MSG_PUT_ACK);
-		DO_TYPE(GNILND_MSG_PUT_DONE);
-		DO_TYPE(GNILND_MSG_GET_REQ);
-		DO_TYPE(GNILND_MSG_GET_NAK);
-		DO_TYPE(GNILND_MSG_GET_DONE);
-		DO_TYPE(GNILND_MSG_CLOSE);
-		DO_TYPE(GNILND_MSG_PUT_REQ_REV);
-		DO_TYPE(GNILND_MSG_PUT_DONE_REV);
-		DO_TYPE(GNILND_MSG_PUT_NAK_REV);
-		DO_TYPE(GNILND_MSG_GET_REQ_REV);
-		DO_TYPE(GNILND_MSG_GET_ACK_REV);
-		DO_TYPE(GNILND_MSG_GET_DONE_REV);
-		DO_TYPE(GNILND_MSG_GET_NAK_REV);
+		ENUM2STR(GNILND_MSG_NONE);
+		ENUM2STR(GNILND_MSG_NOOP);
+		ENUM2STR(GNILND_MSG_IMMEDIATE);
+		ENUM2STR(GNILND_MSG_PUT_REQ);
+		ENUM2STR(GNILND_MSG_PUT_NAK);
+		ENUM2STR(GNILND_MSG_PUT_ACK);
+		ENUM2STR(GNILND_MSG_PUT_DONE);
+		ENUM2STR(GNILND_MSG_GET_REQ);
+		ENUM2STR(GNILND_MSG_GET_NAK);
+		ENUM2STR(GNILND_MSG_GET_DONE);
+		ENUM2STR(GNILND_MSG_CLOSE);
+		ENUM2STR(GNILND_MSG_PUT_REQ_REV);
+		ENUM2STR(GNILND_MSG_PUT_DONE_REV);
+		ENUM2STR(GNILND_MSG_PUT_NAK_REV);
+		ENUM2STR(GNILND_MSG_GET_REQ_REV);
+		ENUM2STR(GNILND_MSG_GET_ACK_REV);
+		ENUM2STR(GNILND_MSG_GET_DONE_REV);
+		ENUM2STR(GNILND_MSG_GET_NAK_REV);
 	}
 	return "<unknown msg type>";
 }
@@ -1944,16 +1945,16 @@ static inline const char *
 kgnilnd_tx_state2str(kgn_tx_list_state_t state)
 {
 	switch (state) {
-		DO_TYPE(GNILND_TX_IDLE);
-		DO_TYPE(GNILND_TX_ALLOCD);
-		DO_TYPE(GNILND_TX_PEERQ);
-		DO_TYPE(GNILND_TX_MAPQ);
-		DO_TYPE(GNILND_TX_FMAQ);
-		DO_TYPE(GNILND_TX_LIVE_FMAQ);
-		DO_TYPE(GNILND_TX_RDMAQ);
-		DO_TYPE(GNILND_TX_LIVE_RDMAQ);
-		DO_TYPE(GNILND_TX_DYING);
-		DO_TYPE(GNILND_TX_FREED);
+		ENUM2STR(GNILND_TX_IDLE);
+		ENUM2STR(GNILND_TX_ALLOCD);
+		ENUM2STR(GNILND_TX_PEERQ);
+		ENUM2STR(GNILND_TX_MAPQ);
+		ENUM2STR(GNILND_TX_FMAQ);
+		ENUM2STR(GNILND_TX_LIVE_FMAQ);
+		ENUM2STR(GNILND_TX_RDMAQ);
+		ENUM2STR(GNILND_TX_LIVE_RDMAQ);
+		ENUM2STR(GNILND_TX_DYING);
+		ENUM2STR(GNILND_TX_FREED);
 	}
 	return "<unknown state>";
 }
@@ -1963,14 +1964,14 @@ kgnilnd_conn_state2str(kgn_conn_t *conn)
 {
 	kgn_conn_state_t state = conn->gnc_state;
 	switch (state) {
-		DO_TYPE(GNILND_CONN_DUMMY);
-		DO_TYPE(GNILND_CONN_LISTEN);
-		DO_TYPE(GNILND_CONN_CONNECTING);
-		DO_TYPE(GNILND_CONN_ESTABLISHED);
-		DO_TYPE(GNILND_CONN_CLOSING);
-		DO_TYPE(GNILND_CONN_CLOSED);
-		DO_TYPE(GNILND_CONN_DONE);
-		DO_TYPE(GNILND_CONN_DESTROY_EP);
+		ENUM2STR(GNILND_CONN_DUMMY);
+		ENUM2STR(GNILND_CONN_LISTEN);
+		ENUM2STR(GNILND_CONN_CONNECTING);
+		ENUM2STR(GNILND_CONN_ESTABLISHED);
+		ENUM2STR(GNILND_CONN_CLOSING);
+		ENUM2STR(GNILND_CONN_CLOSED);
+		ENUM2STR(GNILND_CONN_DONE);
+		ENUM2STR(GNILND_CONN_DESTROY_EP);
 	}
 	return "<?state?>";
 }
@@ -1981,9 +1982,9 @@ kgnilnd_connreq_type2str(kgn_connreq_t *connreq)
 	kgn_connreq_type_t type = connreq->gncr_type;
 
 	switch (type) {
-		DO_TYPE(GNILND_CONNREQ_REQ);
-		DO_TYPE(GNILND_CONNREQ_NAK);
-		DO_TYPE(GNILND_CONNREQ_CLOSE);
+		ENUM2STR(GNILND_CONNREQ_REQ);
+		ENUM2STR(GNILND_CONNREQ_NAK);
+		ENUM2STR(GNILND_CONNREQ_CLOSE);
 	}
 	return "<?type?>";
 }
@@ -1994,12 +1995,12 @@ kgnilnd_dgram_state2str(kgn_dgram_t *dgram)
 	kgn_dgram_state_t state = dgram->gndg_state;
 
 	switch (state) {
-		DO_TYPE(GNILND_DGRAM_USED);
-		DO_TYPE(GNILND_DGRAM_POSTING);
-		DO_TYPE(GNILND_DGRAM_POSTED);
-		DO_TYPE(GNILND_DGRAM_PROCESSING);
-		DO_TYPE(GNILND_DGRAM_DONE);
-		DO_TYPE(GNILND_DGRAM_CANCELED);
+		ENUM2STR(GNILND_DGRAM_USED);
+		ENUM2STR(GNILND_DGRAM_POSTING);
+		ENUM2STR(GNILND_DGRAM_POSTED);
+		ENUM2STR(GNILND_DGRAM_PROCESSING);
+		ENUM2STR(GNILND_DGRAM_DONE);
+		ENUM2STR(GNILND_DGRAM_CANCELED);
 	}
 	return "<?state?>";
 }
@@ -2010,10 +2011,10 @@ kgnilnd_dgram_type2str(kgn_dgram_t *dgram)
 	kgn_dgram_type_t type = dgram->gndg_type;
 
 	switch (type) {
-		DO_TYPE(GNILND_DGRAM_REQ);
-		DO_TYPE(GNILND_DGRAM_WC_REQ);
-		DO_TYPE(GNILND_DGRAM_NAK);
-		DO_TYPE(GNILND_DGRAM_CLOSE);
+		ENUM2STR(GNILND_DGRAM_REQ);
+		ENUM2STR(GNILND_DGRAM_WC_REQ);
+		ENUM2STR(GNILND_DGRAM_NAK);
+		ENUM2STR(GNILND_DGRAM_CLOSE);
 	}
 	return "<?type?>";
 }
@@ -2022,15 +2023,13 @@ static inline const char *
 kgnilnd_conn_dgram_type2str(kgn_dgram_type_t type)
 {
 	switch (type) {
-		DO_TYPE(GNILND_DGRAM_REQ);
-		DO_TYPE(GNILND_DGRAM_WC_REQ);
-		DO_TYPE(GNILND_DGRAM_NAK);
-		DO_TYPE(GNILND_DGRAM_CLOSE);
+		ENUM2STR(GNILND_DGRAM_REQ);
+		ENUM2STR(GNILND_DGRAM_WC_REQ);
+		ENUM2STR(GNILND_DGRAM_NAK);
+		ENUM2STR(GNILND_DGRAM_CLOSE);
 	}
 	return "<?type?>";
 }
-
-#undef DO_TYPE
 
 /* pulls in tunables per platform and adds in nid/nic conversion
  * if RCA wasn't available at build time */

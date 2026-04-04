@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -120,10 +100,12 @@ int run_command(char *cmd, int cmdsz)
 	return rc;
 }
 
+#define MAXNIDSTR (LDD_PARAM_LEN - 256)
+
 #ifdef HAVE_SERVER_SUPPORT
 int add_param(char *buf, char *key, char *val)
 {
-	int end = sizeof(((struct lustre_disk_data *)0)->ldd_params);
+	int end = MAXNIDSTR;
 	int start = strlen(buf);
 	int keylen = 0;
 
@@ -139,32 +121,11 @@ int add_param(char *buf, char *key, char *val)
 	return 0;
 }
 
-int get_param(char *buf, char *key, char **val)
-{
-	int i, key_len = strlen(key);
-	char *ptr;
-
-	ptr = strstr(buf, key);
-	if (ptr) {
-		*val = strdup(ptr + key_len);
-		if (!(*val))
-			return ENOMEM;
-
-		for (i = 0; i < strlen(*val); i++)
-			if (((*val)[i] == ' ') || ((*val)[i] == '\0'))
-				break;
-
-		(*val)[i] = '\0';
-		return 0;
-	}
-
-	return ENOENT;
-}
-
 int append_param(char *buf, char *key, char *val, char sep)
 {
-	int key_len, i, offset, old_val_len;
-	char *ptr = NULL, str[1024];
+	char *ptr = NULL, *next;
+	int bufsize = MAXNIDSTR;
+	int buflen = strlen(buf), vallen = strlen(val);
 
 	if (key)
 		ptr = strstr(buf, key);
@@ -173,30 +134,22 @@ int append_param(char *buf, char *key, char *val, char sep)
 	if (!ptr)
 		return add_param(buf, key, val);
 
-	key_len = strlen(key);
-
-	/* Copy previous values to str */
-	for (i = 0; i < sizeof(str); ++i) {
-		if ((ptr[i + key_len] == ' ') || (ptr[i + key_len] == '\0'))
-			break;
-		str[i] = ptr[i + key_len];
-	}
-	if (i == sizeof(str))
+	/* check extra new val + sep can fit */
+	if (bufsize <= buflen + vallen + 1) {
+		fprintf(stderr, "%s: params are too long:\n%s +%s=%s\n",
+			progname, buf, key, val);
 		return E2BIG;
-	old_val_len = i;
+	}
 
-	offset = old_val_len + key_len;
+	next = strchrnul(ptr, ' ');
+	/* shift all after 'next' further at vallen + sep */
+	memmove(next + vallen + 1, next, strlen(next) + 1);
 
-	/* Move rest of buf to overwrite previous key and value */
-	for (i = 0; ptr[i + offset] != '\0'; ++i)
-		ptr[i] = ptr[i + offset];
+	/* fill gap with sep + new values */
+	*next = sep;
+	memcpy(next + 1, val, vallen);
 
-	ptr[i] = '\0';
-
-	snprintf(str + old_val_len, sizeof(str) - old_val_len,
-		 "%c%s", sep, val);
-
-	return add_param(buf, key, str);
+	return 0;
 }
 #endif
 
@@ -218,6 +171,29 @@ char *strscpy(char *dst, char *src, int buflen)
 	return strscat(dst, src, buflen);
 }
 
+/*
+ * Check if filesystem is already mounted by comparing filesystem names.
+ * For Lustre client mounts, extract and compare the filesystem name part
+ * (after ":/" in the mount source) to handle cases where hostnames differ
+ * but refer to the same filesystem.
+ */
+static int compare_lustre_sources(const char *src1, const char *src2)
+{
+	const char *fs1, *fs2;
+
+	/* Find filesystem part after ":/" */
+	fs1 = strstr(src1, ":/");
+	fs2 = strstr(src2, ":/");
+
+	/* If both have ":/" pattern, compare filesystem names */
+	if (fs1 && fs2) {
+		src1 = fs1 + 2; /* skip ":/" */
+		src2 = fs2 + 2; /* skip ":/" */
+	}
+
+	return strcmp(src1, src2) == 0;
+}
+
 int check_mtab_entry(char *spec1, char *spec2, char *mtpt, char *type)
 {
 	FILE *fp;
@@ -228,8 +204,8 @@ int check_mtab_entry(char *spec1, char *spec2, char *mtpt, char *type)
 		return 0;
 
 	while ((mnt = getmntent(fp)) != NULL) {
-		if ((strcmp(mnt->mnt_fsname, spec1) == 0 ||
-		     strcmp(mnt->mnt_fsname, spec2) == 0) &&
+		if ((compare_lustre_sources(mnt->mnt_fsname, spec1) ||
+		     compare_lustre_sources(mnt->mnt_fsname, spec2)) &&
 		    (!mtpt || strcmp(mnt->mnt_dir, mtpt) == 0) &&
 		    (!type || strcmp(mnt->mnt_type, type) == 0)) {
 			endmntent(fp);
@@ -528,12 +504,14 @@ int loop_format(struct mkfs_opts *mop)
 #endif /* PLUGIN_DIR */
 
 /**
- * Load plugin for a given mount_type from ${pkglibdir}/mount_osd_FSTYPE.so and
- * return struct of function pointers (will be freed in unloack_backfs_module).
+ * load_backfs_module() - Load plugin for a given mount_type
+ * @mount_type: mount type to load module for
  *
- * \param[in] mount_type	Mount type to load module for.
- * \retval Value of backfs_ops struct
- * \retval NULL if no module exists
+ * Load plugin from ${pkglibdir}/mount_osd_FSTYPE.so and
+ * return struct of function pointers (will be freed in
+ * unloack_backfs_module).
+ *
+ * Return: Value of backfs_ops struct, NULL if no module exists
  */
 struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type)
 {
@@ -553,7 +531,6 @@ struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type)
 	fsname[sizeof("osd-") - 2] = '_';
 
 	snprintf(filename, sizeof(filename), PLUGIN_DIR"/mount_%s.so", fsname);
-
 	handle = dlopen(filename, RTLD_LAZY);
 
 	/*
@@ -568,6 +545,7 @@ struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type)
 			snprintf(filename, sizeof(filename),
 				 "%s/utils/mount_%s.so",
 				 dirname, fsname);
+
 			handle = dlopen(filename, RTLD_LAZY);
 		}
 	}
@@ -596,6 +574,7 @@ struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type)
 	DLSYM(name, ops, prepare_lustre);
 	DLSYM(name, ops, tune_lustre);
 	DLSYM(name, ops, label_lustre);
+	DLSYM(name, ops, label_read);
 	DLSYM(name, ops, rename_fsname);
 	DLSYM(name, ops, enable_quota);
 
@@ -622,6 +601,9 @@ struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type)
 		ops = &zfs_ops;
 		break;
 #endif /* HAVE_ZFS_OSD */
+	case LDD_MT_WBCFS:
+		ops = &wbcfs_ops;
+		break;
 	default:
 		ops = NULL;
 		break;
@@ -630,7 +612,7 @@ struct module_backfs_ops *load_backfs_module(enum ldd_mount_type mount_type)
 	return ops;
 }
 
-/**
+/*
  * Unload plugin and free backfs_ops structure. Must be called the same number
  * of times as load_backfs_module is.
  */
@@ -645,21 +627,28 @@ static void unload_backfs_module(struct module_backfs_ops *ops)
 #endif
 }
 
-/* Return true if backfs_ops has operations for the given mount_type. */
-static int backfs_mount_type_okay(enum ldd_mount_type mount_type)
+bool backfs_mount_type_loaded(enum ldd_mount_type mt)
 {
-	if (mount_type >= LDD_MT_LAST || mount_type < 0) {
+	if (mt >= LDD_MT_LAST || mt < 0)
+		return false;
+
+	if (!backfs_ops[mt])
+		return false;
+
+	return true;
+}
+
+/* Return true if backfs_ops has operations for the given mount_type. */
+static bool backfs_mount_type_okay(enum ldd_mount_type mt)
+{
+	if (!backfs_mount_type_loaded(mt)) {
 		fatal();
-		fprintf(stderr, "fs type out of range %d\n", mount_type);
-		return 0;
+		fprintf(stderr, "unhandled/unloaded OSD plugin %d '%s'\n",
+			mt, mt_str(mt) ? mt_str(mt) : "INVALID");
+		return false;
 	}
-	if (!backfs_ops[mount_type]) {
-		fatal();
-		fprintf(stderr, "unhandled/unloaded fs type %d '%s'\n",
-			mount_type, mt_str(mount_type));
-		return 0;
-	}
-	return 1;
+
+	return true;
 }
 
 /* Write the server config files */
@@ -800,6 +789,18 @@ int osd_label_lustre(struct mount_opts *mop)
 	return ret;
 }
 
+int osd_label_read(char *dev, struct lustre_disk_data *ldd)
+{
+	int ret;
+
+	if (backfs_mount_type_okay(ldd->ldd_mount_type))
+		ret = backfs_ops[ldd->ldd_mount_type]->label_read(dev, ldd);
+	else
+		ret = EINVAL;
+
+	return ret;
+}
+
 /* Rename filesystem fsname */
 int osd_rename_fsname(struct mkfs_opts *mop, const char *oldname)
 {
@@ -811,6 +812,59 @@ int osd_rename_fsname(struct mkfs_opts *mop, const char *oldname)
 								     oldname);
 	else
 		ret = EINVAL;
+
+	return ret;
+}
+
+/* Reset mountdata */
+int osd_mountdata_reset(struct mkfs_opts *mop, char *mountdata_arg)
+{
+	struct lustre_disk_data ldd;
+	struct stat file_stat;
+	int rc, ret = 0;
+	FILE *fp;
+
+	stat(mountdata_arg, &file_stat);
+	if (S_ISBLK(file_stat.st_mode)) {
+		osd_fini();
+		osd_init();
+		ldd.ldd_mount_type = mop->mo_ldd.ldd_mount_type;
+		rc = osd_read_ldd(mountdata_arg, &ldd);
+		osd_fini();
+		osd_init();
+		if (rc != 0) {
+			fprintf(stderr, "%s: Failed to read device (%s): %s\n",
+				progname, mountdata_arg, strerror(rc));
+			ret = rc;
+			return ret;
+		}
+	} else if (S_ISREG(file_stat.st_mode)) {
+		fp = fopen(mountdata_arg, "r");
+		rc = fread(&ldd, 1, sizeof(ldd), fp);
+		fclose(fp);
+		if (rc < 0) {
+			fprintf(stderr, "%s: Failed to read file (%s): %s\n",
+				progname, mountdata_arg, strerror(rc));
+			ret = rc;
+			return ret;
+		}
+	} else {
+		fprintf(stderr,
+			"%s: Given path is not a file or a block device (%s)\n",
+			progname, mountdata_arg);
+		return 1;
+	}
+
+	memcpy(&(mop->mo_ldd), &ldd, sizeof(ldd));
+
+	ret = osd_label_read(mop->mo_device, &mop->mo_ldd);
+	if (ret != 0) {
+		fprintf(stderr, "%s: Failed to read label data: %s\n",
+			progname, strerror(ret));
+		return ret;
+	}
+	mop->mo_ldd.ldd_svindex = strtol(&(mop->mo_ldd.ldd_svname[12]),
+					 NULL, 16);
 
 	return ret;
 }
@@ -946,13 +1000,12 @@ int file_create(char *path, __u64 size)
 }
 
 /* Get rid of symbolic hostnames for tcp, since kernel can't do lookups */
-#define MAXNIDSTR 1024
-
 char *convert_hostnames(char *buf, bool mount)
 {
 	char *converted, *c, *end, sep;
 	char *delimiter = buf;
-	int left = MAXNIDSTR;
+	int bufsize = MAXNIDSTR;
+	int left = bufsize;
 	struct lnet_nid nid;
 
 	converted = malloc(left);
@@ -1008,7 +1061,7 @@ char *convert_hostnames(char *buf, bool mount)
 		else
 			c += scnprintf(c, left, "%s", libcfs_nidstr(&nid));
 
-		left = converted + MAXNIDSTR - c;
+		left = converted + bufsize - c;
 		buf = delimiter + 1;
 	}
 
@@ -1020,6 +1073,39 @@ out_free:
 	fprintf(stderr, "%s: Can't parse NID '%s'\n", progname, buf);
 out_bad_mnt_str:
 	free(converted);
+	return NULL;
+}
+
+char *convert_fsname(char *devname)
+{
+	char *fsname, *start, *end;
+	int len = 0;
+
+	start = strstr(devname, ":/");
+	if (!start)
+		goto out_bad_name;
+	start += 2; /* skip ":/" */
+
+	end = strchr(start, '/');
+	if (!end)
+		end = start + strlen(start);
+
+	len = end - start + 1;
+
+	fsname = calloc(len, sizeof(char));
+	if (!fsname) {
+		fprintf(stderr, "%s: cannot allocate %u bytes for MOUNT: %s\n",
+			progname, len, strerror(ENOMEM));
+		return NULL;
+	}
+
+	memcpy(fsname, start, len);
+	fsname[len - 1] = '\0';
+	return fsname;
+
+out_bad_name:
+	fprintf(stderr, "%s: Can't parse filesystem name: %s\n",
+		progname, devname);
 	return NULL;
 }
 
@@ -1216,7 +1302,17 @@ out:
 
 #ifdef HAVE_GSS
 #ifdef HAVE_OPENSSL_SSK
-int load_shared_keys(struct mount_opts *mop)
+/**
+ * load_shared_keys() - Loads all keys under @mop->mo_skpath.
+ * @mop: mount options containing skpath
+ * @client: True if Client is mounting with a server key
+ *
+ * Return:
+ * * %positive when last client file system key id if successfully loaded
+ * * %0 other key type successfully loaded
+ * * %-errno on failure
+ */
+int load_shared_keys(struct mount_opts *mop, bool client)
 {
 	DIR *dir;
 	struct dirent *dentry;
@@ -1237,7 +1333,7 @@ int load_shared_keys(struct mount_opts *mop)
 
 	/* Load individual keys or a directory of them */
 	if (S_ISREG(sbuf.st_mode)) {
-		return sk_load_keyfile(path);
+		return sk_load_keyfile(path, client);
 	} else if (!S_ISDIR(sbuf.st_mode)) {
 		fprintf(stderr, "Invalid shared key path: %s\n", path);
 		return -ENOKEY;
@@ -1282,8 +1378,8 @@ int load_shared_keys(struct mount_opts *mop)
 		if (!S_ISREG(sbuf.st_mode))
 			continue;
 
-		rc = sk_load_keyfile(fullpath);
-		if (rc)
+		rc = sk_load_keyfile(fullpath, client);
+		if (rc < 0)
 			fprintf(stderr, "Failed to load key %s\n", fullpath);
 	}
 	closedir(dir);

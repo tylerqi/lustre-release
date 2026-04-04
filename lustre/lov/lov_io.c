@@ -25,13 +25,11 @@
  */
 
 /**
- * Allocate a new sub IO
+ * lov_sub_alloc() - Allocate a new sub IO
+ * @lio: top level lov IO structure
+ * @index: index into lov (stripe)
  *
- * \param[in] lio	top level lov IO structure
- * \param[in] index	index into lov (stripe)
- *
- * \retval		Pointer to allocated lov_io_sub
- * 			structure
+ * Return Pointer to allocated lov_io_sub structure
  */
 static inline struct lov_io_sub *lov_sub_alloc(struct lov_io *lio, int index)
 {
@@ -56,11 +54,9 @@ static inline struct lov_io_sub *lov_sub_alloc(struct lov_io *lio, int index)
 }
 
 /**
- * Release a sub IO
- *
- * \param[in] lio	top level lov IO structure
- * \param[in] sub	sub io to individual stripe
- *
+ * lov_sub_free() - Release a sub IO
+ * @lio: top level lov IO structure
+ * @sub: sub io to individual stripe
  */
 static inline void lov_sub_free(struct lov_io *lio, struct lov_io_sub *sub)
 {
@@ -187,8 +183,19 @@ out:
 	RETURN(sub);
 }
 
-/**
+/*
  * Lov io operations.
+ */
+
+/**
+ * lov_io_subio_init() -  Initilize LOV I/O operation
+ * @env: lustre environment
+ * @lio: Pointer to struct lov_io
+ * @io: highlevel I/O request
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int lov_io_subio_init(const struct lu_env *env, struct lov_io *lio,
 			     struct cl_io *io)
@@ -204,7 +211,7 @@ static int lov_io_subio_init(const struct lu_env *env, struct lov_io *lio,
 	RETURN(0);
 }
 
-/**
+/*
  * Decide if it will need write intent RPC
  */
 static int lov_io_mirror_write_intent(struct lov_io *lio,
@@ -503,8 +510,6 @@ static int lov_io_slice_init(struct lov_io *lio,
 		lio->lis_endpos = io->u.ci_rw.crw_pos + io->u.ci_rw.crw_bytes;
 		lio->lis_io_endpos = lio->lis_endpos;
 		if (cl_io_is_append(io)) {
-			LASSERT(io->ci_type == CIT_WRITE);
-
 			/*
 			 * If there is LOV EA hole, then we may cannot locate
 			 * the current file-tail exactly.
@@ -512,9 +517,6 @@ static int lov_io_slice_init(struct lov_io *lio,
 			if (unlikely(obj->lo_lsm->lsm_entries[0]->lsme_pattern &
 				     LOV_PATTERN_F_HOLE))
 				GOTO(out, result = -EIO);
-
-			lio->lis_pos = 0;
-			lio->lis_endpos = OBD_OBJECT_EOF;
 		}
 		break;
 
@@ -628,6 +630,9 @@ static int lov_io_slice_init(struct lov_io *lio,
 		io->ci_write_intent.e_end = lio->lis_endpos;
 	}
 
+	CDEBUG(D_LAYOUT, "%llu %llu\n", io->ci_write_intent.e_start,
+	       io->ci_write_intent.e_end);
+
 	index = 0;
 	lov_foreach_io_layout(index, lio, &io->ci_write_intent) {
 		if (!lsm_entry_inited(obj->lo_lsm, index)) {
@@ -715,12 +720,12 @@ static void lov_io_sub_inherit(struct lov_io_sub *sub, struct lov_io *lio,
 		if (cl_io_is_fallocate(io)) {
 			io->u.ci_setattr.sa_falloc_offset = start;
 			io->u.ci_setattr.sa_falloc_end = end;
-			io->u.ci_setattr.sa_falloc_uid =
-				parent->u.ci_setattr.sa_falloc_uid;
-			io->u.ci_setattr.sa_falloc_gid =
-				parent->u.ci_setattr.sa_falloc_gid;
-			io->u.ci_setattr.sa_falloc_projid =
-				parent->u.ci_setattr.sa_falloc_projid;
+			io->u.ci_setattr.sa_attr_uid =
+				parent->u.ci_setattr.sa_attr_uid;
+			io->u.ci_setattr.sa_attr_gid =
+				parent->u.ci_setattr.sa_attr_gid;
+			io->u.ci_setattr.sa_attr_projid =
+				parent->u.ci_setattr.sa_attr_projid;
 		}
 		if (cl_io_is_trunc(io)) {
 			loff_t new_size = parent->u.ci_setattr.sa_attr.lvb_size;
@@ -728,6 +733,12 @@ static void lov_io_sub_inherit(struct lov_io_sub *sub, struct lov_io *lio,
 			new_size = lov_size_to_stripe(lsm, index, new_size,
 						      stripe);
 			io->u.ci_setattr.sa_attr.lvb_size = new_size;
+			io->u.ci_setattr.sa_attr_uid =
+				parent->u.ci_setattr.sa_attr_uid;
+			io->u.ci_setattr.sa_attr_gid =
+				parent->u.ci_setattr.sa_attr_gid;
+			io->u.ci_setattr.sa_attr_projid =
+				parent->u.ci_setattr.sa_attr_projid;
 		}
 		lov_lsm2layout(lsm, lsm->lsm_entries[index],
 			       &io->u.ci_setattr.sa_layout);
@@ -752,18 +763,18 @@ static void lov_io_sub_inherit(struct lov_io_sub *sub, struct lov_io *lio,
 		io->u.ci_fsync.fi_end = end;
 		io->u.ci_fsync.fi_fid = parent->u.ci_fsync.fi_fid;
 		io->u.ci_fsync.fi_mode = parent->u.ci_fsync.fi_mode;
+		io->u.ci_fsync.fi_prio = parent->u.ci_fsync.fi_prio;
 		break;
 	}
 	case CIT_READ:
 	case CIT_WRITE: {
 		io->u.ci_wr.wr_sync = cl_io_is_sync_write(parent);
 		io->ci_tried_all_mirrors = parent->ci_tried_all_mirrors;
-		if (cl_io_is_append(parent)) {
+		if (cl_io_is_append(parent))
 			io->u.ci_wr.wr_append = 1;
-		} else {
-			io->u.ci_rw.crw_pos = start;
-			io->u.ci_rw.crw_bytes = end - start;
-		}
+
+		io->u.ci_rw.crw_pos = start;
+		io->u.ci_rw.crw_bytes = end - start;
 		break;
 	}
 	case CIT_LADVISE: {
@@ -968,8 +979,28 @@ static int lov_io_rw_iter_init(const struct lu_env *env,
 	LASSERT(io->ci_type == CIT_READ || io->ci_type == CIT_WRITE);
 	ENTRY;
 
-	if (cl_io_is_append(io))
+	if (cl_io_is_append(io)) {
+		struct lov_layout_entry *lle;
+		struct lov_mirror_entry *lre;
+		loff_t endpos = 0;
+
+		/* cover the whole inited region for append */
+		LASSERT(lio->lis_mirror_index >= 0);
+		lre = lov_mirror_entry(lio->lis_object, lio->lis_mirror_index);
+		lov_foreach_mirror_layout_entry(lio->lis_object, lle, lre) {
+			if (!lsme_inited(lle->lle_lsme))
+				break;
+
+			endpos = lle->lle_lsme->lsme_extent.e_end;
+		}
+
+		lio->lis_pos = 0;
+		if (endpos == OBD_OBJECT_EOF || lio->lis_endpos < endpos)
+			lio->lis_endpos = endpos;
+
+		io->u.ci_wr.wr_append_lockpos = lio->lis_endpos;
 		RETURN(lov_io_iter_init(env, ios));
+	}
 
 	index = lov_io_layout_at(lio, io->u.ci_rw.crw_pos);
 	if (index < 0) { /* non-existing layout component */
@@ -1180,9 +1211,9 @@ static void lov_io_unlock(const struct lu_env *env,
 	EXIT;
 }
 
-static int lov_io_read_ahead(const struct lu_env *env,
-			     const struct cl_io_slice *ios,
-			     pgoff_t start, struct cl_read_ahead *ra)
+static int lov_io_read_ahead_prep(const struct lu_env *env,
+				  const struct cl_io_slice *ios,
+				  pgoff_t start, struct cl_read_ahead *ra)
 {
 	struct lov_io		*lio = cl2lov_io(env, ios);
 	struct lov_object	*loo = lio->lis_object;
@@ -1218,8 +1249,8 @@ static int lov_io_read_ahead(const struct lu_env *env,
 		RETURN(PTR_ERR(sub));
 
 	lov_stripe_offset(loo->lo_lsm, index, offset, stripe, &suboff);
-	rc = cl_io_read_ahead(sub->sub_env, &sub->sub_io,
-			      suboff >> PAGE_SHIFT, ra);
+	rc = cl_io_read_ahead_prep(sub->sub_env, &sub->sub_io,
+				   suboff >> PAGE_SHIFT, ra);
 
 	CDEBUG(D_READA, DFID " cra_end = %lu, stripes = %d, rc = %d\n",
 	       PFID(lu_object_fid(lov2lu(loo))), ra->cra_end_idx,
@@ -1316,9 +1347,45 @@ static int lov_io_lru_reserve(const struct lu_env *env,
 	RETURN(0);
 }
 
+static int lov_dio_submit(const struct lu_env *env,
+			  struct cl_io *io,
+			  const struct cl_io_slice *ios,
+			  enum cl_req_type crt, struct cl_dio_pages *cdp)
+{
+	struct lov_io *lio = cl2lov_io(env, ios);
+	struct lov_io_sub *sub;
+	int rc = 0;
+	int index;
+	ENTRY;
+
+	if (lov_pages_is_empty(cdp)) {
+		cl_dio_pages_complete(env, cdp, cdp->cdp_page_count, 0);
+		RETURN(0);
+	}
+
+	index = cdp->cdp_lov_index;
+
+	sub = lov_sub_get(env, lio, index);
+	if (!IS_ERR(sub)) {
+		rc = cl_dio_submit_rw(sub->sub_env, &sub->sub_io,
+				      crt, cdp);
+	} else {
+		rc = PTR_ERR(sub);
+	}
+
+	RETURN(rc);
+}
+
 /**
+ * lov_io_submit() - lov implementation of cl_operations::cio_submit() method.
+ * @env: lustre execution environment
+ * @io: highlevel I/O request
+ * @ios: LOV specific IO
+ * @crt: Requested transfer type
+ * @queue: Page queue
+ *
  * lov implementation of cl_operations::cio_submit() method. It takes a list
- * of pages in \a queue, splits it into per-stripe sub-lists, invokes
+ * of pages in @queue, splits it into per-stripe sub-lists, invokes
  * cl_io_submit() on underlying devices to submit sub-lists, and then splices
  * everything back.
  *
@@ -1330,6 +1397,10 @@ static int lov_io_lru_reserve(const struct lu_env *env,
  * not-memory cleansing context), and in case of memory shortage, these
  * pre-allocated resources are used by lov_io_submit() under
  * lov_device::ld_mutex mutex.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int lov_io_submit(const struct lu_env *env,
 			 struct cl_io *io,
@@ -1364,7 +1435,7 @@ static int lov_io_submit(const struct lu_env *env,
 			 * the return code of cl_page_prep() at all.
 			 */
 			LASSERT(page->cp_type == CPT_TRANSIENT);
-			cl_page_completion(env, page, crt, 0);
+			cl_page_complete(env, page, crt, 0);
 			continue;
 		}
 
@@ -1410,10 +1481,11 @@ static int lov_io_submit(const struct lu_env *env,
 static int lov_io_commit_async(const struct lu_env *env,
 			       const struct cl_io_slice *ios,
 			       struct cl_page_list *queue, int from, int to,
-			       cl_commit_cbt cb)
+			       cl_commit_cbt cb, enum cl_io_priority prio)
 {
 	struct cl_page_list *plist = &lov_env_info(env)->lti_plist;
 	struct lov_io *lio = cl2lov_io(env, ios);
+	bool hp = cl_io_high_prio(prio);
 	struct lov_io_sub *sub;
 	struct cl_page *page;
 	int rc = 0;
@@ -1428,7 +1500,7 @@ static int lov_io_commit_async(const struct lu_env *env,
 		LASSERT(!IS_ERR(sub));
 		LASSERT(sub == &lio->lis_single_subio);
 		rc = cl_io_commit_async(sub->sub_env, &sub->sub_io, queue,
-					from, to, cb);
+					from, to, cb, prio);
 		RETURN(rc);
 	}
 
@@ -1458,7 +1530,8 @@ static int lov_io_commit_async(const struct lu_env *env,
 		sub = lov_sub_get(env, lio, index);
 		if (!IS_ERR(sub)) {
 			rc = cl_io_commit_async(sub->sub_env, &sub->sub_io,
-						plist, from, stripe_to, cb);
+						plist, from, stripe_to, cb,
+						prio);
 		} else {
 			rc = PTR_ERR(sub);
 			break;
@@ -1469,9 +1542,14 @@ static int lov_io_commit_async(const struct lu_env *env,
 
 		from = 0;
 
-		if (lov_comp_entry(index) !=
+		if (!hp && lov_comp_entry(index) !=
 		    lov_comp_entry(page->cp_lov_index))
-			cl_io_extent_release(sub->sub_env, &sub->sub_io);
+			cl_io_extent_release(sub->sub_env, &sub->sub_io, prio);
+	}
+
+	if (rc == 0 && hp) {
+		list_for_each_entry(sub, &lio->lis_subios, sub_list)
+			cl_io_extent_release(sub->sub_env, &sub->sub_io, prio);
 	}
 
 	/* for error case, add the page back into the qin list */
@@ -1763,13 +1841,14 @@ static const struct cl_io_operations lov_io_ops = {
 			.cio_fini      = lov_io_fini
 		}
 	},
-	.cio_read_ahead                = lov_io_read_ahead,
-	.cio_lru_reserve	       = lov_io_lru_reserve,
-	.cio_submit                    = lov_io_submit,
-	.cio_commit_async              = lov_io_commit_async,
+	.cio_read_ahead_prep		= lov_io_read_ahead_prep,
+	.cio_lru_reserve		= lov_io_lru_reserve,
+	.cio_submit			= lov_io_submit,
+	.cio_dio_submit			= lov_dio_submit,
+	.cio_commit_async		= lov_io_commit_async,
 };
 
-/**
+/*
  * Empty lov io operations.
  */
 static void lov_empty_io_fini(const struct lu_env *env,
@@ -1784,6 +1863,14 @@ static void lov_empty_io_fini(const struct lu_env *env,
 		atomic_dec_and_test(&lov->lo_active_ios))
 		wake_up(&lov->lo_waitq);
 	EXIT;
+}
+
+static int lov_empty_dio_submit(const struct lu_env *env,
+				struct cl_io *io,
+				const struct cl_io_slice *ios,
+				enum cl_req_type crt, struct cl_dio_pages *cdp)
+{
+	return -EBADF;
 }
 
 static int lov_empty_io_submit(const struct lu_env *env,
@@ -1802,7 +1889,7 @@ static void lov_empty_impossible(const struct lu_env *env,
 
 #define LOV_EMPTY_IMPOSSIBLE ((void *)lov_empty_impossible)
 
-/**
+/*
  * An io operation vector for files without stripes.
  */
 static const struct cl_io_operations lov_empty_io_ops = {
@@ -1851,6 +1938,7 @@ static const struct cl_io_operations lov_empty_io_ops = {
 		}
 	},
 	.cio_submit                    = lov_empty_io_submit,
+	.cio_dio_submit                = lov_empty_dio_submit,
 	.cio_commit_async              = LOV_EMPTY_IMPOSSIBLE
 };
 
@@ -1885,13 +1973,12 @@ int lov_io_init_empty(const struct lu_env *env, struct cl_object *obj,
 {
 	struct lov_object *lov = cl2lov(obj);
 	struct lov_io *lio = lov_env_io(env);
-	int result;
+	int result = 0;
+
 	ENTRY;
 
 	lio->lis_object = lov;
 	switch (io->ci_type) {
-	default:
-		LBUG();
 	case CIT_MISC:
 	case CIT_GLIMPSE:
 	case CIT_READ:
@@ -1912,6 +1999,8 @@ int lov_io_init_empty(const struct lu_env *env, struct cl_object *obj,
 		CERROR("Page fault on a file without stripes: "DFID"\n",
 		       PFID(lu_object_fid(&obj->co_lu)));
 		break;
+	default:
+		LBUG();
 	}
 	if (result == 0) {
 		cl_io_slice_add(io, &lio->lis_cl, obj, &lov_empty_io_ops);
@@ -1994,8 +2083,17 @@ bool lov_io_layout_at_confirm(struct lov_io *lio, int entry, __u64 offset)
 		return true;
 	return false;
 }
+
 /**
+ * lov_io_layout_at() - Return the index in composite layout given file offset
+ * @lio: Pointer to struct lov_io
+ * @offset: Offset in the composite layout
+ *
  * Return the index in composite:lo_entries by the file offset
+ *
+ * Return:
+ * * %>=0 composite index where offset is located
+ * * %negative on error
  */
 int lov_io_layout_at(struct lov_io *lio, __u64 offset)
 {

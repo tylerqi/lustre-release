@@ -89,12 +89,39 @@ static inline lnet_nid_t LNET_MKNID(__u32 net, __u32 addr)
 
 #define LNET_NET_ANY LNET_NIDNET(LNET_NID_ANY)
 
+#define LNET_ADDR_ANY LNET_NIDADDR(LNET_NID_ANY)
+
 static inline bool nid_is_nid4(const struct lnet_nid *nid)
 {
 	return NID_ADDR_BYTES(nid) == 4;
 }
 
-/* check for address set */
+/**
+ * nid_addr_is_set - check if address portion of NID is set
+ * @nid: the NID to check
+ *
+ * This function attempts to distinguish between NIDs where:
+ * 1. Only the network is specified (nid_type and nid_num set, address unset)
+ * 2. A full NID is specified (network and address both set)
+ *
+ * LIMITATIONS AND KNOWN ISSUES:
+ * This function returns false for any NID whose address bytes are all zero.
+ * However, this creates ambiguity because NIDs like "0@kfi" or "0@gni" are
+ * valid, fully-specified NIDs where the address portion is legitimately zero.
+ *
+ * The function cannot distinguish between:
+ * - A network-only NID (e.g., "kfi0" with no specific address)
+ * - A fully-qualified NID with address=0 (e.g., "0@kfi")
+ *
+ * This is a fundamental limitation because struct lnet_nid has no explicit
+ * field to mark "address not specified" vs "address is zero". Both cases
+ * result in nid_addr[] being all zeros.
+ *
+ * Callers should be aware that if a user explicitly specifies an address of 0,
+ * this function will incorrectly return false.
+ *
+ * Return: true if any byte in the address portion is non-zero, false otherwise
+ */
 static inline bool nid_addr_is_set(const struct lnet_nid *nid)
 {
 	__u8 *addr = (__u8 *)(&nid->nid_addr[0]);
@@ -182,6 +209,8 @@ struct lnet_counters_health {
 	__u32	lch_remote_error_count;
 	__u32	lch_remote_timeout_count;
 	__u32	lch_network_timeout_count;
+	__u32	lch_failed_resends;
+	__u32	lch_successful_resends;
 };
 
 struct lnet_counters {
@@ -280,8 +309,8 @@ lnet_pid_to_pid4(struct lnet_processid *pid)
  * automatically (LNET_UNLINK) or not (LNET_RETAIN).
  */
 enum lnet_unlink {
-	LNET_RETAIN = 0,
-	LNET_UNLINK
+	LNET_RETAIN	= 0,
+	LNET_UNLINK	= 1,
 };
 
 /**
@@ -293,11 +322,11 @@ enum lnet_unlink {
  */
 enum lnet_ins_pos {
 	/** insert ME before current position or head of the list */
-	LNET_INS_BEFORE,
+	LNET_INS_BEFORE	= 0,
 	/** insert ME after current position or tail of the list */
-	LNET_INS_AFTER,
+	LNET_INS_AFTER	= 1,
 	/** attach ME at tail of local CPU partition ME list */
-	LNET_INS_LOCAL
+	LNET_INS_LOCAL	= 2,
 };
 
 /** @} lnet_me */
@@ -343,8 +372,8 @@ struct lnet_md {
 	 * one must start on page boundary, and all but the last must end on
 	 * page boundary.
 	 */
-	void		*start;
-	unsigned int	 length;
+	void		*umd_start;
+	unsigned int	 umd_length;
 	/**
 	 * Specifies the maximum number of operations that can be performed
 	 * on the memory descriptor. An operation is any action that could
@@ -355,7 +384,7 @@ struct lnet_md {
 	 * there is no bound on the number of operations that may be applied
 	 * to a MD.
 	 */
-	int		 threshold;
+	int		 umd_threshold;
 	/**
 	 * Specifies the largest incoming request that the memory descriptor
 	 * should respond to. When the unused portion of a MD (length -
@@ -363,7 +392,8 @@ struct lnet_md {
 	 * does not respond to further operations. This value is only used
 	 * if the LNET_MD_MAX_SIZE option is set.
 	 */
-	int		 max_size;
+	int		 umd_max_size;
+
 	/**
 	 * Specifies the behavior of the memory descriptor. A bitwise OR
 	 * of the following values can be used:
@@ -404,20 +434,20 @@ struct lnet_md {
 	 *   region (i.e. sum of all fragment lengths) must not be less than
 	 *   \a max_size.
 	 */
-	unsigned int	 options;
+	unsigned int	 umd_options;
 	/**
 	 * A user-specified value that is associated with the memory
 	 * descriptor. The value does not need to be a pointer, but must fit
 	 * in the space used by a pointer. This value is recorded in events
 	 * associated with operations on this MD.
 	 */
-	void		*user_ptr;
+	void		*umd_user_ptr;
 	/**
 	 * The event handler used to log the operations performed on
 	 * the memory region. If this argument is NULL operations
 	 * performed on this memory descriptor are not logged.
 	 */
-	lnet_handler_t	handler;
+	lnet_handler_t	umd_handler;
 	/**
 	 * The bulk MD handle which was registered to describe the buffers
 	 * either to be used to transfer data to the peer or receive data
@@ -426,7 +456,7 @@ struct lnet_md {
 	 * nearest local network interface. This value is only used
 	 * if the LNET_MD_BULK_HANDLE option is set.
 	 */
-	struct lnet_handle_md bulk_handle;
+	struct lnet_handle_md umd_bulk_handle;
 };
 
 /* Max Transfer Unit (minimum supported everywhere).
@@ -439,35 +469,25 @@ struct lnet_md {
 /**
  * Options for the MD structure. See struct lnet_md::options.
  */
-#define LNET_MD_OP_PUT		     (1 << 0)
-/** See struct lnet_md::options. */
-#define LNET_MD_OP_GET		     (1 << 1)
-/** See struct lnet_md::options. */
-#define LNET_MD_MANAGE_REMOTE	     (1 << 2)
-/* unused			     (1 << 3) */
-/** See struct lnet_md::options. */
-#define LNET_MD_TRUNCATE	     (1 << 4)
-/** See struct lnet_md::options. */
-#define LNET_MD_ACK_DISABLE	     (1 << 5)
-/** See struct lnet_md::options. */
-/* deprecated #define LNET_MD_IOVEC  (1 << 6) */
-/** See struct lnet_md::options. */
-#define LNET_MD_MAX_SIZE	     (1 << 7)
-/** See struct lnet_md::options. */
-#define LNET_MD_KIOV		     (1 << 8)
-/** See struct lnet_md::options. */
-#define LNET_MD_BULK_HANDLE	     (1 << 9)
-/** See struct lnet_md::options. */
-#define LNET_MD_TRACK_RESPONSE	     (1 << 10)
-/** See struct lnet_md::options. */
-#define LNET_MD_NO_TRACK_RESPONSE    (1 << 11)
-/** See struct lnet_md::options. */
-#define LNET_MD_GNILND               (1 << 12)
-/** Special page mapping handling */
-#define LNET_MD_GPU_ADDR	     (1 << 13)
+enum lnet_md_options {
+	LNET_MD_OP_PUT		= 0x0001,
+	LNET_MD_OP_GET		= 0x0002,
+	LNET_MD_MANAGE_REMOTE	= 0x0004,
+	/* unused		= 0x0008, */
+	LNET_MD_TRUNCATE	= 0x0010,
+	LNET_MD_ACK_DISABLE	= 0x0020,
+	/* LNET_MD_IOVEC	= 0x0040 */
+	LNET_MD_MAX_SIZE	= 0x0080,
+	LNET_MD_KIOV		= 0x0100,
+	LNET_MD_BULK_HANDLE	= 0x0200,
+	LNET_MD_TRACK_RESPONSE	= 0x0400,
+	LNET_MD_NO_TRACK_RESPONSE = 0x0800,
+	LNET_MD_GNILND		= 0x1000,
+	LNET_MD_GPU_ADDR	= 0x2000,
+};
 
 /** Infinite threshold on MD operations. See struct lnet_md::threshold */
-#define LNET_MD_THRESH_INF	 (-1)
+#define LNET_MD_THRESH_INF	(-1)
 
 /** @} lnet_md */
 
@@ -485,14 +505,14 @@ enum lnet_event_kind {
 	 * underlying layers will not alter the memory (on behalf of this
 	 * operation) once this event has been logged.
 	 */
-	LNET_EVENT_PUT,
+	LNET_EVENT_PUT		= 2,
 	/**
 	 * A REPLY operation has completed. This event is logged after the
 	 * data (if any) from the REPLY has been written into the MD.
 	 */
-	LNET_EVENT_REPLY,
+	LNET_EVENT_REPLY	= 3,
 	/** An acknowledgment has been received. */
-	LNET_EVENT_ACK,
+	LNET_EVENT_ACK		= 4,
 	/**
 	 * An outgoing send (PUT or GET) operation has completed. This event
 	 * is logged after the entire buffer has been sent and it is safe for
@@ -506,13 +526,13 @@ enum lnet_event_kind {
 	 *   LNET_EVENT_REPLY event. The same holds for LNET_EVENT_SEND and
 	 *   LNET_EVENT_ACK events in an outgoing PUT operation.
 	 */
-	LNET_EVENT_SEND,
+	LNET_EVENT_SEND		= 5,
 	/**
 	 * A MD has been unlinked. Note that LNetMDUnlink() does not
 	 * necessarily trigger an LNET_EVENT_UNLINK event.
 	 * \see LNetMDUnlink
 	 */
-	LNET_EVENT_UNLINK,
+	LNET_EVENT_UNLINK	= 6,
 };
 
 #define LNET_SEQ_GT(a, b)	(((signed long)((a) - (b))) > 0)

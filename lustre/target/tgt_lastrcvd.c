@@ -25,6 +25,42 @@
 /** version recovery epoch */
 #define LR_EPOCH_BITS	32
 
+/**
+ * Update maximum client count tracking
+ *
+ * Update the maximum number of clients ever connected to this target
+ * if it is larger than previously seen.
+ *
+ * \param[in] lut	target to update
+ */
+static void tgt_update_max_clients(struct lu_target *lut)
+{
+	unsigned int current_clients;
+	unsigned int max_clients;
+	int rc;
+
+	if (unlikely(!lut || !lut->lut_obd))
+		return;
+
+	current_clients = atomic_read(&lut->lut_num_clients);
+	max_clients = atomic_read(&lut->lut_max_clients);
+
+	if (current_clients > max_clients) {
+		rc = class_expected_clients_update(current_clients);
+		if (rc != 0) {
+			CDEBUG(D_INFO,
+			       "%s: error setting expected_clients=%u: rc = %d\n",
+			       lut->lut_obd->obd_name, current_clients, rc);
+			return;
+		}
+
+		atomic_set(&lut->lut_max_clients, current_clients);
+		lut->lut_lsd.lsd_max_clients = current_clients;
+		CDEBUG(D_INFO, "%s: new maximum client count %u\n",
+		       lut->lut_obd->obd_name, current_clients);
+	}
+}
+
 /* Allocate a bitmap for a chunk of reply data slots */
 static int tgt_bitmap_chunk_alloc(struct lu_target *lut, int chunk)
 {
@@ -448,11 +484,9 @@ void tgt_client_free(struct obd_export *exp)
 
 	/* Clear bit when lcd is freed */
 	LASSERT(lut && lut->lut_client_bitmap);
-	if (!test_and_clear_bit(ted->ted_lr_idx, lut->lut_client_bitmap)) {
-		CERROR("%s: client %u bit already clear in bitmap\n",
-		       exp->exp_obd->obd_name, ted->ted_lr_idx);
-		LBUG();
-	}
+	LASSERTF(test_and_clear_bit(ted->ted_lr_idx, lut->lut_client_bitmap),
+		 "%s: client %u bit already clear in bitmap\n",
+		 exp->exp_obd->obd_name, ted->ted_lr_idx);
 }
 EXPORT_SYMBOL(tgt_client_free);
 
@@ -686,9 +720,9 @@ static int tgt_server_data_write(const struct lu_env *env,
 int tgt_server_data_update(const struct lu_env *env, struct lu_target *tgt,
 			   int sync)
 {
-	struct tgt_thread_info	*tti = tgt_th_info(env);
-	struct thandle		*th;
-	int			 rc = 0;
+	struct tgt_thread_info *tti = tgt_th_info(env);
+	struct thandle *th;
+	int rc = 0;
 
 	ENTRY;
 
@@ -701,6 +735,8 @@ int tgt_server_data_update(const struct lu_env *env, struct lu_target *tgt,
 	spin_lock(&tgt->lut_translock);
 	tgt->lut_lsd.lsd_last_transno = tgt->lut_last_transno;
 	spin_unlock(&tgt->lut_translock);
+
+	tgt_update_max_clients(tgt);
 
 	if (tgt->lut_bottom->dd_rdonly)
 		RETURN(0);
@@ -1104,8 +1140,10 @@ repeat:
 		RETURN(rc);
 	}
 
-	if (tgt_is_multimodrpcs_client(exp))
+	if (tgt_is_multimodrpcs_client(exp)) {
 		atomic_inc(&tgt->lut_num_clients);
+		tgt_update_max_clients(tgt);
+	}
 
 	RETURN(0);
 }
@@ -1132,11 +1170,9 @@ int tgt_client_add(const struct lu_env *env,  struct obd_export *exp, int idx)
 	    exp_connect_flags(exp) & OBD_CONNECT_LIGHTWEIGHT)
 		RETURN(0);
 
-	if (test_and_set_bit(idx, tgt->lut_client_bitmap)) {
-		CERROR("%s: client %d: bit already set in bitmap!!\n",
-		       tgt->lut_obd->obd_name,  idx);
-		LBUG();
-	}
+	LASSERTF(!test_and_set_bit(idx, tgt->lut_client_bitmap),
+		 "%s: client %d: bit already set in bitmap!!\n",
+		 tgt->lut_obd->obd_name, idx);
 
 	CDEBUG(D_INFO, "%s: client at idx %d with UUID '%s' added, "
 	       "generation %d\n",
@@ -1191,11 +1227,9 @@ int tgt_client_del(const struct lu_env *env, struct obd_export *exp)
 
 	/* Clear the bit _after_ zeroing out the client so we don't
 	   race with filter_client_add and zero out new clients.*/
-	if (!test_bit(ted->ted_lr_idx, tgt->lut_client_bitmap)) {
-		CERROR("%s: client %u: bit already clear in bitmap!!\n",
-		       tgt->lut_obd->obd_name, ted->ted_lr_idx);
-		LBUG();
-	}
+	LASSERTF(test_bit(ted->ted_lr_idx, tgt->lut_client_bitmap),
+		 "%s: client %u: bit already clear in bitmap!!\n",
+		 tgt->lut_obd->obd_name, ted->ted_lr_idx);
 
 	/* Do not erase record for recoverable client. */
 	if (exp->exp_flags & OBD_OPT_FAILOVER)
@@ -1749,6 +1783,7 @@ static int tgt_clients_data_init(const struct lu_env *env,
 
 		if (tgt_is_multimodrpcs_record(tgt, lcd)) {
 			atomic_inc(&tgt->lut_num_clients);
+			tgt_update_max_clients(tgt);
 
 			/* compute the highest valid client generation */
 			generation = max(generation, lcd->lcd_generation);
@@ -1765,12 +1800,6 @@ static int tgt_clients_data_init(const struct lu_env *env,
 		}
 
 		class_export_put(exp);
-
-		rc = rev_import_init(exp);
-		if (rc != 0) {
-			class_unlink_export(exp);
-			GOTO(err_out, rc);
-		}
 
 		/* Need to check last_rcvd even for duplicated exports. */
 		CDEBUG(D_OTHER, "client at idx %d has last_transno = %llu\n",
@@ -1868,6 +1897,7 @@ int tgt_server_data_init(const struct lu_env *env, struct lu_target *tgt)
 		lsd->lsd_client_size = LR_CLIENT_SIZE;
 		lsd->lsd_subdir_count = OBJ_SUBDIR_COUNT;
 		lsd->lsd_osd_index = index;
+		lsd->lsd_max_clients = 0;
 		lsd->lsd_feature_rocompat = tgt_scd[type].rocinit;
 		lsd->lsd_feature_incompat = tgt_scd[type].incinit;
 	} else {
@@ -1962,13 +1992,23 @@ int tgt_server_data_init(const struct lu_env *env, struct lu_target *tgt)
 		lsd->lsd_client_size);
 	CDEBUG(D_INODE, "========END DUMPING LAST_RCVD========\n");
 
+	/* Initialize maximum client count */
+	if (lsd->lsd_max_clients > LR_MAX_CLIENTS) {
+		CWARN("%s: stored max_clients %u > max allowed %lu, reset to 0\n",
+		      tgt_name(tgt), lsd->lsd_max_clients, LR_MAX_CLIENTS);
+		lsd->lsd_max_clients = 0;
+	}
+	atomic_set(&tgt->lut_max_clients, (int)lsd->lsd_max_clients);
+	CDEBUG(D_INFO, "%s: restored maximum client count: %u\n",
+	       tgt_name(tgt), lsd->lsd_max_clients);
+
 	if (lsd->lsd_server_size == 0 || lsd->lsd_client_start == 0 ||
 	    lsd->lsd_client_size == 0) {
 		CERROR("%s: bad last_rcvd contents!\n", tgt_name(tgt));
 		RETURN(-EINVAL);
 	}
 
-	if (!tgt->lut_obd->obd_replayable)
+	if (!test_bit(OBDF_REPLAYABLE, tgt->lut_obd->obd_flags))
 		CWARN("%s: recovery support OFF\n", tgt_name(tgt));
 
 	rc = tgt_clients_data_init(env, tgt, last_rcvd_size);
@@ -2018,6 +2058,8 @@ int tgt_txn_start_cb(const struct lu_env *env, struct thandle *th,
 	 * request processing but some local operation */
 	if (env->le_ses == NULL)
 		return 0;
+	if (!(env->le_ses->lc_tags & LCT_CL_INIT))
+		return -EFAULT;
 
 	LASSERT(tgt->lut_last_rcvd);
 	tsi = tgt_ses_info(env);

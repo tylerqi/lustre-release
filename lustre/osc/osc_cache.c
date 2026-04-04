@@ -28,9 +28,9 @@ static int extent_debug; /* set it to be true for more debug */
 static void osc_update_pending(struct osc_object *obj, int cmd, int delta);
 static int osc_extent_wait(const struct lu_env *env, struct osc_extent *ext,
 			   enum osc_extent_state state);
-static void osc_ap_completion(const struct lu_env *env, struct client_obd *cli,
-			      struct osc_object *osc,
-			      struct osc_async_page *oap, int sent, int rc);
+static void osc_completion(const struct lu_env *env, struct osc_object *osc,
+			   struct osc_async_page *oap, enum cl_req_type crt,
+			   int rc);
 static int osc_make_ready(const struct lu_env *env, struct osc_async_page *oap,
 			  int cmd);
 static int osc_refresh_count(const struct lu_env *env, struct osc_object *osc,
@@ -40,17 +40,15 @@ static int osc_io_unplug_async(const struct lu_env *env,
 static void osc_free_grant(struct client_obd *cli, unsigned int nr_pages,
 			   unsigned int lost_grant, unsigned int dirty_grant);
 
-static void osc_extent_tree_dump0(int mask, struct osc_object *obj,
-				  const char *func, int line);
+static void __osc_extent_tree_dump(int mask, struct osc_object *obj,
+				   const char *func, int line);
 #define osc_extent_tree_dump(mask, obj) \
-	osc_extent_tree_dump0(mask, obj, __func__, __LINE__)
+	__osc_extent_tree_dump(mask, obj, __func__, __LINE__)
 
 static void osc_unreserve_grant(struct client_obd *cli, unsigned int reserved,
 				unsigned int unused);
 
-/** \addtogroup osc
- *  @{
- */
+/* OSC */
 
 /* ------------------ osc extent ------------------ */
 static inline char *ext_flags(struct osc_extent *ext, char *flags)
@@ -156,8 +154,8 @@ static inline struct osc_extent *first_extent(struct osc_object *obj)
 }
 
 /* object must be locked by caller. */
-static int osc_extent_sanity_check0(struct osc_extent *ext,
-				    const char *func, const int line)
+static int __osc_extent_sanity_check(struct osc_extent *ext,
+				     const char *func, const int line)
 {
 	struct osc_object *obj = ext->oe_obj;
 	struct osc_async_page *oap;
@@ -196,8 +194,7 @@ static int osc_extent_sanity_check0(struct osc_extent *ext,
 			GOTO(out, rc = 65);
 		fallthrough;
 	default:
-		if (atomic_read(&ext->oe_users) > 0)
-			GOTO(out, rc = 70);
+		break;
 	}
 
 	if (ext->oe_max_end < ext->oe_end || ext->oe_end < ext->oe_start)
@@ -250,14 +247,14 @@ out:
 }
 
 #define sanity_check_nolock(ext) \
-	osc_extent_sanity_check0(ext, __func__, __LINE__)
+	__osc_extent_sanity_check(ext, __func__, __LINE__)
 
-#define sanity_check(ext) ({                                                   \
-	int __res;                                                             \
-	osc_object_lock((ext)->oe_obj);                                        \
-	__res = sanity_check_nolock(ext);                                      \
-	osc_object_unlock((ext)->oe_obj);                                      \
-	__res;                                                                 \
+#define sanity_check(ext) ({						\
+	int __res;							\
+	osc_object_lock((ext)->oe_obj);					\
+	__res = sanity_check_nolock(ext);				\
+	osc_object_unlock((ext)->oe_obj);				\
+	__res;								\
 })
 
 static inline bool
@@ -267,7 +264,15 @@ overlapped(const struct osc_extent *ex1, const struct osc_extent *ex2)
 }
 
 /**
+ * osc_extent_is_overlapped() - Report if no overlapped extent in the tree.
+ * @obj: Pointer to struct osc_object (all extents)
+ * @ext: osc_extent that is checked for overlap
+ *
  * sanity check - to make sure there is no overlapped extent in the tree.
+ *
+ * Return:
+ * * %0 no overlap found
+ * * %1 overlap found
  */
 static int osc_extent_is_overlapped(struct osc_object *obj,
 				    struct osc_extent *ext)
@@ -369,9 +374,11 @@ static void osc_extent_put(const struct lu_env *env, struct osc_extent *ext)
 }
 
 /**
- * osc_extent_put_trust() is a special version of osc_extent_put() when
- * it's known that the caller is not the last user. This is to address the
- * problem of lacking of lu_env ;-).
+ * osc_extent_put_trust() - Special version of osc_extent_put()
+ * @ext: osc_extent that is checked to be not the last
+ *
+ * Is a special version of osc_extent_put() when it's known that the caller is
+ * not the last user. This is to address the problem of lacking of lu_env ;-).
  */
 static void osc_extent_put_trust(struct osc_extent *ext)
 {
@@ -381,6 +388,11 @@ static void osc_extent_put_trust(struct osc_extent *ext)
 }
 
 /**
+ * osc_extent_search() - Return extent having pgoff @index, or return the
+ *                       greatest previous extent in the tree.
+ * @obj: Pointer to struct osc_object (all extents)
+ * @index: Index to return
+ *
  * Return the extent which includes pgoff @index, or return the greatest
  * previous extent in the tree.
  */
@@ -494,8 +506,17 @@ static void osc_extent_remove(struct osc_extent *ext)
 }
 
 /**
+ * osc_extent_merge() - merge extents to get better performance.
+ * @env: Lustre environment
+ * @cur: Pointer to osc_extent (extent which @victim is being merged too)
+ * @victim: Pointer to osc_extent (extent which is being merged to @cur)
+ *
  * This function is used to merge extents to get better performance. It checks
  * if @cur and @victim are contiguous at block level.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_extent_merge(const struct lu_env *env, struct osc_extent *cur,
 			    struct osc_extent *victim)
@@ -562,12 +583,19 @@ static int osc_extent_merge(const struct lu_env *env, struct osc_extent *cur,
 }
 
 /**
- * Drop user count of osc_extent, and unplug IO asynchronously.
+ * osc_extent_release() - Drop user count of osc_extent, and unplug IO
+ *                        asyncronously.
+ * @env: Lustre environment
+ * @ext: Pointer to osc_extent (extent which is being released)
+ * @prio: priority of IO
  */
-void osc_extent_release(const struct lu_env *env, struct osc_extent *ext)
+void osc_extent_release(const struct lu_env *env, struct osc_extent *ext,
+			enum cl_io_priority prio)
 {
 	struct osc_object *obj = ext->oe_obj;
 	struct client_obd *cli = osc_cli(obj);
+	bool hp = cl_io_high_prio(prio);
+
 	ENTRY;
 
 	LASSERT(atomic_read(&ext->oe_users) > 0);
@@ -575,15 +603,26 @@ void osc_extent_release(const struct lu_env *env, struct osc_extent *ext)
 	LASSERT(ext->oe_grants > 0);
 
 	if (atomic_dec_and_lock(&ext->oe_users, &obj->oo_lock)) {
-		LASSERT(ext->oe_state == OES_ACTIVE);
 		if (ext->oe_trunc_pending) {
-			/* a truncate process is waiting for this extent.
+			/*
+			 * A truncate process is waiting for this extent.
 			 * This may happen due to a race, check
-			 * osc_cache_truncate_start(). */
+			 * osc_cache_truncate_start().
+			 */
+			if (ext->oe_state != OES_ACTIVE) {
+				int rc;
+
+				osc_object_unlock(obj);
+				rc = osc_extent_wait(env, ext, OES_INV);
+				if (rc < 0)
+					OSC_EXTENT_DUMP(D_ERROR, ext,
+							"error: %d.\n", rc);
+				osc_object_lock(obj);
+			}
 			osc_extent_state_set(ext, OES_TRUNC);
 			ext->oe_trunc_pending = 0;
 			osc_object_unlock(obj);
-		} else {
+		} else if (ext->oe_state == OES_ACTIVE) {
 			int grant = 0;
 
 			osc_extent_state_set(ext, OES_CACHE);
@@ -595,6 +634,17 @@ void osc_extent_release(const struct lu_env *env, struct osc_extent *ext)
 				grant += cli->cl_grant_extent_tax;
 			if (osc_extent_merge(env, ext, next_extent(ext)) == 0)
 				grant += cli->cl_grant_extent_tax;
+
+			if (!hp && !ext->oe_rw && ext->oe_dlmlock) {
+				lock_res_and_lock(ext->oe_dlmlock);
+				hp = ldlm_is_cbpending(ext->oe_dlmlock);
+				unlock_res_and_lock(ext->oe_dlmlock);
+			}
+
+
+			/* HP extent should be written ASAP. */
+			if (hp)
+				ext->oe_hp = 1;
 
 			if (ext->oe_hp)
 				list_move_tail(&ext->oe_link,
@@ -609,9 +659,14 @@ void osc_extent_release(const struct lu_env *env, struct osc_extent *ext)
 			osc_object_unlock(obj);
 			if (grant > 0)
 				osc_unreserve_grant(cli, 0, grant);
+		} else {
+			osc_object_unlock(obj);
 		}
 
-		osc_io_unplug_async(env, cli, obj);
+		if (unlikely(cl_io_high_prio(prio)))
+			osc_io_unplug(env, cli, obj);
+		else
+			osc_io_unplug_async(env, cli, obj);
 	}
 	osc_extent_put(env, ext);
 
@@ -619,8 +674,16 @@ void osc_extent_release(const struct lu_env *env, struct osc_extent *ext)
 }
 
 /**
- * Find or create an extent which includes @index, core function to manage
- * extent tree.
+ * osc_extent_find() - Find or create an extent which includes @index, core
+ *                     function to manage extent tree.
+ * @env: Lustre environment
+ * @obj: Pointer to struct osc_object (all extents)
+ * @index: Page index
+ * @grants: Used when creating extent
+ *
+ * Return:
+ * * Valid osc_extent poiner on success
+ * * %negative on failure
  */
 static struct osc_extent *osc_extent_find(const struct lu_env *env,
 					  struct osc_object *obj, pgoff_t index,
@@ -661,7 +724,7 @@ static struct osc_extent *osc_extent_find(const struct lu_env *env,
 	chunk      = index >> ppc_bits;
 
 	/* align end to RPC edge. */
-	max_pages = cli->cl_max_pages_per_rpc;
+	max_pages = cli->cl_max_pages_per_rpc_write;
 	if ((max_pages & ~chunk_mask) != 0) {
 		CERROR("max_pages: %#x chunkbits: %u chunk_mask: %#lx\n",
 		       max_pages, cli->cl_chunkbits, chunk_mask);
@@ -727,7 +790,8 @@ restart:
 				  ext->oe_end >= cur->oe_end),
 				 ext, EXTSTR"\n", EXTPARA(cur));
 
-			if (ext->oe_state > OES_CACHE || ext->oe_fsync_wait) {
+			if (ext->oe_state > OES_CACHE || ext->oe_hp ||
+			    ext->oe_fsync_wait) {
 				/* for simplicity, we wait for this extent to
 				 * finish before going forward. */
 				conflict = osc_extent_get(ext);
@@ -739,7 +803,8 @@ restart:
 		}
 
 		/* non-overlapped extent */
-		if (ext->oe_state != OES_CACHE || ext->oe_fsync_wait)
+		if (ext->oe_state != OES_CACHE || ext->oe_hp ||
+		    ext->oe_fsync_wait)
 			/* we can't do anything for a non OES_CACHE extent, or
 			 * if there is someone waiting for this extent to be
 			 * flushed, try next one. */
@@ -805,7 +870,13 @@ out:
 }
 
 /**
- * Called when IO is finished to an extent.
+ * osc_extent_finish() - Called when IO is finished to an extent.
+ * @env: Lustre environment
+ * @ext: Pointer to osc_extent (extent which is IO finish is called)
+ * @sent: %True if RPC was dispatched
+ * @rc: return value of writeback stored under @ext [out]
+ *
+ * Return %0 always
  */
 int osc_extent_finish(const struct lu_env *env, struct osc_extent *ext,
 		      int sent, int rc)
@@ -819,7 +890,13 @@ int osc_extent_finish(const struct lu_env *env, struct osc_extent *ext,
 	int blocksize = cli->cl_import->imp_obd->obd_osfs.os_bsize ? : 4096;
 	loff_t last_off = 0;
 	int last_count = -1;
+	enum cl_req_type crt;
 	ENTRY;
+
+	if (ext->oe_rw == 0)
+		crt = CRT_WRITE;
+	else
+		crt = CRT_READ;
 
 	OSC_EXTENT_DUMP(D_CACHE, ext, "extent finished.\n");
 
@@ -840,7 +917,7 @@ int osc_extent_finish(const struct lu_env *env, struct osc_extent *ext,
 		}
 
 		--ext->oe_nr_pages;
-		osc_ap_completion(env, cli, osc, oap, sent, rc);
+		osc_completion(env, osc, oap, crt, rc);
 	}
 	EASSERT(ext->oe_nr_pages == 0, ext);
 
@@ -872,7 +949,14 @@ int osc_extent_finish(const struct lu_env *env, struct osc_extent *ext,
 }
 
 /**
- * Wait for the extent's state to become @state.
+ * osc_extent_wait() - Wait for the extent's state to become @state.
+ * @env: Lustre environment
+ * @ext: Pointer to osc_extent (extent which is being waited for state change)
+ * @state: Value of OSC state
+ *
+ * Return:
+ * * %0 on success
+ * * %1 on failure
  */
 static int osc_extent_wait(const struct lu_env *env, struct osc_extent *ext,
 			   enum osc_extent_state state)
@@ -896,7 +980,7 @@ static int osc_extent_wait(const struct lu_env *env, struct osc_extent *ext,
 	}
 	osc_object_unlock(obj);
 	if (rc == 1)
-		osc_extent_release(env, ext);
+		osc_extent_release(env, ext, IO_PRIO_NORMAL);
 
 	/* wait for the extent until its state becomes @state */
 	rc = wait_event_idle_timeout(ext->oe_waitq,
@@ -918,8 +1002,17 @@ static int osc_extent_wait(const struct lu_env *env, struct osc_extent *ext,
 }
 
 /**
+ * osc_extent_truncate() - trunacate an extent
+ * @ext: Pointer to osc_extent (extent which is being truncated)
+ * @trunc_index: truncate extent beyond @trunc_index
+ * @partial: If %False truncate is at page boundry. Else it is partial
+ *
  * Discard pages with index greater than @size. If @ext is overlapped with
  * @size, then partial truncate happens.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_extent_truncate(struct osc_extent *ext, pgoff_t trunc_index,
 				bool partial)
@@ -952,11 +1045,11 @@ static int osc_extent_truncate(struct osc_extent *ext, pgoff_t trunc_index,
 	if (IS_ERR(env))
 		RETURN(PTR_ERR(env));
 
-	io  = osc_env_thread_io(env);
+	io  = osc_env_new_io(env);
 	io->ci_obj = cl_object_top(osc2cl(obj));
 	io->ci_ignore_layout = 1;
 	fbatch = &osc_env_info(env)->oti_fbatch;
-	ll_folio_batch_init(fbatch, 0);
+	ll_folio_batch_init(fbatch);
 	rc = cl_io_init(env, io, CIT_MISC, io->ci_obj);
 	if (rc < 0)
 		GOTO(out, rc);
@@ -1044,8 +1137,16 @@ out:
 }
 
 /**
+ * osc_extent_make_ready() - Make the extent prepared for transfer.
+ * @env: Lustre environment
+ * @ext: Pointer to osc_extent (extent which is being ready for transfer)
+ *
  * This function is used to make the extent prepared for transfer.
  * A race with flusing page - ll_writepage() has to be handled cautiously.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_extent_make_ready(const struct lu_env *env,
 				 struct osc_extent *ext)
@@ -1120,9 +1221,18 @@ static int osc_extent_make_ready(const struct lu_env *env,
 }
 
 /**
+ * osc_extent_expand() - Simpilified version of osc_extent_find()
+ * @ext: Extent to expand
+ * @index: Page index
+ * @grants: Used when creating extent
+ *
  * Quick and simple version of osc_extent_find(). This function is frequently
  * called to expand the extent for the same IO. To expand the extent, the
  * page index must be in the same or next chunk of ext->oe_end.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_extent_expand(struct osc_extent *ext, pgoff_t index,
 			     unsigned int *grants)
@@ -1140,6 +1250,9 @@ static int osc_extent_expand(struct osc_extent *ext, pgoff_t index,
 
 	LASSERT(ext->oe_max_end >= index && ext->oe_start <= index);
 	osc_object_lock(obj);
+	if (ext->oe_state != OES_ACTIVE)
+		GOTO(out, rc = -ESTALE);
+
 	LASSERT(sanity_check_nolock(ext) == 0);
 	end_chunk = ext->oe_end >> ppc_bits;
 	if (chunk > end_chunk + 1)
@@ -1176,8 +1289,8 @@ out:
 	RETURN(rc);
 }
 
-static void osc_extent_tree_dump0(int mask, struct osc_object *obj,
-				  const char *func, int line)
+static void __osc_extent_tree_dump(int mask, struct osc_object *obj,
+				   const char *func, int line)
 {
 	struct osc_extent *ext;
 	int cnt;
@@ -1186,7 +1299,7 @@ static void osc_extent_tree_dump0(int mask, struct osc_object *obj,
 		return;
 
 	CDEBUG(mask, "Dump object %p extents at %s:%d, mppr: %u.\n",
-	       obj, func, line, osc_cli(obj)->cl_max_pages_per_rpc);
+	       obj, func, line, osc_cli(obj)->cl_max_pages_per_rpc_write);
 
 	/* osc_object_lock(obj); */
 	cnt = 1;
@@ -1272,29 +1385,34 @@ static int osc_refresh_count(const struct lu_env *env, struct osc_object *osc,
 		return PAGE_SIZE;
 }
 
-static int osc_completion(const struct lu_env *env, struct osc_object *osc,
-			  struct osc_async_page *oap, int cmd, int rc)
+/* this must be called holding the loi list lock to give coverage to exit_cache,
+ * async_flag maintenance
+ */
+static void osc_completion(const struct lu_env *env, struct osc_object *osc,
+			   struct osc_async_page *oap, enum cl_req_type crt,
+			   int rc)
 {
 	struct osc_page   *opg  = oap2osc_page(oap);
 	struct cl_page    *page = oap2cl_page(oap);
-	enum cl_req_type   crt;
 	int srvlock;
 	int cptype = page->cp_type;
 
 	ENTRY;
 
-	cmd &= ~OBD_BRW_NOQUOTA;
 	if (cptype != CPT_TRANSIENT) {
-		LASSERTF(equi(page->cp_state == CPS_PAGEIN,  cmd == OBD_BRW_READ),
-			 "cp_state:%u, cmd:%d\n", page->cp_state, cmd);
-		LASSERTF(equi(page->cp_state == CPS_PAGEOUT, cmd == OBD_BRW_WRITE),
-			"cp_state:%u, cmd:%d\n", page->cp_state, cmd);
-		LASSERT(opg->ops_transfer_pinned);
-	}
+		/* As the transfer for this page is done, clear the flags */
+		oap->oap_async_flags = 0;
 
-	crt = cmd == OBD_BRW_READ ? CRT_READ : CRT_WRITE;
-	/* Clear opg->ops_transfer_pinned before VM lock is released. */
-	opg->ops_transfer_pinned = 0;
+		LASSERTF(equi(page->cp_state == CPS_PAGEIN,
+			      crt == CRT_READ),
+			 "cp_state:%u, crt:%d\n", page->cp_state, crt);
+		LASSERTF(equi(page->cp_state == CPS_PAGEOUT,
+			      crt == CRT_WRITE),
+			"cp_state:%u, crt:%d\n", page->cp_state, crt);
+		LASSERT(opg->ops_transfer_pinned);
+		/* Clear opg->ops_transfer_pinned before VM lock is released.*/
+		opg->ops_transfer_pinned = 0;
+	}
 
 	srvlock = oap->oap_brw_flags & OBD_BRW_SRVLOCK;
 
@@ -1316,14 +1434,15 @@ static int osc_completion(const struct lu_env *env, struct osc_object *osc,
 	 * reference counter protects page from concurrent reclaim.
 	 */
 
-	/* for transient pages, the last reference is destroyed by the
-	 * cl_page_completion process, so do not referencce the page after this
+	/* for transient pages, the last reference can be destroyed by
+	 * cl_page_complete, so do not reference the page after this
 	 */
-	cl_page_completion(env, page, crt, rc);
+	cl_page_complete(env, page, crt, rc);
 	if (cptype != CPT_TRANSIENT)
 		cl_page_put(env, page);
 
-	RETURN(0);
+	EXIT;
+	return;
 }
 
 #define OSC_DUMP_GRANT(mask, cli, fmt, args...) do {			\
@@ -1347,12 +1466,11 @@ static int osc_completion(const struct lu_env *env, struct osc_object *osc,
 static void osc_consume_write_grant(struct client_obd *cli,
 				    struct brw_page *pga)
 {
-	assert_spin_locked(&cli->cl_loi_list_lock);
 	LASSERT(!(pga->bp_flag & OBD_BRW_FROM_GRANT));
 	cli->cl_dirty_pages++;
 	pga->bp_flag |= OBD_BRW_FROM_GRANT;
 	CDEBUG(D_CACHE, "using %lu grant credits for brw %p page %p\n",
-	       PAGE_SIZE, pga, pga->bp_page);
+	       PAGE_SIZE, pga, pga->bp_folio);
 }
 
 /* the companion to osc_consume_write_grant, called when a brw has completed.
@@ -1362,7 +1480,6 @@ static void osc_release_write_grant(struct client_obd *cli,
 {
 	ENTRY;
 
-	assert_spin_locked(&cli->cl_loi_list_lock);
 	if (!(pga->bp_flag & OBD_BRW_FROM_GRANT)) {
 		EXIT;
 		return;
@@ -1375,10 +1492,18 @@ static void osc_release_write_grant(struct client_obd *cli,
 }
 
 /**
+ * osc_reserve_grant() - Reserve grants for IO
+ * @cli: client side OBD
+ * @bytes: Grants(memory) to reserve
+ *
  * To avoid sleeping with object lock held, it's good for us allocate enough
  * grants before entering into critical section.
  *
  * client_obd_list_lock held by caller
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_reserve_grant(struct client_obd *cli, unsigned int bytes)
 {
@@ -1428,9 +1553,10 @@ static void osc_unreserve_grant(struct client_obd *cli,
 }
 
 /**
- * Free grant after IO is finished or canceled.
- *
- * @lost_grant is used to remember how many grants we have allocated but not
+ * osc_free_grant() - Free grant after IO is finished or canceled.
+ * @cli: client side OBD
+ * @nr_pages: Number of pages involved in IO
+ * @lost_grant: is used to remember how many grants we have allocated but not
  * used, we should return these grants to OST. There're two cases where grants
  * can be lost:
  * 1. truncate;
@@ -1439,6 +1565,7 @@ static void osc_unreserve_grant(struct client_obd *cli,
  *    chunks to serve this partial write. OSTs don't actually know the page
  *    size on the client side. so clients have to calculate lost grant by the
  *    blocksize on the OST. See tgt_grant_check() for details.
+ * @dirty_grant: grants for dirty pages
  */
 static void osc_free_grant(struct client_obd *cli, unsigned int nr_pages,
 			   unsigned int lost_grant, unsigned int dirty_grant)
@@ -1467,7 +1594,11 @@ static void osc_free_grant(struct client_obd *cli, unsigned int nr_pages,
 }
 
 /**
- * The companion to osc_enter_cache(), called when @oap is no longer part of
+ * osc_exit_cache() - Companion to osc_enter_cache()
+ * @cli: client side OBD
+ * @oap: Page not part of dirty accounting
+ *
+ * Companion to osc_enter_cache(), called when @oap is no longer part of
  * the dirty accounting due to error.
  */
 static void osc_exit_cache(struct client_obd *cli, struct osc_async_page *oap)
@@ -1478,6 +1609,11 @@ static void osc_exit_cache(struct client_obd *cli, struct osc_async_page *oap)
 }
 
 /**
+ * osc_enter_cache_try() - Try & check if @bytes is availabe for @oap caching
+ * @cli: client side OBD
+ * @oap: Page for caching
+ * @bytes: Grants in bytes required
+ *
  * Non-blocking version of osc_enter_cache() that consumes grant only when it
  * is available.
  */
@@ -1487,7 +1623,7 @@ static int osc_enter_cache_try(struct client_obd *cli,
 {
 	int rc;
 
-	OSC_DUMP_GRANT(D_CACHE, cli, "need:%d\n", bytes);
+	OSC_DUMP_GRANT(D_CACHE, cli, "need:%d", bytes);
 
 	rc = osc_reserve_grant(cli, bytes);
 	if (rc < 0)
@@ -1507,6 +1643,22 @@ static int osc_enter_cache_try(struct client_obd *cli,
 out:
 	return rc;
 }
+
+#define __wait_event_idle_exclusive_timeout_cmd(wq_head, condition,	\
+						timeout, cmd1, cmd2)	\
+	___wait_event(wq_head, ___wait_cond_timeout(condition),		\
+		      TASK_IDLE, 1, timeout,				\
+		      cmd1; __ret = schedule_timeout(__ret); cmd2)
+
+#define wait_event_idle_exclusive_timeout_cmd(wq_head, condition, timeout,\
+					      cmd1, cmd2)		\
+({									\
+	long __ret = timeout;						\
+	if (!___wait_cond_timeout(condition))				\
+		__ret = __wait_event_idle_exclusive_timeout_cmd(	\
+			wq_head, condition, timeout, cmd1, cmd2);	\
+	__ret;								\
+})
 
 /* Following two inlines exist to pass code fragments
  * to wait_event_idle_exclusive_timeout_cmd().  Passing
@@ -1529,6 +1681,13 @@ static inline void cli_lock_after_unplug(struct client_obd *cli)
 	spin_lock(&cli->cl_loi_list_lock);
 }
 /**
+ * osc_enter_cache() - reserve dirty page accounting
+ * @env: Lustre environment
+ * @cli: client side OBD
+ * @osc: pointer to the Lustre client object
+ * @oap: Page for caching
+ * @bytes: Grants in bytes required
+ *
  * The main entry to reserve dirty page accounting. Usually the grant reserved
  * in this function will be freed in bulk in osc_free_grant() unless it fails
  * to add osc cache, in that case, it will be freed in osc_exit_cache().
@@ -1559,7 +1718,7 @@ static int osc_enter_cache(const struct lu_env *env, struct client_obd *cli,
 
 	ENTRY;
 
-	OSC_DUMP_GRANT(D_CACHE, cli, "need:%d\n", bytes);
+	OSC_DUMP_GRANT(D_CACHE, cli, "need:%d", bytes);
 
 	spin_lock(&cli->cl_loi_list_lock);
 
@@ -1568,7 +1727,7 @@ static int osc_enter_cache(const struct lu_env *env, struct client_obd *cli,
 	if (CFS_FAIL_CHECK(OBD_FAIL_OSC_NO_GRANT) ||
 	    cli->cl_dirty_max_pages == 0 ||
 	    cli->cl_ar.ar_force_sync || loi->loi_ar.ar_force_sync) {
-		OSC_DUMP_GRANT(D_CACHE, cli, "forced sync i/o\n");
+		OSC_DUMP_GRANT(D_CACHE, cli, "forced sync i/o");
 		GOTO(out, rc = -EDQUOT);
 	}
 
@@ -1591,20 +1750,20 @@ static int osc_enter_cache(const struct lu_env *env, struct client_obd *cli,
 
 	if (entered) {
 		if (remain == timeout)
-			OSC_DUMP_GRANT(D_CACHE, cli, "granted from cache\n");
+			OSC_DUMP_GRANT(D_CACHE, cli, "granted from cache");
 		else
 			OSC_DUMP_GRANT(D_CACHE, cli,
-				       "finally got grant space\n");
+				       "finally got grant space");
 		wake_up(&cli->cl_cache_waiters);
 		rc = 0;
 	} else if (remain == 0) {
 		OSC_DUMP_GRANT(D_CACHE, cli,
-			       "timeout, fall back to sync i/o\n");
+			       "timeout, fall back to sync i/o");
 		osc_extent_tree_dump(D_CACHE, osc);
 		/* fall back to synchronous I/O */
 	} else {
 		OSC_DUMP_GRANT(D_CACHE, cli,
-			       "no grant space, fall back to sync i/o\n");
+			       "no grant space, fall back to sync i/o");
 		wake_up_all(&cli->cl_cache_waiters);
 	}
 	EXIT;
@@ -1617,6 +1776,15 @@ static int osc_max_rpc_in_flight(struct client_obd *cli, struct osc_object *osc)
 {
 	int hprpc = !!list_empty(&osc->oo_hp_exts);
 	return rpcs_in_flight(cli) >= cli->cl_max_rpcs_in_flight + hprpc;
+}
+
+/* Check whether all I/O RPC slots are used out by parallel DIO. */
+static inline bool osc_full_dio_in_flight(struct client_obd *cli)
+{
+	__u32 rpcs = rpcs_in_flight(cli);
+
+	return rpcs >= cli->cl_max_rpcs_in_flight &&
+	       rpcs <= cli->cl_d_in_flight;
 }
 
 /* This maintains the lists of pending pages to read/write for a given object
@@ -1669,6 +1837,10 @@ static int osc_makes_rpc(struct client_obd *cli, struct osc_object *osc,
 			CDEBUG(D_CACHE, "invalid import forcing RPC\n");
 			RETURN(1);
 		}
+		if (!list_empty(&osc->oo_hp_read_exts)) {
+			CDEBUG(D_CACHE, "high prio read request forcing RPC\n");
+			RETURN(1);
+		}
 		/* all read are urgent. */
 		if (!list_empty(&osc->oo_reading_exts))
 			RETURN(1);
@@ -1692,9 +1864,10 @@ static void osc_update_pending(struct osc_object *obj, int cmd, int delta)
 	OSC_IO_DEBUG(obj, "update pending cmd %d delta %d.\n", cmd, delta);
 }
 
-static int osc_makes_hprpc(struct osc_object *obj)
+static bool osc_makes_hprpc(struct osc_object *obj)
 {
-	return !list_empty(&obj->oo_hp_exts);
+	return !list_empty(&obj->oo_hp_exts) ||
+	       !list_empty(&obj->oo_hp_read_exts);
 }
 
 static void on_list(struct list_head *item, struct list_head *list,
@@ -1741,33 +1914,41 @@ static int osc_list_maint(struct client_obd *cli, struct osc_object *osc)
 	return is_ready;
 }
 
-/* this must be called holding the loi list lock to give coverage to exit_cache,
- * async_flag maintenance
- */
-static void osc_ap_completion(const struct lu_env *env, struct client_obd *cli,
-			      struct osc_object *osc,
-			      struct osc_async_page *oap, int sent, int rc)
-{
-	ENTRY;
-
-	/* As the transfer for this page is being done, clear the flags */
-	oap->oap_async_flags = 0;
-
-	rc = osc_completion(env, osc, oap, oap->oap_cmd, rc);
-	if (rc)
-		CERROR("completion on oap %p obj %p returns %d.\n",
-		       oap, osc, rc);
-
-	EXIT;
-}
-
 struct extent_rpc_data {
 	struct list_head	*erd_rpc_list;
 	unsigned int		erd_page_count;
 	unsigned int		erd_max_pages;
 	unsigned int		erd_max_chunks;
 	unsigned int		erd_max_extents;
+	unsigned int		erd_max_io_slots; /* max iov count */
+	unsigned int		erd_io_slots;	  /* iov used */
 };
+
+#define IO_SLOTS(brw)	(((size_t)LNET_MAX_IOV * (brw)) >> LNET_MTU_BITS)
+
+#define write_rpc_def(rpclist, cli)			\
+{							\
+	.erd_rpc_list	= (rpclist),			\
+	.erd_page_count	= 0,				\
+	.erd_max_pages	= (cli)->cl_max_pages_per_rpc_write,	\
+	.erd_max_chunks	= osc_max_write_chunks(cli),	\
+	.erd_max_extents = 256,				\
+	.erd_io_slots	= 0,				\
+	.erd_max_io_slots = IO_SLOTS(\
+		(cli)->cl_import->imp_connect_data.ocd_brw_size), \
+}
+
+#define read_rpc_def(rpclist, cli)			\
+{							\
+	.erd_rpc_list	= (rpclist),			\
+	.erd_page_count	= 0,				\
+	.erd_max_pages	= (cli)->cl_max_pages_per_rpc_read,	\
+	.erd_max_chunks	= UINT_MAX,			\
+	.erd_max_extents = UINT_MAX,			\
+	.erd_io_slots	= 0,				\
+	.erd_max_io_slots = IO_SLOTS(\
+		(cli)->cl_import->imp_connect_data.ocd_brw_size), \
+}
 
 static inline unsigned osc_extent_chunks(const struct osc_extent *ext)
 {
@@ -1806,6 +1987,11 @@ can_merge(const struct osc_extent *ext, const struct osc_extent *in_rpc)
 }
 
 /**
+ * try_to_add_extent_for_io() - Add extent to RPC
+ * @cli: client side OBD
+ * @ext: Pointer to osc_extent (extent which is being added to RPC)
+ * @data: pointer to struct extent_rpc_data
+ *
  * Try to add extent to one RPC. We need to think about the following things:
  * - # of pages must not be over max_pages_per_rpc
  * - extent must be compatible with previous ones
@@ -1816,6 +2002,9 @@ static int try_to_add_extent_for_io(struct client_obd *cli,
 {
 	struct osc_extent *tmp;
 	unsigned int chunk_count;
+#if PAGE_SIZE != PTLRPC_BULK_INTEROP_PAGE_SIZE
+	unsigned int unalign_tax = 0;
+#endif
 	ENTRY;
 
 	EASSERT((ext->oe_state == OES_CACHE || ext->oe_state == OES_LOCK_DONE),
@@ -1836,12 +2025,23 @@ static int try_to_add_extent_for_io(struct client_obd *cli,
 
 	data->erd_max_pages = max(ext->oe_mppr, data->erd_max_pages);
 	EASSERTF(data->erd_page_count != 0 ||
-		ext->oe_nr_pages <= data->erd_max_pages, ext,
-		"The first extent to be fit in a RPC contains %u pages, "
-		"which is over the limit %u.\n", ext->oe_nr_pages,
-		data->erd_max_pages);
+		 ext->oe_nr_pages <= data->erd_max_pages, ext,
+		 "The first extent to be fit in a RPC contains %u pages, "
+		 "which is over the limit %u.\n", ext->oe_nr_pages,
+		 data->erd_max_pages);
 	if (data->erd_page_count + ext->oe_nr_pages > data->erd_max_pages)
 		RETURN(0);
+
+#if PAGE_SIZE != PTLRPC_BULK_INTEROP_PAGE_SIZE
+	/** unaligned extent might needs one more page due split */
+	if (ext->oe_start != 0)
+		unalign_tax = 1;
+
+	/* check for full bulk size when free bulk 64k IOV remain */
+	if (data->erd_io_slots + ext->oe_nr_pages + unalign_tax >
+	    data->erd_max_io_slots)
+		RETURN(0);
+#endif
 
 	list_for_each_entry(tmp, data->erd_rpc_list, oe_link) {
 		EASSERT(tmp->oe_owner == current, tmp);
@@ -1853,12 +2053,19 @@ static int try_to_add_extent_for_io(struct client_obd *cli,
 	data->erd_max_extents--;
 	data->erd_max_chunks -= chunk_count;
 	data->erd_page_count += ext->oe_nr_pages;
+#if PAGE_SIZE != PTLRPC_BULK_INTEROP_PAGE_SIZE
+	data->erd_io_slots += ext->oe_nr_pages + unalign_tax;
+#endif
 	list_move_tail(&ext->oe_link, data->erd_rpc_list);
 	ext->oe_owner = current;
 	RETURN(1);
 }
 
 /**
+ * get_write_extents() - Prepare pages that will be attached to RPC
+ * @obj: Pointer to struct osc_object (all extents)
+ * @rpclist: List of extents that will be write RPC
+ *
  * In order to prevent multiple ptlrpcd from breaking contiguous extents,
  * get_write_extent() takes all appropriate extents in atomic.
  *
@@ -1870,19 +2077,15 @@ static int try_to_add_extent_for_io(struct client_obd *cli,
  * 4. If urgent list is not empty, goto 2;
  * 5. Traverse the extent tree from the 1st extent;
  * 6. Above steps exit if there is no space in this RPC.
+ *
+ * Return IO page count
  */
 static unsigned int get_write_extents(struct osc_object *obj,
 				      struct list_head *rpclist)
 {
 	struct client_obd *cli = osc_cli(obj);
 	struct osc_extent *ext;
-	struct extent_rpc_data data = {
-		.erd_rpc_list	= rpclist,
-		.erd_page_count	= 0,
-		.erd_max_pages	= cli->cl_max_pages_per_rpc,
-		.erd_max_chunks	= osc_max_write_chunks(cli),
-		.erd_max_extents = 256,
-	};
+	struct extent_rpc_data data = write_rpc_def(rpclist, cli);
 
 	assert_osc_object_is_locked(obj);
 	while ((ext = list_first_entry_or_null(&obj->oo_hp_exts,
@@ -1997,45 +2200,68 @@ __must_hold(osc)
 	RETURN(rc);
 }
 
-/**
- * prepare pages for ASYNC io and put pages in send queue.
- *
- * \param cmd OBD_BRW_* macroses
- * \param lop pending pages
- *
- * \return zero if no page added to send queue.
- * \return 1 if pages successfully added to send queue.
- * \return negative on errors.
- */
-static int
-osc_send_read_rpc(const struct lu_env *env, struct client_obd *cli,
-		  struct osc_object *osc)
-__must_hold(osc)
+static unsigned int get_read_extents(struct osc_object *obj,
+				     struct list_head *rpclist)
 {
+	struct client_obd *cli = osc_cli(obj);
 	struct osc_extent *ext;
 	struct osc_extent *next;
-	LIST_HEAD(rpclist);
-	struct extent_rpc_data data = {
-		.erd_rpc_list	= &rpclist,
-		.erd_page_count	= 0,
-		.erd_max_pages	= cli->cl_max_pages_per_rpc,
-		.erd_max_chunks	= UINT_MAX,
-		.erd_max_extents = UINT_MAX,
-	};
-	int rc = 0;
-	ENTRY;
+	struct extent_rpc_data data = read_rpc_def(rpclist, cli);
 
-	assert_osc_object_is_locked(osc);
-	list_for_each_entry_safe(ext, next, &osc->oo_reading_exts, oe_link) {
+	assert_osc_object_is_locked(obj);
+	while ((ext = list_first_entry_or_null(&obj->oo_hp_read_exts,
+					       struct osc_extent,
+					       oe_link)) != NULL) {
+		EASSERT(ext->oe_state == OES_LOCK_DONE, ext);
+		if (!try_to_add_extent_for_io(cli, ext, &data))
+			return data.erd_page_count;
+		osc_extent_state_set(ext, OES_RPC);
+		EASSERT(ext->oe_nr_pages <= data.erd_max_pages, ext);
+	}
+	if (data.erd_page_count == data.erd_max_pages)
+		return data.erd_page_count;
+
+	list_for_each_entry_safe(ext, next, &obj->oo_reading_exts, oe_link) {
 		EASSERT(ext->oe_state == OES_LOCK_DONE, ext);
 		if (!try_to_add_extent_for_io(cli, ext, &data))
 			break;
 		osc_extent_state_set(ext, OES_RPC);
 		EASSERT(ext->oe_nr_pages <= data.erd_max_pages, ext);
 	}
-	LASSERT(data.erd_page_count <= data.erd_max_pages);
 
-	osc_update_pending(osc, OBD_BRW_READ, -data.erd_page_count);
+	LASSERT(data.erd_page_count <= data.erd_max_pages);
+	return data.erd_page_count;
+}
+
+/**
+ * osc_send_read_rpc() - prepare pages for ASYNC io and put pages in send queue.
+ * @env: Lustre environment
+ * @cli: client side OBD
+ * @osc: pointer to the Lustre client object
+ *
+ * \param cmd OBD_BRW_* macroses
+ * \param lop pending pages
+ *
+ * Return:
+ * * %0 if no page added to send queue.
+ * * %1 if pages successfully added to send queue.
+ * * %negative on errors.
+ */
+static int
+osc_send_read_rpc(const struct lu_env *env, struct client_obd *cli,
+		  struct osc_object *osc)
+__must_hold(osc)
+{
+	LIST_HEAD(rpclist);
+	unsigned int page_count;
+	int rc = 0;
+
+	ENTRY;
+
+	assert_osc_object_is_locked(osc);
+	page_count = get_read_extents(osc, &rpclist);
+
+	osc_update_pending(osc, OBD_BRW_READ, -page_count);
 
 	if (!list_empty(&rpclist)) {
 		osc_object_unlock(osc);
@@ -2108,7 +2334,8 @@ __must_hold(&cli->cl_loi_list_lock)
 		 * starvation and leading to server evicting us for not
 		 * writing out pages in a timely manner LU-13131 */
 		if (osc_max_rpc_in_flight(cli, osc) &&
-		    list_empty(&osc->oo_hp_exts)) {
+		    list_empty(&osc->oo_hp_exts) &&
+		    list_empty(&osc->oo_hp_read_exts)) {
 			__osc_list_maint(cli, osc);
 			break;
 		}
@@ -2162,8 +2389,8 @@ __must_hold(&cli->cl_loi_list_lock)
 	EXIT;
 }
 
-int osc_io_unplug0(const struct lu_env *env, struct client_obd *cli,
-		   struct osc_object *osc, int async)
+int __osc_io_unplug(const struct lu_env *env, struct client_obd *cli,
+		    struct osc_object *osc, int async)
 {
 	int rc = 0;
 
@@ -2176,12 +2403,12 @@ int osc_io_unplug0(const struct lu_env *env, struct client_obd *cli,
 		spin_unlock(&cli->cl_loi_list_lock);
 	} else {
 		CDEBUG(D_CACHE, "Queue writeback work for client %p.\n", cli);
-		LASSERT(cli->cl_writeback_work != NULL);
-		rc = ptlrpcd_queue_work(cli->cl_writeback_work);
+		schedule_work(&cli->cl_writeback_work);
+		rc = 0;
 	}
 	return rc;
 }
-EXPORT_SYMBOL(osc_io_unplug0);
+EXPORT_SYMBOL(__osc_io_unplug);
 
 int osc_prep_async_page(struct osc_object *osc, struct osc_page *ops,
 			struct cl_page *page, loff_t offset)
@@ -2193,7 +2420,8 @@ int osc_prep_async_page(struct osc_object *osc, struct osc_page *ops,
 		return round_up(sizeof(*oap), 8);
 
 	oap->oap_obj = osc;
-	oap->oap_page = page->cp_vmpage;
+	oap->oap_brw_page.bp_folio = page_folio(page->cp_vmpage);
+	oap->oap_brw_page.bp_pgno = cl_folio_pgno(page);
 	oap->oap_obj_off = offset;
 	LASSERT(!(offset & ~PAGE_MASK));
 
@@ -2208,8 +2436,9 @@ int osc_prep_async_page(struct osc_object *osc, struct osc_page *ops,
 	INIT_LIST_HEAD(&oap->oap_pending_item);
 	INIT_LIST_HEAD(&oap->oap_rpc_item);
 
-	CDEBUG(D_INFO, "oap %p vmpage %p obj off %llu\n",
-	       oap, oap->oap_page, oap->oap_obj_off);
+	CDEBUG(D_INFO, "oap %p folio %p pg:%d obj off %llu\n",
+	       oap, oap->oap_brw_page.bp_folio, oap->oap_brw_page.bp_pgno,
+	       oap->oap_obj_off);
 	RETURN(0);
 }
 EXPORT_SYMBOL(osc_prep_async_page);
@@ -2285,9 +2514,11 @@ int osc_queue_async_io(const struct lu_env *env, struct cl_io *io,
 	 * since this page is not in any list yet. */
 	oap->oap_async_flags = 0;
 	oap->oap_brw_flags = brw_flags;
+	oap->oap_brw_page.bp_pgno = cl_folio_pgno(ops->ops_cl.cpl_page);
 
-	OSC_IO_DEBUG(osc, "oap %p page %p added for cmd %d\n",
-		     oap, oap->oap_page, oap->oap_cmd & OBD_BRW_RWMASK);
+	OSC_IO_DEBUG(osc, "oap %p folio %p pg:%d added for cmd %d\n",
+		     oap, oap->oap_brw_page.bp_folio,
+		     oap->oap_brw_page.bp_pgno, oap->oap_cmd & OBD_BRW_RWMASK);
 
 	index = osc_index(oap2osc(oap));
 
@@ -2298,7 +2529,10 @@ int osc_queue_async_io(const struct lu_env *env, struct cl_io *io,
 	 * 2. otherwise, a new extent will be allocated. */
 
 	ext = oio->oi_active;
-	if (ext != NULL && ext->oe_start <= index && ext->oe_max_end >= index) {
+	if (ext != NULL && ext->oe_state != OES_ACTIVE) {
+		need_release = 1;
+	} else if (ext != NULL && ext->oe_start <= index &&
+		   ext->oe_max_end >= index) {
 		/* one chunk plus extent overhead must be enough to write this
 		 * page */
 		grants = (1 << cli->cl_chunkbits) + cli->cl_grant_extent_tax;
@@ -2332,7 +2566,7 @@ int osc_queue_async_io(const struct lu_env *env, struct cl_io *io,
 		need_release = 1;
 	}
 	if (need_release) {
-		osc_extent_release(env, ext);
+		osc_extent_release(env, ext, IO_PRIO_NORMAL);
 		oio->oi_active = NULL;
 		ext = NULL;
 	}
@@ -2363,6 +2597,7 @@ int osc_queue_async_io(const struct lu_env *env, struct cl_io *io,
 				grants = tmp;
 		}
 
+restart_find:
 		tmp = grants;
 		if (rc == 0) {
 			ext = osc_extent_find(env, osc, index, &tmp);
@@ -2386,6 +2621,28 @@ int osc_queue_async_io(const struct lu_env *env, struct cl_io *io,
 		LASSERT((oap->oap_brw_flags & OBD_BRW_FROM_GRANT) != 0);
 
 		osc_object_lock(osc);
+		if (ext->oe_state != OES_ACTIVE) {
+			if (ext->oe_state == OES_CACHE) {
+				osc_extent_state_set(ext, OES_ACTIVE);
+				osc_update_pending(osc, OBD_BRW_WRITE,
+						   -ext->oe_nr_pages);
+				list_del_init(&ext->oe_link);
+			} else {
+				osc_object_unlock(osc);
+				osc_extent_get(ext);
+				osc_extent_release(env, ext, IO_PRIO_NORMAL);
+				oio->oi_active = NULL;
+
+				/* Waiting for IO finished.  */
+				rc = osc_extent_wait(env, ext, OES_INV);
+				osc_extent_put(env, ext);
+				if (rc < 0)
+					RETURN(rc);
+
+				GOTO(restart_find, rc);
+			}
+		}
+
 		if (ext->oe_nr_pages == 0)
 			ext->oe_srvlock = ops->ops_srvlock;
 		else
@@ -2434,84 +2691,141 @@ int osc_teardown_async_page(const struct lu_env *env,
 	RETURN(rc);
 }
 
-/**
- * This is called when a page is picked up by kernel to write out.
- *
- * We should find out the corresponding extent and add the whole extent
- * into urgent list. The extent may be being truncated or used, handle it
- * carefully.
- */
-int osc_flush_async_page(const struct lu_env *env, struct cl_io *io,
-			 struct osc_page *ops)
+int osc_queue_dio_pages(const struct lu_env *env, struct cl_io *io,
+			struct osc_object *obj, struct cl_dio_pages *cdp,
+			struct list_head *list, int from_page, int to_page,
+			int brw_flags)
 {
-	struct osc_extent *ext   = NULL;
-	struct osc_object *obj   = osc_page_object(ops);
-	struct cl_page    *cp    = ops->ops_cl.cpl_page;
-	pgoff_t            index = osc_index(ops);
-	struct osc_async_page *oap = &ops->ops_oap;
-	bool unplug = false;
-	int rc = 0;
+	struct client_obd *cli = osc_cli(obj);
+	struct osc_io *oio = osc_env_io(env);
+	struct osc_async_page *oap;
+	struct osc_extent *ext;
+	struct osc_lock *oscl;
+	struct cl_page *page;
+	struct osc_page *opg;
+	pgoff_t cdp_index = cdp->cdp_osc_off >> PAGE_SHIFT;
+	int page_count = to_page - from_page + 1;
+	int mppr = brw_flags & OBD_BRW_READ ? cli->cl_max_pages_per_rpc_read :
+					      cli->cl_max_pages_per_rpc_write;
+	pgoff_t start = CL_PAGE_EOF;
+	bool can_merge = true;
+	enum cl_req_type crt;
+	pgoff_t end = 0;
+	int i;
+
 	ENTRY;
 
-	osc_object_lock(obj);
-	ext = osc_extent_lookup(obj, index);
+	if (brw_flags & OBD_BRW_READ)
+		crt = CRT_READ;
+	else
+		crt = CRT_WRITE;
+
+	/* we should never have more pages than can fit in an RPC, but if we do
+	 * we must allow sending of a larger RPC
+	 */
+	while (page_count > mppr)
+		mppr = mppr << 1;
+
+	if (unlikely(cdp->cdp_from > 0 || cdp->cdp_to < PAGE_SIZE - 1))
+		can_merge = false;
+
+	start = cdp_index + from_page;
+	end = cdp_index + to_page;
+
+	ext = osc_extent_alloc(obj);
 	if (ext == NULL) {
-		osc_extent_tree_dump(D_ERROR, obj);
-		LASSERTF(0, "page index %lu is NOT covered.\n", index);
+		for (i = from_page; i <= to_page; i++) {
+			page = cdp->cdp_cl_pages[i];
+			opg = osc_cl_page_osc(page, obj);
+			oap = &opg->ops_oap;
+
+			list_del_init(&oap->oap_pending_item);
+			osc_completion(env, obj, oap, crt, -ENOMEM);
+		}
+		RETURN(-ENOMEM);
 	}
 
-	switch (ext->oe_state) {
-	case OES_RPC:
-	case OES_LOCK_DONE:
-		CL_PAGE_DEBUG(D_ERROR, env, cp, "flush an in-rpc page?\n");
-		LASSERT(0);
-		break;
-	case OES_LOCKING:
-		/* If we know this extent is being written out, we should abort
-		 * so that the writer can make this page ready. Otherwise, there
-		 * exists a deadlock problem because other process can wait for
-		 * page writeback bit holding page lock; and meanwhile in
-		 * vvp_page_make_ready(), we need to grab page lock before
-		 * really sending the RPC. */
-	case OES_TRUNC:
-		/* race with truncate, page will be redirtied */
-	case OES_ACTIVE:
-		/* The extent is active so we need to abort and let the caller
-		 * re-dirty the page. If we continued on here, and we were the
-		 * one making the extent active, we could deadlock waiting for
-		 * the page writeback to clear but it won't because the extent
-		 * is active and won't be written out. */
-		GOTO(out, rc = -EAGAIN);
-	default:
-		break;
-	}
-
-	rc = cl_page_prep(env, io, cp, CRT_WRITE);
-	if (rc)
-		GOTO(out, rc);
-
-	oap->oap_async_flags |= ASYNC_READY|ASYNC_URGENT;
-
-	if (current->flags & PF_MEMALLOC)
-		ext->oe_memalloc = 1;
-
+	ext->oe_rw = !!(brw_flags & OBD_BRW_READ);
+	ext->oe_sync = 1;
+	ext->oe_no_merge = !can_merge;
 	ext->oe_urgent = 1;
-	if (ext->oe_state == OES_CACHE) {
-		OSC_EXTENT_DUMP(D_CACHE, ext,
-				"flush page %p make it urgent.\n", oap);
-		if (list_empty(&ext->oe_link))
-			list_add_tail(&ext->oe_link, &obj->oo_urgent_exts);
-		unplug = true;
-	}
-	rc = 0;
-	EXIT;
+	ext->oe_start = start;
+	ext->oe_end = ext->oe_max_end = end;
+	ext->oe_obj = obj;
+	ext->oe_srvlock = !!(brw_flags & OBD_BRW_SRVLOCK);
+	ext->oe_ndelay = !!(brw_flags & OBD_BRW_NDELAY);
+	ext->oe_dio = true;
+	if (ext->oe_dio) {
+		struct cl_sync_io *anchor;
+		struct cl_page *clpage;
 
-out:
+		oap = list_first_entry(list, struct osc_async_page,
+				       oap_pending_item);
+		clpage = oap2cl_page(oap);
+		LASSERT(clpage->cp_type == CPT_TRANSIENT);
+		anchor = clpage->cp_sync_io;
+		ext->oe_csd = anchor->csi_dio_aio;
+	}
+	oscl = oio->oi_write_osclock ? : oio->oi_read_osclock;
+	if (oscl && oscl->ols_dlmlock != NULL)
+		ext->oe_dlmlock = ldlm_lock_get(oscl->ols_dlmlock);
+	if (!ext->oe_rw) { /* direct io write */
+		int grants;
+		int ppc;
+
+		ppc = 1 << (cli->cl_chunkbits - PAGE_SHIFT);
+		grants = cli->cl_grant_extent_tax;
+		grants += (1 << cli->cl_chunkbits) *
+			((page_count + ppc - 1) / ppc);
+
+		CDEBUG(D_CACHE, "requesting %d bytes grant\n", grants);
+		spin_lock(&cli->cl_loi_list_lock);
+		if (osc_reserve_grant(cli, grants) == 0) {
+			for (i = from_page; i <= to_page; i++) {
+				page = cdp->cdp_cl_pages[i];
+				opg = osc_cl_page_osc(page, obj);
+				oap = &opg->ops_oap;
+
+				osc_consume_write_grant(cli,
+							&oap->oap_brw_page);
+			}
+			atomic_long_add(page_count, &obd_dirty_pages);
+			osc_unreserve_grant_nolock(cli, grants, 0);
+			ext->oe_grants = grants;
+		} else {
+			/* We cannot report ENOSPC correctly if we do parallel
+			 * DIO (async RPC submission), so turn off parallel dio
+			 * if there is not sufficient grant available.  This
+			 * makes individual RPCs synchronous.
+			 */
+			io->ci_parallel_dio = false;
+			CDEBUG(D_CACHE,
+			"not enough grant available, switching to sync for this i/o\n");
+		}
+		spin_unlock(&cli->cl_loi_list_lock);
+		osc_update_next_shrink(cli);
+	}
+
+	ext->oe_is_rdma_only = !!(brw_flags & OBD_BRW_RDMA_ONLY);
+	ext->oe_nr_pages = page_count;
+	ext->oe_mppr = mppr;
+	list_splice_init(list, &ext->oe_pages);
+	ext->oe_layout_version = io->ci_layout_version;
+
+	osc_object_lock(obj);
+	/* Reuse the initial refcount for RPC, don't drop it */
+	osc_extent_state_set(ext, OES_LOCK_DONE);
+	if (!ext->oe_rw) { /* write */
+		list_add_tail(&ext->oe_link, &obj->oo_urgent_exts);
+		osc_update_pending(obj, OBD_BRW_WRITE, page_count);
+	} else {
+		list_add_tail(&ext->oe_link, &obj->oo_reading_exts);
+		osc_update_pending(obj, OBD_BRW_READ, page_count);
+	}
 	osc_object_unlock(obj);
-	osc_extent_put(env, ext);
-	if (unplug)
-		osc_io_unplug_async(env, osc_cli(obj), obj);
-	return rc;
+
+	osc_io_unplug_async(env, cli, obj);
+	RETURN(0);
 }
 
 int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
@@ -2519,16 +2833,23 @@ int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
 			 int brw_flags)
 {
 	struct osc_io *oio = osc_env_io(env);
-	struct client_obd     *cli = osc_cli(obj);
-	struct osc_extent     *ext;
+	struct client_obd *cli = osc_cli(obj);
+	struct osc_extent *ext;
 	struct osc_async_page *oap;
-	int     page_count = 0;
-	int     mppr       = cli->cl_max_pages_per_rpc;
-	bool	can_merge   = true;
-	pgoff_t start      = CL_PAGE_EOF;
-	pgoff_t end        = 0;
-	struct osc_lock *oscl;
+	int page_count = 0;
+	int mppr = brw_flags & OBD_BRW_READ ? cli->cl_max_pages_per_rpc_read :
+					      cli->cl_max_pages_per_rpc_write;
+	bool can_merge = true;
+	pgoff_t start = CL_PAGE_EOF;
+	pgoff_t end = 0;
+	enum cl_req_type crt;
+
 	ENTRY;
+
+	if (brw_flags & OBD_BRW_READ)
+		crt = CRT_READ;
+	else
+		crt = CRT_WRITE;
 
 	list_for_each_entry(oap, list, oap_pending_item) {
 		struct osc_page *opg = oap2osc_page(oap);
@@ -2552,7 +2873,7 @@ int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
 
 		list_for_each_entry_safe(oap, tmp, list, oap_pending_item) {
 			list_del_init(&oap->oap_pending_item);
-			osc_ap_completion(env, cli, obj, oap, 0, -ENOMEM);
+			osc_completion(env, obj, oap, crt, -ENOMEM);
 		}
 		RETURN(-ENOMEM);
 	}
@@ -2577,10 +2898,6 @@ int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
 		LASSERT(clpage->cp_type == CPT_TRANSIENT);
 		anchor = clpage->cp_sync_io;
 		ext->oe_csd = anchor->csi_dio_aio;
-	}
-	oscl = oio->oi_write_osclock ? : oio->oi_read_osclock;
-	if (oscl && oscl->ols_dlmlock != NULL) {
-		ext->oe_dlmlock = ldlm_lock_get(oscl->ols_dlmlock);
 	}
 	if (ext->oe_dio && !ext->oe_rw) { /* direct io write */
 		int grants;
@@ -2644,9 +2961,41 @@ int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
 		}
 		osc_update_pending(obj, OBD_BRW_WRITE, page_count);
 	} else {
-		list_add_tail(&ext->oe_link, &obj->oo_reading_exts);
+		bool hp_read = false;
+		struct ldlm_lock *dlmlock;
+		struct osc_lock *oscl;
+
+		/*
+		 * The DLM extent lock is under blocking AST, and make
+		 * this I/O with high priority.
+		 */
+
+		oscl = oio->oi_read_osclock ? : oio->oi_write_osclock;
+		dlmlock = oscl ? oscl->ols_dlmlock : NULL;
+
+		if (dlmlock == NULL && !ext->oe_srvlock) {
+			CDEBUG(D_CACHE,
+			       "NOLCK: io %pK "EXTSTR" dio: %d srvlock: %d\n",
+			       io, EXTPARA(ext), ext->oe_dio, ext->oe_srvlock);
+		}
+		if (!ext->oe_srvlock && dlmlock != NULL) {
+			lock_res_and_lock(dlmlock);
+			hp_read = ldlm_is_cbpending(dlmlock);
+			unlock_res_and_lock(dlmlock);
+			if (hp_read)
+				CDEBUG(D_CACHE,
+				       "HP read: io %pK ext@%pK "EXTSTR"\n",
+				       io, ext, EXTPARA(ext));
+		}
+
+		if (hp_read)
+			list_add_tail(&ext->oe_link, &obj->oo_hp_read_exts);
+		else
+			list_add_tail(&ext->oe_link, &obj->oo_reading_exts);
 		osc_update_pending(obj, OBD_BRW_READ, page_count);
 	}
+
+	OSC_EXTENT_DUMP(D_CACHE, ext, "allocate ext: rw=%d\n", ext->oe_rw);
 	osc_object_unlock(obj);
 
 	osc_io_unplug_async(env, cli, obj);
@@ -2654,7 +3003,16 @@ int osc_queue_sync_pages(const struct lu_env *env, struct cl_io *io,
 }
 
 /**
- * Called by osc_io_setattr_start() to freeze and destroy covering extents.
+ * osc_cache_truncate_start() - Called by osc_io_setattr_start() to freeze and
+ *                              destroy covering extents.
+ * @env: Lustre environment
+ * @obj: Pointer to struct osc_object (all extents)
+ * @size: Size in bytes to truncate
+ * @extp: Exptent that needs to be truncated [out]
+ *
+ * Return:
+ * * %0 on sucess
+ * * %negative on failure
  */
 int osc_cache_truncate_start(const struct lu_env *env, struct osc_object *obj,
 			     __u64 size, struct osc_extent **extp)
@@ -2782,7 +3140,10 @@ again:
 EXPORT_SYMBOL(osc_cache_truncate_start);
 
 /**
- * Called after osc_io_setattr_end to add oio->oi_trunc back to cache.
+ * osc_cache_truncate_end() - Called after osc_io_setattr_end to add
+ *                            oio->oi_trunc back to cache.
+ * @env: Lustre environment
+ * @ext: Pointer to osc_extent (extent which is being truncated)
  */
 void osc_cache_truncate_end(const struct lu_env *env, struct osc_extent *ext)
 {
@@ -2812,6 +3173,12 @@ void osc_cache_truncate_end(const struct lu_env *env, struct osc_extent *ext)
 }
 
 /**
+ * osc_cache_wait_range() - Wait for extents in specific range to be written out
+ * @env: Lustre environment
+ * @obj: pointer to the Lustre client object
+ * @start: Start index
+ * @end: End index
+ *
  * Wait for extents in a specific range to be written out.
  * The caller must have called osc_cache_writeback_range() to issue IO
  * otherwise it will take a long time for this function to finish.
@@ -2819,6 +3186,10 @@ void osc_cache_truncate_end(const struct lu_env *env, struct osc_extent *ext)
  * Caller must hold inode_mutex , or cancel exclusive dlm lock so that
  * nobody else can dirty this range of file while we're waiting for
  * extents to be written.
+ *
+ * Return:
+ * * %0 on sucess
+ * * %negative on failure
  */
 int osc_cache_wait_range(const struct lu_env *env, struct osc_object *obj,
 			 pgoff_t start, pgoff_t end)
@@ -2869,23 +3240,31 @@ again:
 EXPORT_SYMBOL(osc_cache_wait_range);
 
 /**
- * Called to write out a range of osc object.
- *
- * @hp     : should be set this is caused by lock cancel;
+ * osc_cache_writeback_range() - Called to write out a range of osc object.
+ * @env: Lustre environment
+ * @obj: pointer to the Lustre client object
+ * @start: Start index
+ * @end: End index
+ * @hp: should be set this is caused by lock cancel;
  * @discard: is set if dirty pages should be dropped - file will be deleted or
- *	   truncated, this implies there is no partially discarding extents.
+ *           truncated, this implies there is no partially discarding extents.
+ * @prio: priority of IO
  *
- * Return how many pages will be issued, or error code if error occurred.
+ * Return how many pages will be issued, or %-ERRNO if error occurred.
  */
 int osc_cache_writeback_range(const struct lu_env *env, struct osc_object *obj,
-			      pgoff_t start, pgoff_t end, int hp, int discard)
+			      pgoff_t start, pgoff_t end, int hp, int discard,
+			      enum cl_io_priority prio)
 {
 	struct osc_extent *ext;
 	LIST_HEAD(discard_list);
+	bool active_ext_check = false;
 	bool unplug = false;
 	int result = 0;
+
 	ENTRY;
 
+repeat:
 	osc_object_lock(obj);
 	ext = osc_extent_search(obj, start);
 	if (ext == NULL)
@@ -2902,8 +3281,17 @@ int osc_cache_writeback_range(const struct lu_env *env, struct osc_object *obj,
 			result += ext->oe_nr_pages;
 			if (!discard) {
 				struct list_head *list = NULL;
-				if (hp) {
-					EASSERT(!ext->oe_hp, ext);
+
+				if (ext->oe_hp) {
+					/*
+					 * The extent is already added into HP
+					 * list.
+					 * Another thread has already written
+					 * back the extent with high priority.
+					 */
+					unplug = true;
+					break;
+				} else if (hp) {
 					ext->oe_hp = 1;
 					list = &obj->oo_hp_exts;
 				} else if (!ext->oe_urgent && !ext->oe_hp) {
@@ -2948,6 +3336,16 @@ int osc_cache_writeback_range(const struct lu_env *env, struct osc_object *obj,
 			 * grants. We do this for the correctness of fsync. */
 			LASSERT(hp == 0 && discard == 0);
 			ext->oe_urgent = 1;
+
+			if (active_ext_check) {
+				osc_extent_state_set(ext, OES_CACHE);
+				list_move_tail(&ext->oe_link,
+					       &obj->oo_urgent_exts);
+				osc_update_pending(obj, OBD_BRW_WRITE,
+						   ext->oe_nr_pages);
+				unplug = true;
+			}
+
 			break;
 		case OES_TRUNC:
 			/* this extent is being truncated, can't do anything
@@ -2995,18 +3393,43 @@ int osc_cache_writeback_range(const struct lu_env *env, struct osc_object *obj,
 			result = rc;
 	}
 
-	OSC_IO_DEBUG(obj, "pageout [%lu, %lu], %d.\n", start, end, result);
+	OSC_IO_DEBUG(obj, "pageout [%lu, %lu] npages %lu: rc=%d.\n",
+		     start, end, obj->oo_npages, result);
+
+	/*
+	 * Try to flush the active I/O extents of the object.
+	 * Otherwise, the user process writing the file may be dirty exceeded
+	 * and waiting endless in balance_dirty_pages().
+	 */
+	if (result == 0 && prio == IO_PRIO_DIRTY_EXCEEDED &&
+	    !active_ext_check && atomic_read(&obj->oo_nr_ios) &&
+	    obj->oo_npages > 0) {
+		osc_extent_tree_dump(D_CACHE, obj);
+		active_ext_check = true;
+		GOTO(repeat, result);
+	}
+
 	RETURN(result);
 }
 EXPORT_SYMBOL(osc_cache_writeback_range);
 
 /**
- * Returns a list of pages by a given [start, end] of \a obj.
+ * osc_page_gang_lookup() - loop over group(gang) of pages and check for locks
+ *                          or discard them
+ * @env: Lustre environment
+ * @io: client IO context
+ * @osc: pointer to the Lustre client object
+ * @start: Start index
+ * @end: End index
+ * @cb: callback function
+ * @cbdata: Data for callback
  *
  * Gang tree lookup (radix_tree_gang_lookup()) optimization is absolutely
  * crucial in the face of [offset, EOF] locks.
  *
- * Return at least one page in @queue unless there is no covered page.
+ * Return:
+ * * list of pages by a given [start, end] of @obj.
+ * * at least one page in @queue unless there is no covered page.
  */
 bool osc_page_gang_lookup(const struct lu_env *env, struct cl_io *io,
 			  struct osc_object *osc, pgoff_t start, pgoff_t end,
@@ -3026,7 +3449,7 @@ bool osc_page_gang_lookup(const struct lu_env *env, struct cl_io *io,
 	idx = start;
 	pvec = osc_env_info(env)->oti_pvec;
 	fbatch = &osc_env_info(env)->oti_fbatch;
-	ll_folio_batch_init(fbatch, 0);
+	ll_folio_batch_init(fbatch);
 	spin_lock(&osc->oo_tree_lock);
 	while ((nr = radix_tree_gang_lookup(&osc->oo_tree, pvec,
 					    idx, OTI_PVEC_SIZE)) > 0) {
@@ -3051,7 +3474,6 @@ bool osc_page_gang_lookup(const struct lu_env *env, struct cl_io *io,
 			cl_page_get(page);
 			pvec[j++] = ops;
 		}
-		++idx;
 
 		/*
 		 * Here a delicate locking dance is performed. Current thread
@@ -3093,6 +3515,7 @@ bool osc_page_gang_lookup(const struct lu_env *env, struct cl_io *io,
 		if (need_resched())
 			cond_resched();
 
+		++idx;
 		spin_lock(&osc->oo_tree_lock);
 		tree_lock = true;
 	}
@@ -3102,7 +3525,7 @@ bool osc_page_gang_lookup(const struct lu_env *env, struct cl_io *io,
 }
 EXPORT_SYMBOL(osc_page_gang_lookup);
 
-/**
+/*
  * Check if page @page is covered by an extra lock or discard it.
  */
 static bool check_and_discard_cb(const struct lu_env *env, struct cl_io *io,
@@ -3208,18 +3631,29 @@ bool osc_discard_cb(const struct lu_env *env, struct cl_io *io,
 EXPORT_SYMBOL(osc_discard_cb);
 
 /**
+ * osc_lock_discard_pages() - Handle OSC discard/check for lock of pages
+ * @env: Lustre environment
+ * @osc: pointer to the Lustre client object
+ * @start: Start index
+ * @end: End index
+ * @discard: If %true discard page. Else check for lock
+ *
  * Discard pages protected by the given lock. This function traverses radix
  * tree to find all covering pages and discard them. If a page is being covered
  * by other locks, it should remain in cache.
  *
  * If error happens on any step, the process continues anyway (the reasoning
  * behind this being that lock cancellation cannot be delayed indefinitely).
+ *
+ * Return:
+ * * %0: on Success
+ * * %-ERRNO: on Failure
  */
 int osc_lock_discard_pages(const struct lu_env *env, struct osc_object *osc,
 			   pgoff_t start, pgoff_t end, bool discard)
 {
 	struct osc_thread_info *info = osc_env_info(env);
-	struct cl_io *io = osc_env_thread_io(env);
+	struct cl_io *io = osc_env_new_io(env);
 	osc_page_gang_cbt cb;
 	int result;
 
@@ -3245,5 +3679,98 @@ out:
 	RETURN(result);
 }
 
+int osc_ldlm_hp_handle(const struct lu_env *env, struct osc_object *obj,
+		       pgoff_t start, pgoff_t end, bool read_check_only)
+{
+	struct client_obd *cli = osc_cli(obj);
+	struct osc_extent *ext;
+	struct osc_extent *next;
+	bool no_rpc_slots = false;
+	bool unplug = false;
 
-/** @} osc */
+	ENTRY;
+
+	spin_lock(&cli->cl_loi_list_lock);
+	no_rpc_slots = osc_full_dio_in_flight(cli);
+	spin_unlock(&cli->cl_loi_list_lock);
+
+	/*
+	 * Current we only handle with high priority for the case that
+	 * all I/O RPC slots are used out by parallel DIO and there are
+	 * conflict I/O extents in lock blocking AST.
+	 * TODO: Send all I/Os to OSTs on the object corresponding to
+	 * the lock in blocking AST. With higher priority, it does not
+	 * need to iterate over all OSC objects one by one, the conflict
+	 * I/O can be handled more quickly. Thus the lock taken by this
+	 * I/O can be release quickly.
+	 */
+
+	CDEBUG(D_CACHE,
+	       "High prio I/O check: start %lu end %lu RPC(%d):r%u/w%u/d%u\n",
+	       start, end, no_rpc_slots, cli->cl_r_in_flight,
+	       cli->cl_w_in_flight, cli->cl_d_in_flight);
+	osc_object_lock(obj);
+	/* Check buffered read extents. */
+	list_for_each_entry_safe(ext, next, &obj->oo_reading_exts, oe_link) {
+		EASSERT(ext->oe_state == OES_LOCK_DONE, ext);
+		if (ext->oe_end < start || ext->oe_start > end)
+			continue;
+		if (ext->oe_dio || ext->oe_srvlock)
+			continue;
+
+		list_move_tail(&ext->oe_link, &obj->oo_hp_read_exts);
+		OSC_EXTENT_DUMP(D_CACHE, ext, "HP read this extent\n");
+		unplug = true;
+	}
+
+	if (read_check_only)
+		GOTO(out_unlock, unplug);
+
+	/* Check buffered write extents. */
+	ext = osc_extent_search(obj, start);
+	if (ext == NULL)
+		ext = first_extent(obj);
+	else if (ext->oe_end < start)
+		ext = next_extent(ext);
+	while (ext != NULL) {
+		if (ext->oe_start > end)
+			break;
+
+		ext->oe_fsync_wait = 1;
+		switch (ext->oe_state) {
+		case OES_CACHE:
+			/*
+			 * The extent in HP (oe_hp) is being written back by
+			 * another thread.
+			 */
+			if (ext->oe_hp || ext->oe_dio || ext->oe_srvlock)
+				break;
+
+			ext->oe_hp = 1;
+			list_move_tail(&ext->oe_link, &obj->oo_hp_exts);
+			OSC_EXTENT_DUMP(D_CACHE, ext, "HP write this extent\n");
+			unplug = true;
+			break;
+		case OES_ACTIVE:
+			/*
+			 * It is pretty bad to wait for ACTIVE extents, because
+			 * we do not know how long we will wait for it to be
+			 * flushed since it may be blocked at awaiting more
+			 * grants. We do this for the correctness of fsync.
+			 */
+			ext->oe_urgent = 1;
+			break;
+		default:
+			break;
+		}
+		ext = next_extent(ext);
+	}
+
+out_unlock:
+	osc_object_unlock(obj);
+
+	if (unplug)
+		osc_io_unplug(env, cli, obj);
+
+	RETURN(0);
+}

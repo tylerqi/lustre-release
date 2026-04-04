@@ -91,6 +91,14 @@ else
 	BINARY_TESTS_PKG=binary-$(TESTS_PKG)
 endif
 
+ifneq (,$(findstring coverage,$(DEB_BUILD_PROFILES)))
+	COVERAGE_PKG=lustre-coverage
+	BINARY_COVERAGE_PKG=binary-$(COVERAGE_PKG)
+else
+	COVERAGE_PKG=
+	BINARY_COVERAGE_PKG=
+endif
+
 ifneq (,$(findstring noiokit,$(DEB_BUILD_PROFILES)))
 	IOKIT_PKG=
 	BINARY_IOKIT_PKG=
@@ -222,13 +230,16 @@ configure-stamp: autogen-stamp debian/control.main debian/control.modules.in
 		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-mpitests" ; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "notests"; then \
-		export EXTRAFLAGS="--disable-tests"; \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-tests"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "noutils"; then \
-		export EXTRAFLAGS="--disable-utils"; \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-utils"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "noiokit"; then \
-		export EXTRAFLAGS="--disable-iokit"; \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-iokit"; \
+	fi; \
+	if echo "$${DEB_BUILD_PROFILES}" | grep -q "coverage"; then \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --enable-coverage"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "zfs"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} --with-zfs=$${ZFS_SRC} --with-spl=$${SPL_SRC}"; \
@@ -237,7 +248,7 @@ configure-stamp: autogen-stamp debian/control.main debian/control.modules.in
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "ldiskfs"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} \
-			--enable-ldiskfs --enable-quilt"; \
+			--enable-ldiskfs"; \
 	else \
 		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-ldiskfs"; \
 	fi; \
@@ -256,6 +267,9 @@ configure-stamp: autogen-stamp debian/control.main debian/control.modules.in
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "kfilnd"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} --with-kfi=/usr/src/kfabric"; \
+	fi; \
+	if echo "$${DEB_BUILD_PROFILES}" | grep -q "efalnd"; then \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --enable-efa"; \
 	fi; \
 	options="gss crypto pinger checksum flock lru-resize"; \
 	options="$${options} mindf fail-alloc invariants lu_ref pgstate-track"; \
@@ -313,7 +327,7 @@ build-stamp: patch-stamp configure-stamp
 # binary-$(MODS_PKG) binary-kern-mods
 binary-arch: binary-$(DEV_PKG) \
 	     $(BINARY_UTILS_PKG) $(BINARY_IOKIT_PKG) $(BINARY_TESTS_PKG) \
-	     $(RESOURCE_TARGET)
+	     $(BINARY_COVERAGE_PKG) $(RESOURCE_TARGET)
 
 binary-indep: binary-$(SOURCE_PKG) $(DKMS_TARGET)
 
@@ -382,6 +396,28 @@ binary-$(IOKIT_PKG): build-stamp
 	dh_md5sums -p $(IOKIT_PKG)
 	dh_builddeb -p $(IOKIT_PKG)
 
+binary-$(COVERAGE_PKG): build-stamp
+	dh_testdir
+	dh_testroot
+	dh_installdirs -p $(COVERAGE_PKG)
+	dh_installdocs -p  $(COVERAGE_PKG)
+	dh_installman -p $(COVERAGE_PKG)
+	dh_install -p $(COVERAGE_PKG)
+	XZ_OPT="--threads=0" \
+	find $(BUILDDIR) -name '*.[h,c]' -o -name '*.gcno' | \
+		tar --files-from=- --absolute-names -cJf \
+			debian/$(COVERAGE_PKG)/usr/lib/lustre/tests/gcov.tar.xz
+	dh_makeshlibs -p $(COVERAGE_PKG)
+	dh_installexamples -p $(COVERAGE_PKG)
+	dh_installchangelogs -p $(COVERAGE_PKG) lustre/ChangeLog
+	dh_compress -p $(COVERAGE_PKG)
+	dh_strip -p $(COVERAGE_PKG)
+	dh_installdeb -p $(COVERAGE_PKG)
+	dh_fixperms -p $(COVERAGE_PKG)
+	dh_gencontrol -p $(COVERAGE_PKG)
+	dh_md5sums -p $(COVERAGE_PKG)
+	dh_builddeb -p $(COVERAGE_PKG)
+
 binary-$(TESTS_PKG): build-stamp
 	dh_testdir
 	dh_testroot
@@ -389,6 +425,7 @@ binary-$(TESTS_PKG): build-stamp
 	dh_installdocs -p  $(TESTS_PKG)
 	dh_installman -p $(TESTS_PKG)
 	dh_install -p $(TESTS_PKG)
+	rm -f debian/$(TESTS_PKG)/usr/lib/lustre/tests/lcov-merge.sh*
 	dh_makeshlibs -p $(TESTS_PKG)
 	dh_installexamples -p $(TESTS_PKG)
 	dh_installchangelogs -p $(TESTS_PKG) lustre/ChangeLog
@@ -455,6 +492,10 @@ binary-$(DKMS_PKG): build-stamp
 		. debian/$(DKMS_PKG)/usr/src/lustre-client-modules-$(UPVERSION)
 	# Clean it up
 	$(MAKE) -C debian/$(DKMS_PKG)/usr/src/lustre-client-modules-$(UPVERSION) -f debian/rules clean
+
+	$(MAKE) install -C lustre/include DESTDIR=$(CURDIR)/debian/$(DKMS_PKG)
+	$(MAKE) install -C lnet/include DESTDIR=$(CURDIR)/debian/$(DKMS_PKG)
+	rm -rf $(CURDIR)/debian/$(DKMS_PKG)/usr/include/lustre
 
 	# Put the DKMS configuration file in place
 	sed -e 's/[@]UPVERSION[@]/$(UPVERSION)/' debian/dkms.conf.in > debian/$(DKMS_PKG)/usr/src/lustre-client-modules-$(UPVERSION)/dkms.conf
@@ -549,13 +590,16 @@ kdist_config: prep-deb-files patch-stamp
 		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-mpitests" ; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "notests"; then \
-		export EXTRAFLAGS="--disable-tests"; \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-tests"; \
+	fi; \
+	if echo "$${DEB_BUILD_PROFILES}" | grep -q "coverage"; then \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --enable-coverage"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "noutils"; then \
-		export EXTRAFLAGS="--disable-utils"; \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-utils"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "noiokit"; then \
-		export EXTRAFLAGS="--disable-iokit"; \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --disable-iokit"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "zfs"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} --with-zfs=$${ZFS_SRC} --with-spl=$${SPL_SRC}"; \
@@ -564,10 +608,10 @@ kdist_config: prep-deb-files patch-stamp
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "ldiskfs"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} \
-			--enable-ldiskfs --enable-quilt"; \
+			--enable-ldiskfs"; \
 	else \
 		export EXTRAFLAGS="$${EXTRAFLAGS} \
-			--disable-ldiskfs --disable-quilt"; \
+			--disable-ldiskfs"; \
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "multiple-lnds"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} --enable-multiple-lnds"; \
@@ -584,6 +628,9 @@ kdist_config: prep-deb-files patch-stamp
 	fi; \
 	if echo "$${DEB_BUILD_PROFILES}" | grep -q "kfilnd"; then \
 		export EXTRAFLAGS="$${EXTRAFLAGS} --with-kfi=/usr/src/kfabric"; \
+	fi; \
+	if echo "$${DEB_BUILD_PROFILES}" | grep -q "efalnd"; then \
+		export EXTRAFLAGS="$${EXTRAFLAGS} --enable-efa"; \
 	fi; \
 	options="gss crypto pinger checksum flock lru-resize"; \
 	options="$${options} mindf fail-alloc invariants lu_ref pgstate-track"; \

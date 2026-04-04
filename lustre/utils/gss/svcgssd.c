@@ -64,6 +64,7 @@
 int null_enabled;
 int krb_enabled;
 int sk_enabled;
+int srv_ioc_dev = -1;
 
 static void
 closeall(int min)
@@ -171,8 +172,6 @@ release_parent()
 static void
 sig_die(int signal)
 {
-	/* destroy krb5 machine creds */
-	cleanup_mapping();
 	/* cleanup allocated strings for realms */
 	gssd_cleanup_realms();
 	/* remove socket */
@@ -189,6 +188,50 @@ sig_hup(int signal)
 {
 	/* don't exit on SIGHUP */
 	printerr(LL_WARN, "Received SIGHUP... Ignoring.\n");
+}
+
+int set_srv_ioc_dev(void)
+{
+	struct obd_ioctl_data data;
+	char rawbuf[MAX_IOC_BUFLEN];
+	char *buf = rawbuf;
+	char target[4];
+	int rc;
+
+	if (is_mgs())
+		strncpy(target, "MGS", sizeof(target));
+	else if (is_mds())
+		strncpy(target, "MDS", sizeof(target));
+	else if (is_oss())
+		strncpy(target, "OSS", sizeof(target));
+	else
+		return -EINVAL;
+
+	memset(&data, 0, sizeof(data));
+	data.ioc_dev = -1;
+	data.ioc_inllen1 = strlen(target) + 1;
+	data.ioc_inlbuf1 = target;
+
+	memset(buf, 0, sizeof(rawbuf));
+	rc = llapi_ioctl_pack(&data, &buf, sizeof(rawbuf));
+	if (rc < 0) {
+		printerr(LL_ERR, "invalid ioctl input: %s\n", strerror(-rc));
+		return rc;
+	}
+	rc = l_ioctl(OBD_DEV_ID, OBD_IOC_NAME2DEV, buf);
+	if (rc < 0) {
+		rc = -errno;
+		printerr(LL_ERR, "invalid ioctl: %s\n", strerror(errno));
+		return rc;
+	}
+	rc = llapi_ioctl_unpack(&data, buf, sizeof(rawbuf));
+	if (rc < 0) {
+		printerr(LL_ERR, "invalid ioctl output: %s\n", strerror(-rc));
+		return rc;
+	}
+
+	srv_ioc_dev = data.ioc_dev;
+	return 0;
 }
 
 static void
@@ -212,8 +255,7 @@ usage(FILE *fp, char *progname)
 	exit(fp == stderr);
 }
 
-int
-main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
 	int get_creds = 1;
 	int fg = 0;
@@ -222,6 +264,7 @@ main(int argc, char *argv[])
 	int must_srv_mds = 0, must_srv_oss = 0, must_srv_mgs = 0;
 	char *realm = NULL;
 	char *progname;
+	int ret;
 
 	while ((opt = getopt(argc, argv, "fgkmnoR:svz")) != -1) {
 		switch (opt) {
@@ -296,11 +339,16 @@ main(int argc, char *argv[])
 	}
 
 	initerr(progname, verbosity, fg);
+	llapi_register_ioc_dev(OBD_DEV_ID, OBD_DEV_PATH);
+	ret = set_srv_ioc_dev();
+	if (ret < 0)
+		printerr(LL_INFO, "Could not set ioc dev: %s\n",
+			 strerror(-ret));
+	/* do not keep OBD_DEV_ID open for the whole lifetime of this daemon */
+	llapi_unregister_ioc_dev(OBD_DEV_ID);
 
 	/* For kerberos use gss mechanisms but ignore for sk and null */
 	if (krb_enabled) {
-		int ret;
-
 		if (gssd_check_mechs()) {
 			printerr(LL_ERR,
 				 "ERROR: problem with gssapi library\n");
@@ -351,7 +399,6 @@ err_krb:
 	gssd_init_unique(GSSD_SVC);
 
 	svcgssd_run();
-	cleanup_mapping();
 	gssd_cleanup_realms();
 	printerr(LL_ERR, "svcgssd_run returned!\n");
 	abort();

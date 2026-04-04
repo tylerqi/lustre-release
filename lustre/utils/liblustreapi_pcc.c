@@ -1,28 +1,9 @@
-/*
- * LGPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * All rights reserved. This program and the accompanying materials
- * are made available under the terms of the GNU Lesser General Public License
- * (LGPL) version 2.1 or (at your discretion) any later version.
- * (LGPL) version 2.1 accompanies this distribution, and is available at
- * http://www.gnu.org/licenses/lgpl-2.1.html
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * Lesser General Public License for more details.
- *
- * LGPL HEADER END
- */
+// SPDX-License-Identifier: LGPL-2.1+
 /*
  * Copyright (c) 2017, DDN Storage Corporation.
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
- */
-/*
  *
  * lustreapi library for Persistent Client Cache.
  *
@@ -31,6 +12,7 @@
  */
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <fcntl.h>
 #include <lustre/lustreapi.h>
 #include <linux/lustre/lustre_user.h>
@@ -43,9 +25,8 @@
 #include "lustreapi_internal.h"
 #include "libhsm_scanner.h"
 
-/**
+/*
  * Fetch and attach a file to readwrite PCC.
- *
  */
 static int llapi_pcc_attach_rw_fd(int fd, __u32 archive_id)
 {
@@ -228,7 +209,15 @@ int llapi_pcc_attach_fid(const char *mntpath, const struct lu_fid *fid,
 	return rc;
 }
 
-
+/**
+ * llapi_pcc_attach_fid_str() - Attach file to the PCC
+ * @mntpath: Fullpath to the client mount point.
+ * @fidstr: file to be attach (FID)
+ * @id: unique id
+ * @type: PCC type
+ *
+ * Return %0 on successful attachment or %negative on error
+ */
 int llapi_pcc_attach_fid_str(const char *mntpath, const char *fidstr,
 			     __u32 id, enum lu_pcc_type type)
 {
@@ -248,12 +237,11 @@ int llapi_pcc_attach_fid_str(const char *mntpath, const char *fidstr,
 }
 
 /**
- * detach PCC cache of a file by using fd.
+ * llapi_pcc_detach_fd() - detach PCC cache of a file by using fd.
+ * @fd: File handle.
+ * @flags: Detach flags.
  *
- * \param fd		File handle.
- * \param flags		Detach flags.
- *
- * \return 0 on success, an error code otherwise.
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pcc_detach_fd(int fd, __u32 flags)
 {
@@ -269,13 +257,12 @@ int llapi_pcc_detach_fd(int fd, __u32 flags)
 }
 
 /**
- * detach PCC cache of a file via FID.
+ * llapi_pcc_detach_at() - detach PCC cache of a file via FID.
+ * @dirfd: Dir file handle.
+ * @fid: FID of the file.
+ * @flags: Detach flags.
  *
- * \param dirfd		Dir file handle.
- * \param fid		FID of the file.
- * \param flags		Detach flags.
- *
- * \return 0 on success, an error code otherwise.
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pcc_detach_at(int dirfd, const struct lu_fid *fid,
 			enum lu_pcc_detach_flags flags)
@@ -291,13 +278,12 @@ int llapi_pcc_detach_at(int dirfd, const struct lu_fid *fid,
 }
 
 /**
- * detach PCC cache of a file via FID.
+ * llapi_pcc_detach_fid() - detach PCC cache of a file via FID.
+ * @mntpath: Fullpath to the client mount point.
+ * @fid: FID of the file.
+ * @flags: Detach flags.
  *
- * \param mntpath	Fullpath to the client mount point.
- * \param fid		FID of the file.
- * \param flags		Detach flags.
- *
- * \return 0 on success, an error code otherwise.
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pcc_detach_fid(const char *mntpath, const struct lu_fid *fid,
 			 __u32 flags)
@@ -330,13 +316,12 @@ int llapi_pcc_detach_fid(const char *mntpath, const struct lu_fid *fid,
 }
 
 /**
- * detach PCC cache of a file via FID.
+ * llapi_pcc_detach_fid_str() - detach PCC cache of a file via FID.
+ * @mntpath: Fullpath to the client mount point.
+ * @fidstr: FID string of the file.
+ * @flags: Detach flags.
  *
- * \param mntpath	Fullpath to the client mount point.
- * \param fidstr	FID string of the file.
- * \param flags		Detach flags.
- *
- * \return 0 on success, an error code otherwise.
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pcc_detach_fid_str(const char *mntpath, const char *fidstr,
 			     __u32 flags)
@@ -357,19 +342,21 @@ int llapi_pcc_detach_fid_str(const char *mntpath, const char *fidstr,
 }
 
 /**
- * detach PCC cache of a file.
+ * llapi_pcc_detach_file() - detach PCC cache of a file.
+ * @path: Fullpath to the file to operate on.
+ * @flags: Detach flags.
  *
- * \param path		Fullpath to the file to operate on.
- * \param flags		Detach flags.
- *
- * \return 0 on success, an error code otherwise.
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pcc_detach_file(const char *path, __u32 flags)
 {
 	int rc;
 	int fd;
 
-	fd = open(path, O_RDWR | O_NONBLOCK);
+	/* Specify O_CIPHERTEXT | O_DIRECT flags to allow pcc detach
+	 * on encrypted file without the key.
+	 */
+	fd = open(path, O_RDWR | O_NONBLOCK | O_CIPHERTEXT | O_DIRECT);
 	if (fd < 0) {
 		rc = -errno;
 		llapi_error(LLAPI_MSG_ERROR, rc, "cannot open '%s'",
@@ -383,12 +370,11 @@ int llapi_pcc_detach_file(const char *path, __u32 flags)
 }
 
 /**
- * Return the current PCC state related to a file.
+ * llapi_pcc_state_get_fd() - Return the current PCC state related to a file.
+ * @fd: File handle for the parent directory.
+ * @state: PCC state info.
  *
- * \param fd	File handle for the parent directory.
- * \param state	PCC state info.
- *
- * \return 0 on success, an error code otherwise.
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pcc_state_get_fd(int fd, struct lu_pcc_state *state)
 {
@@ -401,7 +387,7 @@ int llapi_pcc_state_get_fd(int fd, struct lu_pcc_state *state)
 	return rc;
 }
 
-/**
+/*
  * Return the current PCC state related to file pointed by a path.
  *
  * see llapi_pcc_state_get_fd() for args use and return
@@ -444,7 +430,11 @@ int llapi_pcc_state_get(const char *path, struct lu_pcc_state *state)
 }
 
 /**
- * Add/delete a PCC backend on a client.
+ * llapi_pccdev_set() - Add/delete a PCC backend on a client.
+ * @mntpath: Fullpath to the client mount point.
+ * @cmd: command to be executed
+ *
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pccdev_set(const char *mntpath, const char *cmd)
 {
@@ -493,7 +483,10 @@ out:
 }
 
 /**
- * List all PCC backend devices on a client.
+ * llapi_pccdev_get() - List all PCC backend devices on a client.
+ * @mntpath: Fullpath to the client mount point.
+ *
+ * Return %0 on success or %-errno on failure
  */
 int llapi_pccdev_get(const char *mntpath)
 {
@@ -559,7 +552,7 @@ static int llapi_pcc_scan_detach(const char *pname, const char *fname,
 {
 	struct lu_pcc_detach_fid detach;
 	char fullname[PATH_MAX];
-	char fidstr[FID_LEN];
+	char fidstr[FID_LEN + 1];
 	const char *fidname;
 	bool lov_file;
 	int rc;
@@ -571,7 +564,7 @@ static int llapi_pcc_scan_detach(const char *pname, const char *fname,
 		size_t len;
 
 		len = strlen(fname) - strlen(".lov");
-		if (len > sizeof(fidstr)) {
+		if (len >= sizeof(fidstr)) {
 			rc = -ENAMETOOLONG;
 			errno = ENAMETOOLONG;
 			llapi_error(LLAPI_MSG_ERROR, rc,
@@ -680,6 +673,7 @@ typedef int (*pcc_handler_t)(struct cYAML *node, struct pcc_cmd_handler *pch);
 enum pcc_cmd_t {
 	PCC_CMD_DEL,
 	PCC_CMD_CLEAR,
+	PCC_CMD_BACKEND_SELECT,
 };
 
 struct pcc_cmd_handler {
@@ -744,11 +738,12 @@ static int llapi_pcc_yaml_cb_helper(struct pcc_cmd_handler *pch)
 			rc = ret;
 	}
 
+out_free:
 	/* Not found the given PCC backend on the client. */
-	if (pch->pch_iter_cont && pch->pch_cmd == PCC_CMD_DEL)
+	if (pch->pch_iter_cont && (pch->pch_cmd == PCC_CMD_DEL ||
+	    pch->pch_cmd == PCC_CMD_BACKEND_SELECT))
 		rc = -ENOENT;
 
-out_free:
 	if (tree)
 		cYAML_free_tree(tree);
 	cfs_free_param_data(&path);
@@ -825,4 +820,246 @@ int llapi_pcc_clear(const char *mntpath, enum lu_pcc_cleanup_flags flags)
 	pch.pch_cb = llapi_handle_yaml_pcc_clear;
 
 	return llapi_pcc_yaml_cb_helper(&pch);
+}
+
+static int llapi_pcc_yaml_backend_get(struct cYAML *node,
+				      struct pcc_cmd_handler *pch)
+{
+	struct cYAML *pccid;
+
+	/* TODO: check the flags of PCC backends. */
+	pccid = cYAML_get_object_item(node, pch->pch_type == LU_PCC_READWRITE ?
+				      PCC_YAML_RWID : PCC_YAML_ROID);
+	if (!pccid || pccid->cy_valueint == 0)
+		return 0;
+
+	pch->pch_iter_cont = false;
+	pch->pch_id = pccid->cy_valueint;
+	return 0;
+}
+
+int llapi_pcc_backend_id_get(const char *path, enum lu_pcc_type type, __u32 *id)
+{
+	struct pcc_cmd_handler pch;
+	int rc;
+
+	memset(&pch, 0, sizeof(pch));
+	pch.pch_cmd = PCC_CMD_BACKEND_SELECT;
+	pch.pch_iter_cont = true;
+	pch.pch_mntpath = path;
+	pch.pch_type = type;
+	pch.pch_cb = llapi_pcc_yaml_backend_get;
+
+	rc = llapi_pcc_yaml_cb_helper(&pch);
+	if (rc == 0)
+		*id = pch.pch_id;
+
+	return rc;
+}
+
+#define PIN_YAML_HSM_STR	"hsm"
+
+static int verify_pin_xattr_object(struct cYAML *yaml)
+{
+	struct cYAML *node = NULL;
+
+	if (yaml->cy_type != CYAML_TYPE_OBJECT)
+		return -EINVAL;
+
+	for (node = yaml->cy_child; node != NULL; node = node->cy_next) {
+		if (node->cy_type != CYAML_TYPE_NUMBER)
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int dump_pin_object(struct cYAML *yaml, char *buff, int buflen)
+{
+	int rc = 0, remained;
+	struct cYAML *node;
+	char *p = buff;
+
+	if (yaml->cy_child == NULL) {
+		buff[0] = '\0';
+		goto out;
+	}
+
+	*p++ = '[';
+	for (node = yaml->cy_child; node != NULL; node = node->cy_next) {
+		if (node != yaml->cy_child)
+			*p++ = ',';
+
+		remained = buff + buflen - p - 1;
+		rc = snprintf(p, remained, "%s: %ld",
+			      node->cy_string, node->cy_valueint);
+		if (rc <= 0) {
+			rc = -errno;
+			goto out;
+		} else if (rc > remained) {
+			rc = -EOVERFLOW;
+			goto out;
+		}
+		p += rc;
+	}
+	*p++ = ']';
+	*p = '\0';
+
+	rc = 0;
+out:
+	return rc;
+}
+
+static struct cYAML *read_pin_xattr_object(const char *path)
+{
+	int rc, i;
+	struct cYAML *yaml = NULL;
+	char buff[XATTR_SIZE_MAX];
+
+	rc = getxattr(path, XATTR_LUSTRE_PIN, buff, sizeof(buff));
+	if (rc < 0)
+		goto out;
+
+	if (buff[0] != '[' || buff[rc - 1] != ']') {
+		llapi_error(LLAPI_MSG_ERROR, EINVAL,
+			    "invalid pin string '%s'.", buff);
+		rc = -EINVAL;
+		goto out;
+	}
+
+	for (i = 0; i < rc; i++)
+		if (buff[i] == ',')
+			buff[i] = '\n';
+
+	yaml = cYAML_build_tree(NULL, buff + 1, rc - 2, NULL, false);
+	if (yaml == NULL) {
+		llapi_error(LLAPI_MSG_ERROR, EINVAL,
+			    "invalid pin string '%s'.", buff);
+		errno = -EINVAL;
+		goto out;
+	}
+
+	rc = verify_pin_xattr_object(yaml);
+	if (rc) {
+		llapi_error(LLAPI_MSG_ERROR, -rc, "Invalid pin object.");
+		cYAML_free_tree(yaml);
+		yaml = NULL;
+		errno = -rc;
+		goto out;
+	}
+
+out:
+	return yaml;
+}
+
+int llapi_pcc_pin_file(const char *path, __u32 id)
+{
+	int rc = 0;
+	struct cYAML *yaml, *node;
+	char buff[XATTR_SIZE_MAX];
+
+	yaml = read_pin_xattr_object(path);
+
+	if (yaml == NULL && errno == ENODATA) {
+		snprintf(buff, sizeof(buff), "[%s: %d]", PIN_YAML_HSM_STR, id);
+		goto set;
+
+	}
+	if (yaml == NULL) {
+		llapi_error(LLAPI_MSG_ERROR, errno,
+			    "cannot read or parse pin xattr of file '%s'.",
+			    path);
+		rc = -errno;
+		goto out;
+	}
+
+	/* Now we have an valid pin object, search for existing entry */
+	for (node = yaml->cy_child; node != NULL; node = node->cy_next) {
+		if (strcmp(node->cy_string, PIN_YAML_HSM_STR) == 0 &&
+		    node->cy_valueint == id)
+			break;
+	}
+	if (node != NULL) {
+		rc = 0;
+		goto out;
+	}
+
+	node = cYAML_create_number(yaml, PIN_YAML_HSM_STR, id);
+	if (node == NULL) {
+		rc = -errno;
+		goto out;
+	}
+
+	rc = dump_pin_object(yaml, buff, sizeof(buff));
+	if (rc)
+		goto out;
+
+set:
+	rc = setxattr(path, XATTR_LUSTRE_PIN, buff, strlen(buff), 0);
+	if (rc < 0)
+		rc = -errno;
+out:
+	return rc;
+}
+
+int llapi_pcc_unpin_file(const char *path, __u32 id)
+{
+	int rc = 0;
+	struct cYAML *yaml, *node;
+	char buff[XATTR_SIZE_MAX];
+
+	yaml = read_pin_xattr_object(path);
+
+	if (yaml == NULL && errno == ENODATA) {
+		rc = 0;
+		goto out;
+	}
+	if (yaml == NULL) {
+		llapi_error(LLAPI_MSG_ERROR, errno,
+			    "cannot read or parse pin xattr of file '%s'.",
+			    path);
+		rc = -errno;
+		goto out;
+	}
+
+	/* We have an valid pin object, search for the entry to be deleted */
+	for (node = yaml->cy_child; node != NULL; node = node->cy_next) {
+		if (strcmp(node->cy_string, PIN_YAML_HSM_STR) == 0 &&
+		    node->cy_valueint == id)
+			break;
+	}
+	if (node == NULL) {
+		rc = 0;
+		goto out;
+	}
+
+	/* Remove the node */
+	if (node == yaml->cy_child) {
+		/* the first child */
+		if (node->cy_next)
+			node->cy_next->cy_prev = NULL;
+		yaml->cy_child = node->cy_next;
+	} else {
+		/* not the first child */
+		node->cy_prev->cy_next = node->cy_next;
+		if (node->cy_next)
+			node->cy_next->cy_prev = node->cy_prev;
+	}
+	node->cy_prev = node->cy_next = NULL;
+	cYAML_free_tree(node);
+
+	rc = dump_pin_object(yaml, buff, sizeof(buff));
+	if (rc)
+		goto out;
+
+	if (strlen(buff) == 0)
+		rc = removexattr(path, XATTR_LUSTRE_PIN);
+	else
+		rc = setxattr(path, XATTR_LUSTRE_PIN, buff, strlen(buff), 0);
+
+	if (rc < 0)
+		rc = -errno;
+
+out:
+	return rc;
 }

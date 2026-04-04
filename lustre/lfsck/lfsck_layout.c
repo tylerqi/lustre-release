@@ -10,9 +10,6 @@
  * Author: Fan, Yong <fan.yong@intel.com>
  */
 
-#ifndef EXPORT_SYMTAB
-# define EXPORT_SYMTAB
-#endif
 #define DEBUG_SUBSYSTEM S_LFSCK
 
 #include <linux/bitops.h>
@@ -215,7 +212,11 @@ lfsck_layout_assistant_sync_failures_interpret(const struct lu_env *env,
 }
 
 /**
- * Notify remote LFSCK instances about former failures.
+ * lfsck_layout_assistant_sync_failures() - Notify remote LFSCK instances about
+ *                                          former failures.
+ * @env: pointer to the thread context
+ * @com: pointer to the lfsck component
+ * @lr: pointer to the lfsck request
  *
  * The local LFSCK instance has recorded which OSTs have ever failed to respond
  * some LFSCK verification requests (maybe because of network issues or the OST
@@ -230,10 +231,6 @@ lfsck_layout_assistant_sync_failures_interpret(const struct lu_env *env,
  * it will scan the bitmap for the ever failed OSTs, and notify them that they
  * have ever missed some OST-object verification and should skip the handling
  * for orphan OST-objects on all MDTs that are in the layout LFSCK.
- *
- * \param[in] env	pointer to the thread context
- * \param[in] com	pointer to the lfsck component
- * \param[in] lr	pointer to the lfsck request
  */
 static void lfsck_layout_assistant_sync_failures(const struct lu_env *env,
 						 struct lfsck_component *com,
@@ -925,13 +922,14 @@ static void lfsck_layout_cpu_to_le(struct lfsck_layout *des,
 }
 
 /**
- * Load the OST bitmap from the lfsck_layout trace file.
+ * lfsck_layout_load_bitmap() - Load the OST bitmap from the lfsck_layout trace
+ *                              file.
+ * @env: pointer to the thread context
+ * @com: pointer to the lfsck component
  *
- * \param[in] env	pointer to the thread context
- * \param[in] com	pointer to the lfsck component
- *
- * \retval		0 for success
- * \retval		negative error number on failure or data corruption
+ * Return:
+ * * %0 for success
+ * * %negative error number on failure or data corruption
  */
 static int lfsck_layout_load_bitmap(const struct lu_env *env,
 				    struct lfsck_component *com)
@@ -991,7 +989,9 @@ static int lfsck_layout_load_bitmap(const struct lu_env *env,
 }
 
 /**
- * Load the layout LFSCK trace file from disk.
+ * lfsck_layout_load() - Load the layout LFSCK trace file from disk.
+ * @env: pointer to the thread context
+ * @com: pointer to the lfsck component
  *
  * The layout LFSCK trace file records the layout LFSCK status information
  * and other statistics, such as how many objects have been scanned, and how
@@ -999,13 +999,11 @@ static int lfsck_layout_load_bitmap(const struct lu_env *env,
  * failed OSTs during the layout LFSCK. All these information will be loaded
  * from disk to RAM when the layout LFSCK component setup.
  *
- * \param[in] env	pointer to the thread context
- * \param[in] com	pointer to the lfsck component
- *
- * \retval		positive number for file data corruption, the caller
- *			should reset the layout LFSCK trace file
- * \retval		0 for success
- * \retval		negative error number on failure
+ * Return:
+ * * %positive number for file data corruption, the caller should reset the
+ *   layout LFSCK trace file
+ * * %0 for success
+ * * %negative error number on failure
  */
 static int lfsck_layout_load(const struct lu_env *env,
 			     struct lfsck_component *com)
@@ -1042,7 +1040,9 @@ static int lfsck_layout_load(const struct lu_env *env,
 }
 
 /**
- * Store the layout LFSCK trace file on disk.
+ * lfsck_layout_store() - Store the layout LFSCK trace file on disk.
+ * @env: pointer to the thread context
+ * @com: pointer to the lfsck component
  *
  * The layout LFSCK trace file records the layout LFSCK status information
  * and other statistics, such as how many objects have been scanned, and how
@@ -1050,11 +1050,9 @@ static int lfsck_layout_load(const struct lu_env *env,
  * failed OSTs during the layout LFSCK. All these information will be synced
  * from RAM to disk periodically.
  *
- * \param[in] env	pointer to the thread context
- * \param[in] com	pointer to the lfsck component
- *
- * \retval		0 for success
- * \retval		negative error number on failure
+ * Return:
+ * * %0 for success
+ * * %negative error number on failure
  */
 static int lfsck_layout_store(const struct lu_env *env,
 			      struct lfsck_component *com)
@@ -1429,13 +1427,9 @@ lfsck_layout_lastid_load(const struct lu_env *env,
 
 			if (CFS_FAIL_CHECK(OBD_FAIL_LFSCK_DELAY4) &&
 			    cfs_fail_val > 0) {
-				struct ptlrpc_thread *thread =
-					&lfsck->li_thread;
-
 				up_write(&com->lc_sem);
-				wait_event_idle_timeout(
-					thread->t_ctl_waitq,
-					!thread_is_running(thread),
+				wait_var_event_timeout(lfsck,
+					lfsck_should_stop(lfsck),
 					cfs_time_seconds(cfs_fail_val));
 				down_write(&com->lc_sem);
 			}
@@ -1694,14 +1688,14 @@ log:
 }
 
 /**
- * Get the system default stripe size.
+ * lfsck_layout_get_def_stripesize() - Get the system default stripe size.
+ * @env: pointer to the thread context
+ * @lfsck: pointer to the lfsck instance
+ * @size: pointer to the default stripe size [out]
  *
- * \param[in] env	pointer to the thread context
- * \param[in] lfsck	pointer to the lfsck instance
- * \param[out] size	pointer to the default stripe size
- *
- * \retval		0 for success
- * \retval		negative error number on failure
+ * Return:
+ * * %0 for success
+ * * %negative error number on failure
  */
 static int lfsck_layout_get_def_stripesize(const struct lu_env *env,
 					   struct lfsck_instance *lfsck,
@@ -1734,9 +1728,23 @@ static int lfsck_layout_get_def_stripesize(const struct lu_env *env,
 }
 
 /**
- * \retval	 +1: repaired
- * \retval	  0: did nothing
- * \retval	-ve: on error
+ * lfsck_layout_refill_lovea() - Refill LOV EA
+ * @env: pointer to the thread context
+ * @lfsck: pointer to the lfsck instance
+ * @handle: transaction handle
+ * @parent: pointer to parent MDT object (dt_object) holding LOV EA
+ * @cfid: FID for the OST-object
+ * @buf: buffer to be written to LOV EA
+ * @lmm: LOV metadata
+ * @slot: LOV metadata pointing to OST
+ * @fl: flag for EA attribute
+ * @ost_idx: Index of OST object
+ * @size: size of @buf
+ *
+ * Return:
+ * * %+1 for repair successfully
+ * * %0 for did nothing
+ * * %negative error number on failure
  */
 static int lfsck_layout_refill_lovea(const struct lu_env *env,
 				     struct lfsck_instance *lfsck,
@@ -1938,9 +1946,10 @@ static void lfsck_layout_update_lcm(struct lov_comp_md_v1 *lcm,
 	__u64 end = le64_to_cpu(lcme->lcme_extent.e_end);
 	__u32 gen = version + range;
 	__u32 tmp_gen;
-	int i;
 	__u16 count = le16_to_cpu(lcm->lcm_entry_count);
 	__u16 flags = le16_to_cpu(lcm->lcm_flags);
+	__u16 flr_state = flags & LCM_FL_FLR_MASK;
+	int i;
 
 	if (!gen)
 		gen = 1;
@@ -1949,9 +1958,12 @@ static void lfsck_layout_update_lcm(struct lov_comp_md_v1 *lcm,
 		lcm->lcm_layout_gen = cpu_to_le32(gen);
 
 	if (range)
-		lcm->lcm_flags = cpu_to_le16(LCM_FL_WRITE_PENDING);
-	else if (flags == LCM_FL_NONE && le16_to_cpu(lcm->lcm_mirror_count) > 0)
-		lcm->lcm_flags = cpu_to_le16(LCM_FL_RDONLY);
+		lcm->lcm_flags = cpu_to_le16((flags & ~LCM_FL_FLR_MASK) |
+					     LCM_FL_WRITE_PENDING);
+	else if (flr_state == LCM_FL_NONE &&
+		 le16_to_cpu(lcm->lcm_mirror_count) > 0)
+		lcm->lcm_flags = cpu_to_le16((flags & ~LCM_FL_FLR_MASK) |
+					     LCM_FL_RDONLY);
 
 	for (i = 0; i < count; i++) {
 		tmp = &lcm->lcm_entries[i];
@@ -2167,9 +2179,22 @@ static int lfsck_layout_extend_v1v3_lovea(const struct lu_env *env,
 }
 
 /**
- * \retval	 +1: repaired
- * \retval	  0: did nothing
- * \retval	-ve: on error
+ * lfsck_layout_update_lovea() - Update LOV EA
+ * @env: pointer to the thread context
+ * @lfsck: pointer to the lfsck instance
+ * @handle: transaction handle
+ * @rec: pointer to the record for the orphan OST-object
+ * @parent: pointer to parent MDT object (dt_object) holding LOV EA
+ * @cfid: FID for the OST-object
+ * @buf: buffer to be written to LOV EA
+ * @fl: flag for EA attribute
+ * @ost_idx: index of OST on which OST object resides.
+ * @ea_off: the stripe offset in the LOV EA
+ *
+ * Return:
+ * * %+1 for repair successfully
+ * * %0 for did nothing
+ * * %negative error number on failure
  */
 static int lfsck_layout_update_lovea(const struct lu_env *env,
 				     struct lfsck_instance *lfsck,
@@ -2244,7 +2269,8 @@ static int __lfsck_layout_update_pfid(const struct lu_env *env,
 	if (IS_ERR(handle))
 		RETURN(PTR_ERR(handle));
 
-	rc = dt_declare_xattr_set(env, child, &buf, XATTR_NAME_FID, 0, handle);
+	rc = dt_declare_xattr_set(env, child, NULL, &buf, XATTR_NAME_FID, 0,
+				  handle);
 	if (rc != 0)
 		GOTO(stop, rc);
 
@@ -2266,9 +2292,19 @@ stop:
 }
 
 /**
- * \retval	 +1: repaired
- * \retval	  0: did nothing
- * \retval	-ve: on error
+ * lfsck_layout_update_pfid() - Update pFID
+ * @env: Lustre environment
+ * @com: pointer to layout lfsck component (holds metadata + state)
+ * @parent: pointer to parent MDT object (dt_object) holding LOV EA
+ * @cfid: pointer to file identifier (lu_fid) of the child (OST) object
+ * @cdev: pointer to dt_device (device state)
+ * @rec: pointer to orphan record (lu_orphan_rec_v3)
+ * @ea_off: the offset of the OST-object in the LOV EA
+ *
+ * Return:
+ * * %+1 for repair successfully
+ * * %0 for did nothing
+ * * %negative error number on failure
  */
 static int lfsck_layout_update_pfid(const struct lu_env *env,
 				    struct lfsck_component *com,
@@ -2309,6 +2345,18 @@ static int lfsck_lovea_size(struct ost_layout *ol, __u32 ea_off)
 }
 
 /**
+ * lfsck_layout_recreate_parent() - create MDT-object with given (partial) LOV EA.
+ * @env: pointer to the thread context
+ * @com: pointer to the lfsck component
+ * @ltd: pointer to target device descriptor
+ * @rec: pointer to the record for the orphan OST-object
+ * @cfid: pointer to FID for the orphan OST-object
+ * @infix: additional information, such as the FID for original MDT-object and
+ *         the stripe offset in the LOV EA
+ * @type: the type for describing why the orphan MDT-object is created. The
+ *        rules are as following:
+ * @ea_off: the stripe offset in the LOV EA
+ *
  * This function will create the MDT-object with the given (partial) LOV EA.
  *
  * Under some data corruption cases, the MDT-object of the file may be lost,
@@ -2321,16 +2369,6 @@ static int lfsck_lovea_size(struct ost_layout *ol, __u32 ea_off)
  * object. Unfortunately, some others have modified such newly created object.
  * To keep the data (both new and old), the LFSCK will create MDT-object with
  * new FID to reference the original OST-object.
- *
- * \param[in] env	pointer to the thread context
- * \param[in] com	pointer to the lfsck component
- * \param[in] ltd	pointer to target device descriptor
- * \param[in] rec	pointer to the record for the orphan OST-object
- * \param[in] cfid	pointer to FID for the orphan OST-object
- * \param[in] infix	additional information, such as the FID for original
- *			MDT-object and the stripe offset in the LOV EA
- * \param[in] type	the type for describing why the orphan MDT-object is
- *			created. The rules are as following:
  *
  *  type "C":		Multiple OST-objects claim the same MDT-object and the
  *			same slot in the layout EA. Then the LFSCK will create
@@ -2357,11 +2395,10 @@ static int lfsck_lovea_size(struct ost_layout *ol, __u32 ea_off)
  * The orphan name will be like:
  * ${FID}-${infix}-${type}-${conflict_version}
  *
- * \param[in] ea_off	the stripe offset in the LOV EA
- *
- * \retval		positive on repaired something
- * \retval		0 if needs to repair nothing
- * \retval		negative error number on failure
+ * Return:
+ * * %positive on repaired something
+ * * %0 if needs to repair nothing
+ * * %negative error number on failure
  */
 static int lfsck_layout_recreate_parent(const struct lu_env *env,
 					struct lfsck_component *com,
@@ -2489,7 +2526,7 @@ again:
 		GOTO(stop, rc);
 
 	lfsck_buf_init(&lov_buf, ea_buf->lb_buf, size);
-	rc = dt_declare_xattr_set(env, pobj, &lov_buf, XATTR_NAME_LOV,
+	rc = dt_declare_xattr_set(env, pobj, NULL, &lov_buf, XATTR_NAME_LOV,
 				  LU_XATTR_CREATE, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -2504,7 +2541,7 @@ again:
 
 	lfsck_buf_init(&linkea_buf, ldata.ld_buf->lb_buf,
 		       ldata.ld_leh->leh_len);
-	rc = dt_declare_xattr_set(env, pobj, &linkea_buf,
+	rc = dt_declare_xattr_set(env, pobj, NULL, &linkea_buf,
 				  XATTR_NAME_LINK, 0, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -2612,7 +2649,7 @@ static int lfsck_layout_master_conditional_destroy(const struct lu_env *env,
 	GOTO(put, rc);
 
 put:
-	lfsck_tgt_put(ltd);
+	kref_put(&ltd->ltd_ref, lfsck_tgt_free);
 
 	return rc;
 }
@@ -2734,6 +2771,19 @@ put:
 }
 
 /**
+ * lfsck_layout_conflict_create() - resolve inconsistencies in file layout
+ * @env: Lustre environment
+ * @com: pointer to layout lfsck component (holds metadata + state)
+ * @ltd: pointer to target descriptor (OST object)
+ * @rec: pointer to orphan record (lu_orphan_rec_v3)
+ * @parent: pointer to parent MDT object (dt_object) holding LOV EA
+ * @cfid: pointer to file identifier (lu_fid) of the child (OST) object
+ * @ea_buf: Pointer to buffer for read/write of EA
+ * @lmm: LOV metadata
+ * @slot: LOV metadata pointing to OST
+ * @ea_off: Offset within LOV EA which points to OST
+ * @lovea_size: LOV EA size
+ *
  * Some OST-object has occupied the specified layout EA slot.
  * Such OST-object may be generated by the LFSCK when repair
  * dangling referenced MDT-object, which can be indicated by
@@ -2742,9 +2792,10 @@ put:
  * will replace it with the orphan OST-object; otherwise the
  * LFSCK will create new MDT-object to reference the orphan.
  *
- * \retval	 +1: repaired
- * \retval	  0: did nothing
- * \retval	-ve: on error
+ * Retrun:
+ * * %+1 repaired
+ * * %0 did nothing
+ * * %negative on error
  */
 static int lfsck_layout_conflict_create(const struct lu_env *env,
 					struct lfsck_component *com,
@@ -2758,6 +2809,7 @@ static int lfsck_layout_conflict_create(const struct lu_env *env,
 					__u32 ea_off, int lovea_size)
 {
 	struct lfsck_thread_info *info = lfsck_env_info(env);
+	struct lfsck_instance *lfsck = com->lc_lfsck;
 	struct lu_fid *cfid2 = &info->lti_fid2;
 	struct ost_id *oi = &info->lti_oi;
 	struct dt_device *dev = lfsck_obj2dev(parent);
@@ -2767,8 +2819,10 @@ static int lfsck_layout_conflict_create(const struct lu_env *env,
 	int rc = 0;
 
 	ENTRY;
-	while (CFS_FAIL_TIMEOUT(OBD_FAIL_LFSCK_DELAY3, cfs_fail_val)) {
-		if (unlikely(!thread_is_running(&com->lc_lfsck->li_thread)))
+	while (CFS_FAIL_CHECK(OBD_FAIL_LFSCK_DELAY3)) {
+		wait_var_event_timeout(lfsck, lfsck_should_stop(lfsck),
+				       cfs_time_seconds(cfs_fail_val));
+		if (lfsck_should_stop(lfsck))
 			RETURN(0);
 	}
 
@@ -2777,7 +2831,7 @@ static int lfsck_layout_conflict_create(const struct lu_env *env,
 	if (rc != 0)
 		GOTO(out, rc);
 
-	rc = lfsck_ibits_lock(env, com->lc_lfsck, parent, &lh,
+	rc = lfsck_ibits_lock(env, lfsck, parent, &lh,
 			      MDS_INODELOCK_LAYOUT | MDS_INODELOCK_XATTR,
 			      LCK_EX);
 	if (rc != 0)
@@ -2785,7 +2839,7 @@ static int lfsck_layout_conflict_create(const struct lu_env *env,
 
 	rc = lfsck_layout_master_conditional_destroy(env, com, cfid2, ost_idx2);
 
-	/* If the conflict OST-obejct is not created for fixing dangling
+	/* If the conflict OST-object is not created for fixing dangling
 	 * referenced MDT-object in former LFSCK check/repair, or it has
 	 * been modified by others, then we cannot destroy it. Re-create
 	 * a new MDT-object for the orphan OST-object.
@@ -2807,14 +2861,14 @@ static int lfsck_layout_conflict_create(const struct lu_env *env,
 	if (rc != 0 && rc != -ENOENT)
 		GOTO(unlock, rc);
 
-	if (lfsck_is_dryrun(com->lc_lfsck))
+	if (lfsck_is_dryrun(lfsck))
 		GOTO(unlock, rc = 0);
 
-	th = lfsck_trans_create(env, dev, com->lc_lfsck);
+	th = lfsck_trans_create(env, dev, lfsck);
 	if (IS_ERR(th))
 		GOTO(unlock, rc = PTR_ERR(th));
 
-	rc = dt_declare_xattr_set(env, parent, ea_buf, XATTR_NAME_LOV,
+	rc = dt_declare_xattr_set(env, parent, NULL, ea_buf, XATTR_NAME_LOV,
 				  LU_XATTR_REPLACE, th);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -2825,8 +2879,8 @@ static int lfsck_layout_conflict_create(const struct lu_env *env,
 
 	dt_write_lock(env, parent, 0);
 	lmm->lmm_layout_gen = cpu_to_le16(le16_to_cpu(lmm->lmm_layout_gen) + 1);
-	rc = lfsck_layout_refill_lovea(env, com->lc_lfsck, th, parent, cfid,
-				       ea_buf, lmm, slot, LU_XATTR_REPLACE,
+	rc = lfsck_layout_refill_lovea(env, lfsck, th, parent, cfid, ea_buf,
+				       lmm, slot, LU_XATTR_REPLACE,
 				       ltd->ltd_index, lovea_size);
 	dt_write_unlock(env, parent);
 
@@ -2841,7 +2895,7 @@ unlock:
 out:
 	CDEBUG(D_LFSCK,
 	       "%s: layout LFSCK assistant replaced the conflict OST-object "DFID" on the OST %x with the orphan "DFID" on the OST %x: parent "DFID", stripe-index %u: rc = %d\n",
-	       lfsck_lfsck2name(com->lc_lfsck), PFID(cfid2), ost_idx2,
+	       lfsck_lfsck2name(lfsck), PFID(cfid2), ost_idx2,
 	       PFID(cfid), ltd->ltd_index, PFID(lfsck_dto2fid(parent)),
 	       ea_off, rc);
 
@@ -2849,9 +2903,20 @@ out:
 }
 
 /**
- * \retval	 +1: repaired
- * \retval	  0: did nothing
- * \retval	-ve: on error
+ * lfsck_layout_recreate_lovea() - Recreate LOV EA
+ * @env: Lustre environment
+ * @com: pointer to layout lfsck component (holds metadata + state)
+ * @ltd: pointer to target descriptor (OST object)
+ * @rec: pointer to orphan record (lu_orphan_rec_v3)
+ * @parent: pointer to parent MDT object (dt_object) holding LOV EA
+ * @cfid: pointer to file identifier (lu_fid) of the child (OST) object
+ * @ost_idx: index of OST on which OST object resides.
+ * @ea_off: offset within LOV EA (OST object)
+ *
+ * Retrun:
+ * * %+1 repaired
+ * * %0 did nothing
+ * * %negative on error
  */
 static int lfsck_layout_recreate_lovea(const struct lu_env *env,
 				       struct lfsck_component *com,
@@ -2932,8 +2997,8 @@ again:
 		if (IS_ERR(handle))
 			GOTO(unlock_layout, rc = PTR_ERR(handle));
 
-		rc = dt_declare_xattr_set(env, parent, buf, XATTR_NAME_LOV,
-					  fl, handle);
+		rc = dt_declare_xattr_set(env, parent, NULL, buf,
+					  XATTR_NAME_LOV, fl, handle);
 		if (rc != 0)
 			GOTO(stop, rc);
 
@@ -3368,12 +3433,12 @@ static int lfsck_layout_scan_orphan(const struct lu_env *env,
 	if (rc > 0)
 		GOTO(fini, rc = 0);
 
-	do {
+	while (rc == 0 && !lfsck_should_stop(lfsck)) {
 		struct dt_key		*key;
 		struct lu_orphan_rec_v3	*rec = &info->lti_rec;
 
-		if (CFS_FAIL_TIMEOUT(OBD_FAIL_LFSCK_DELAY3, cfs_fail_val) &&
-		    unlikely(!thread_is_running(&lfsck->li_thread)))
+		if (LFSCK_FAIL_TIMEOUT(lfsck, OBD_FAIL_LFSCK_DELAY3,
+				       cfs_fail_val))
 			break;
 
 		key = iops->key(env, di);
@@ -3391,7 +3456,7 @@ static int lfsck_layout_scan_orphan(const struct lu_env *env,
 		do {
 			rc = iops->next(env, di);
 		} while (rc < 0 && !(bk->lb_param & LPF_FAILOUT));
-	} while (rc == 0);
+	}
 
 	GOTO(fini, rc);
 
@@ -3464,7 +3529,16 @@ out:
 }
 
 /**
- * Repair the MDT-object with dangling LOV EA reference.
+ * __lfsck_layout_repair_dangling() - Repair the MDT-object with dangling
+ *                                    LOV EA reference.
+ * @env: pointer to the thread context
+ * @com: the layout LFSCK component
+ * @parent: the MDT-object with dangling LOV EA reference
+ * @child: the OST-object to be created
+ * @comp_id: the component ID of the OST-object in the LOV EA
+ * @ea_off: the offset of the OST-object in the LOV EA
+ * @ost_idx: the index of OST on which the OST-object resides
+ * @log: If %true & Debug enabled. Then print debug log
  *
  * we need to repair the inconsistency according to the users' requirement:
  *
@@ -3475,17 +3549,10 @@ out:
  *
  * 2) Re-create the missing OST-object with the FID/owner information.
  *
- * \param[in] env	pointer to the thread context
- * \param[in] com	the layout LFSCK component
- * \param[in] parent	the MDT-object with dangling LOV EA reference
- * \param[in] child	the OST-object to be created
- * \param[in] comp_id	the component ID of the OST-object in the LOV EA
- * \param[in] ea_off	the offset of the OST-object in the LOV EA
- * \param[in] ost_idx	the index of OST on which the OST-object resides
- *
- * \retval		+1 for repair successfully
- * \retval		0 for did nothing
- * \retval		negative error number on failure
+ * Return:
+ * * %+1 for repair successfully
+ * * %0 for did nothing
+ * * %negative error number on failure
  */
 static int __lfsck_layout_repair_dangling(const struct lu_env *env,
 					  struct lfsck_component *com,
@@ -3557,7 +3624,7 @@ static int __lfsck_layout_repair_dangling(const struct lu_env *env,
 	if (rc != 0)
 		GOTO(stop, rc);
 
-	rc = dt_declare_xattr_set(env, child, buf, XATTR_NAME_FID,
+	rc = dt_declare_xattr_set(env, child, NULL, buf, XATTR_NAME_FID,
 				  LU_XATTR_CREATE, handle);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -3666,22 +3733,23 @@ log:
 }
 
 /**
- * Repair the MDT-object with dangling LOV EA reference.
+ * lfsck_layout_repair_dangling() - Repair the MDT-object with dangling LOV EA
+ *                                  reference.
+ * @env: pointer to the thread context
+ * @com: the layout LFSCK component
+ * @pfid: the MDT-object's FID
+ * @cfid: the FID for the OST-object to be created
+ * @comp_id: the component ID of the OST-object in the LOV EA
+ * @ea_off: the offset of the OST-object in the LOV EA
+ * @ost_idx: the index of OST on which the OST-object resides
  *
  * Prepare parameters and call __lfsck_layout_repair_dangling()
  * to repair the dangling LOV EA reference.
  *
- * \param[in] env	pointer to the thread context
- * \param[in] com	the layout LFSCK component
- * \param[in] pfid	the MDT-object's FID
- * \param[in] cfid	the FID for the OST-object to be created
- * \param[in] comp_id	the component ID of the OST-object in the LOV EA
- * \param[in] ea_off	the offset of the OST-object in the LOV EA
- * \param[in] ost_idx	the index of OST on which the OST-object resides
- *
- * \retval		+1 for repair successfully
- * \retval		0 for did nothing
- * \retval		negative error number on failure
+ * Return:
+ * * %+1 for repair successfully
+ * * %0 for did nothing
+ * * %negative error number on failure
  */
 static int lfsck_layout_repair_dangling(const struct lu_env *env,
 					struct lfsck_component *com,
@@ -3796,7 +3864,8 @@ static int lfsck_layout_repair_unmatched_pair(const struct lu_env *env,
 	if (IS_ERR(handle))
 		GOTO(unlock1, rc = PTR_ERR(handle));
 
-	rc = dt_declare_xattr_set(env, child, buf, XATTR_NAME_FID, 0, handle);
+	rc = dt_declare_xattr_set(env, child, NULL, buf, XATTR_NAME_FID, 0,
+				  handle);
 	if (rc != 0)
 		GOTO(stop, rc);
 
@@ -3968,7 +4037,7 @@ static int lfsck_layout_repair_multiple_references(const struct lu_env *env,
 	if (IS_ERR(handle))
 		GOTO(log, rc = PTR_ERR(handle));
 
-	rc = dt_declare_xattr_set(env, parent, buf, XATTR_NAME_LOV,
+	rc = dt_declare_xattr_set(env, parent, NULL, buf, XATTR_NAME_LOV,
 				  LU_XATTR_REPLACE, handle);
 	if (rc != 0)
 		GOTO(stop, rc);
@@ -4088,7 +4157,8 @@ static int lfsck_layout_repair_owner(const struct lu_env *env,
 
 	tla->la_uid = pla->la_uid;
 	tla->la_gid = pla->la_gid;
-	tla->la_valid = LA_UID | LA_GID;
+	tla->la_projid = pla->la_projid;
+	tla->la_valid = LA_UID | LA_GID | LA_PROJID;
 	handle = lfsck_trans_create(env, dev, com->lc_lfsck);
 	if (IS_ERR(handle))
 		GOTO(log, rc = PTR_ERR(handle));
@@ -4452,7 +4522,7 @@ static int lfsck_layout_assistant_handler_p1(const struct lu_env *env,
 	struct lu_attr *cla = &info->lti_la;
 	struct lfsck_instance *lfsck = com->lc_lfsck;
 	struct lfsck_bookmark *bk = &lfsck->li_bookmark_ram;
-	enum lfsck_layout_inconsistency_type  type   = LLIT_NONE;
+	enum lfsck_layout_inconsistency_type type = LLIT_NONE;
 	int rc;
 
 	ENTRY;
@@ -4535,7 +4605,8 @@ check_owner:
 	 * It can be handled later inside the lfsck_layout_repair_owner().
 	 */
 	if (unlikely(cla->la_uid != pla->la_uid ||
-		     cla->la_gid != pla->la_gid)) {
+		     cla->la_gid != pla->la_gid ||
+		     cla->la_projid != pla->la_projid)) {
 		type = LLIT_INCONSISTENT_OWNER;
 		goto repair;
 	}
@@ -4595,9 +4666,7 @@ repair:
 out:
 	down_write(&com->lc_sem);
 	if (rc < 0) {
-		struct lfsck_assistant_data *lad = com->lc_data;
-
-		if (unlikely(test_bit(LAD_EXIT, &lad->lad_flags))) {
+		if (unlikely(lfsck_should_stop(lfsck))) {
 			rc = 0;
 		} else if (rc == -ENOTCONN || rc == -ESHUTDOWN ||
 			   rc == -ETIMEDOUT || rc == -EHOSTDOWN ||
@@ -4638,7 +4707,6 @@ lfsck_layout_double_scan_one_trace_file(const struct lu_env *env,
 					struct dt_object *obj, bool first)
 {
 	struct lfsck_instance *lfsck = com->lc_lfsck;
-	struct ptlrpc_thread *thread = &lfsck->li_thread;
 	struct lfsck_bookmark *bk = &lfsck->li_bookmark_ram;
 	struct lfsck_layout *lo = com->lc_file_ram;
 	const struct dt_it_ops *iops = &obj->do_index_ops->dio_it;
@@ -4672,10 +4740,11 @@ lfsck_layout_double_scan_one_trace_file(const struct lu_env *env,
 			GOTO(put, rc);
 	}
 
-	do {
-		if (CFS_FAIL_TIMEOUT(OBD_FAIL_LFSCK_DELAY3, cfs_fail_val) &&
-		    unlikely(!thread_is_running(thread)))
-			GOTO(put, rc = 0);
+	rc = 0;
+	while (!lfsck_should_stop(lfsck) && rc == 0) {
+		if (LFSCK_FAIL_TIMEOUT(lfsck, OBD_FAIL_LFSCK_DELAY3,
+				       cfs_fail_val))
+			GOTO(put, rc);
 
 		key = iops->key(env, di);
 		if (IS_ERR(key)) {
@@ -4744,11 +4813,8 @@ checkpoint:
 		}
 
 		lfsck_control_speed_by_self(com);
-		if (unlikely(!thread_is_running(thread)))
-			GOTO(put, rc = 0);
-
 		rc = iops->next(env, di);
-	} while (rc == 0);
+	}
 
 	GOTO(put, rc);
 
@@ -4776,7 +4842,8 @@ static int lfsck_layout_assistant_handler_p2(const struct lu_env *env,
 	       lfsck_lfsck2name(lfsck));
 
 	spin_lock(&ltds->ltd_lock);
-	while (!list_empty(&lad->lad_ost_phase2_list)) {
+	while (!list_empty(&lad->lad_ost_phase2_list) &&
+	       !lfsck_should_stop(lfsck)) {
 		ltd = list_first_entry(&lad->lad_ost_phase2_list,
 				       struct lfsck_tgt_desc,
 				       ltd_layout_phase_list);
@@ -4787,9 +4854,6 @@ static int lfsck_layout_assistant_handler_p2(const struct lu_env *env,
 			if (rc != 0 && bk->lb_param & LPF_FAILOUT)
 				RETURN(rc);
 
-			if (unlikely(test_bit(LAD_EXIT, &lad->lad_flags) ||
-				     !thread_is_running(&lfsck->li_thread)))
-				RETURN(0);
 			spin_lock(&ltds->ltd_lock);
 		}
 	}
@@ -4814,7 +4878,8 @@ static int lfsck_layout_assistant_handler_p2(const struct lu_env *env,
 				&lo->ll_lldk_latest_scanned_phase2.lldk_fid);
 		rc = lfsck_layout_double_scan_one_trace_file(env, com,
 				com->lc_sub_trace_objs[i].lsto_obj, true);
-		while (rc > 0 && ++i < LFSCK_STF_COUNT)
+		while (rc > 0 && ++i < LFSCK_STF_COUNT &&
+		       !lfsck_should_stop(lfsck))
 			rc = lfsck_layout_double_scan_one_trace_file(env, com,
 				com->lc_sub_trace_objs[i].lsto_obj, false);
 
@@ -4850,7 +4915,7 @@ lfsck_layout_slave_async_interpret(const struct lu_env *env,
 		 * hit failure, it will assume that the target exit the LFSCK
 		 * prcoessing and stop try.
 		 */
-		if (rc == -ENOTCONN || rc == -ESHUTDOWN) {
+		if (rc == -ENOTCONN || rc == -ESHUTDOWN || rc == -EAGAIN) {
 			int max_try = max_t(int, obd_timeout / 30, 3);
 
 			if (++(llst->llst_failures) > max_try)
@@ -5523,14 +5588,15 @@ static int lfsck_layout_slave_prep(const struct lu_env *env,
 	if (!lsp->lsp_index_valid)
 		return 0;
 
+	down_write(&llsd->llsd_rb_rwsem);
 	rc = lfsck_layout_llst_add(llsd, lsp->lsp_index);
 	if (rc == 0 && start != NULL && start->ls_flags & LPF_OST_ORPHAN) {
 		LASSERT(!llsd->llsd_rbtree_valid);
-
-		down_write(&llsd->llsd_rb_rwsem);
 		rc = lfsck_rbtree_setup(env, com);
-		up_write(&llsd->llsd_rb_rwsem);
+	} else if (rc == -EALREADY) {
+		rc = 0;
 	}
+	up_write(&llsd->llsd_rb_rwsem);
 
 	CDEBUG(D_LFSCK,
 	       "%s: layout LFSCK slave prep done, start pos [%llu]\n",
@@ -5588,8 +5654,6 @@ static int lfsck_layout_scan_stripes(const struct lu_env *env,
 	struct lfsck_assistant_object *lso = NULL;
 	struct lov_ost_data_v1 *objs;
 	struct lfsck_tgt_descs *ltds = &lfsck->li_ost_descs;
-	struct ptlrpc_thread *mthread = &lfsck->li_thread;
-	struct ptlrpc_thread *athread = &lad->lad_thread;
 	struct lu_buf buf;
 	int rc = 0;
 	int i;
@@ -5614,18 +5678,14 @@ static int lfsck_layout_scan_stripes(const struct lu_env *env,
 		struct lfsck_tgt_desc	*tgt	= NULL;
 		struct dt_object	*cobj	= NULL;
 		__u32			 index;
-		bool			 wakeup = false;
 
 		if (unlikely(lovea_slot_is_dummy(objs)))
 			continue;
 
-		wait_event_idle(mthread->t_ctl_waitq,
-				lad->lad_prefetched < bk->lb_async_windows ||
-				!thread_is_running(mthread) ||
-				thread_is_stopped(athread));
-
-		if (unlikely(!thread_is_running(mthread)) ||
-			     thread_is_stopped(athread))
+		wait_var_event(lfsck, lfsck_should_stop(lfsck) ||
+				!lad->lad_task ||
+				lad->lad_prefetched < bk->lb_async_windows);
+		if (lfsck_should_stop(lfsck) || !lad->lad_task)
 			GOTO(out, rc = 0);
 
 		if (unlikely(lfsck_is_dead_obj(parent)))
@@ -5680,7 +5740,7 @@ static int lfsck_layout_scan_stripes(const struct lu_env *env,
 		cobj = lfsck_object_find_by_dev(env, tgt->ltd_tgt, fid);
 		if (IS_ERR(cobj)) {
 			if (lfsck_is_dead_obj(parent)) {
-				lfsck_tgt_put(tgt);
+				kref_put(&tgt->ltd_ref, lfsck_tgt_free);
 
 				GOTO(out, rc = 0);
 			}
@@ -5727,18 +5787,16 @@ static int lfsck_layout_scan_stripes(const struct lu_env *env,
 		if (lad->lad_assistant_status < 0) {
 			spin_unlock(&lad->lad_lock);
 			lfsck_layout_assistant_req_fini(env, &llr->llr_lar);
-			lfsck_tgt_put(tgt);
+			kref_put(&tgt->ltd_ref, lfsck_tgt_free);
 			RETURN(lad->lad_assistant_status);
 		}
 
 		list_add_tail(&llr->llr_lar.lar_list, &lad->lad_req_list);
 		if (lad->lad_prefetched == 0)
-			wakeup = true;
+			wake_up_var(lfsck);
 
 		lad->lad_prefetched++;
 		spin_unlock(&lad->lad_lock);
-		if (wakeup)
-			wake_up(&athread->t_ctl_waitq);
 
 next:
 		down_write(&com->lc_sem);
@@ -5751,7 +5809,7 @@ next:
 			lfsck_object_put(env, cobj);
 
 		if (likely(tgt != NULL))
-			lfsck_tgt_put(tgt);
+			kref_put(&tgt->ltd_ref, lfsck_tgt_free);
 
 		if (rc < 0 && bk->lb_param & LPF_FAILOUT)
 			GOTO(out, rc);
@@ -5840,12 +5898,15 @@ again:
 		for (i = 0; i < count; i++) {
 			lcme = &lcm->lcm_entries[i];
 			v1 = buf->lb_buf + le32_to_cpu(lcme->lcme_offset);
+			if (le32_to_cpu(v1->lmm_magic) == LOV_MAGIC_FOREIGN)
+				continue;
 			if (memcmp(oi, &v1->lmm_oi, sizeof(*oi)) != 0)
 				goto fix;
 		}
 
 		GOTO(out, stripe = true);
-	} else if (memcmp(oi, &lmm->lmm_oi, sizeof(*oi)) == 0) {
+	} else if ((magic != LOV_MAGIC_FOREIGN) &&
+		   memcmp(oi, &lmm->lmm_oi, sizeof(*oi)) == 0) {
 		GOTO(out, stripe = true);
 	}
 
@@ -5873,8 +5934,9 @@ fix:
 			GOTO(out, rc = PTR_ERR(handle));
 
 		lfsck_buf_init(&ea_buf, buf->lb_buf, size);
-		rc = dt_declare_xattr_set(env, obj, &ea_buf, XATTR_NAME_LOV,
-					  LU_XATTR_REPLACE, handle);
+		rc = dt_declare_xattr_set(env, obj, NULL, &ea_buf,
+					  XATTR_NAME_LOV, LU_XATTR_REPLACE,
+					  handle);
 		if (rc != 0)
 			GOTO(out, rc);
 
@@ -5895,9 +5957,11 @@ fix:
 		for (i = 0; i < count; i++) {
 			lcme = &lcm->lcm_entries[i];
 			v1 = buf->lb_buf + le32_to_cpu(lcme->lcme_offset);
+			if (le32_to_cpu(v1->lmm_magic) == LOV_MAGIC_FOREIGN)
+				continue;
 			v1->lmm_oi = *oi;
 		}
-	} else {
+	} else if (magic != LOV_MAGIC_FOREIGN) {
 		lmm->lmm_oi = *oi;
 	}
 
@@ -5976,13 +6040,9 @@ static int lfsck_layout_slave_exec_oit(const struct lu_env *env,
 	LASSERT(llsd != NULL);
 
 	if (CFS_FAIL_CHECK(OBD_FAIL_LFSCK_DELAY5) &&
-	    cfs_fail_val == lfsck_dev_idx(lfsck)) {
-		struct ptlrpc_thread	*thread = &lfsck->li_thread;
-
-		wait_event_idle_timeout(thread->t_ctl_waitq,
-					!thread_is_running(thread),
-					cfs_time_seconds(1));
-	}
+	    cfs_fail_val == lfsck_dev_idx(lfsck))
+		wait_var_event_timeout(lfsck, lfsck_should_stop(lfsck),
+				       cfs_time_seconds(1));
 
 	lfsck_rbtree_update_bitmap(env, com, fid, false);
 
@@ -6374,34 +6434,29 @@ static int lfsck_layout_master_double_scan(const struct lu_env *env,
 {
 	struct lfsck_layout *lo = com->lc_file_ram;
 	struct lfsck_assistant_data *lad = com->lc_data;
-	struct lfsck_instance *lfsck = com->lc_lfsck;
-	struct lfsck_tgt_descs *ltds;
-	struct lfsck_tgt_desc *ltd;
-	struct lfsck_tgt_desc *next;
 	int rc;
 
 	rc = lfsck_double_scan_generic(env, com, lo->ll_status);
 
-	if (thread_is_stopped(&lad->lad_thread)) {
+	if (test_bit(LAD_STOPPED, &lad->lad_flags)) {
+		struct lfsck_instance *lfsck = com->lc_lfsck;
+		struct list_head *tmp;
+		struct list_head *next;
+
+		LASSERT(lad->lad_task == NULL);
 		LASSERT(list_empty(&lad->lad_req_list));
 		LASSERT(list_empty(&lad->lad_ost_phase1_list));
 		LASSERT(list_empty(&lad->lad_mdt_phase1_list));
 
-		ltds = &lfsck->li_ost_descs;
-		spin_lock(&ltds->ltd_lock);
-		list_for_each_entry_safe(ltd, next, &lad->lad_ost_phase2_list,
-					 ltd_layout_phase_list) {
-			list_del_init(&ltd->ltd_layout_phase_list);
-		}
-		spin_unlock(&ltds->ltd_lock);
+		spin_lock(&lfsck->li_mdt_descs.ltd_lock);
+		list_for_each_safe(tmp, next, &lad->lad_mdt_phase2_list)
+			list_del_init(tmp);
+		spin_unlock(&lfsck->li_mdt_descs.ltd_lock);
 
-		ltds = &lfsck->li_mdt_descs;
-		spin_lock(&ltds->ltd_lock);
-		list_for_each_entry_safe(ltd, next, &lad->lad_mdt_phase2_list,
-					 ltd_layout_phase_list) {
-			list_del_init(&ltd->ltd_layout_phase_list);
-		}
-		spin_unlock(&ltds->ltd_lock);
+		spin_lock(&lfsck->li_ost_descs.ltd_lock);
+		list_for_each_safe(tmp, next, &lad->lad_ost_phase2_list)
+			list_del_init(tmp);
+		spin_unlock(&lfsck->li_ost_descs.ltd_lock);
 	}
 
 	return rc;
@@ -6413,8 +6468,7 @@ static int lfsck_layout_slave_double_scan(const struct lu_env *env,
 	struct lfsck_instance *lfsck = com->lc_lfsck;
 	struct lfsck_layout_slave_data *llsd = com->lc_data;
 	struct lfsck_layout *lo = com->lc_file_ram;
-	struct ptlrpc_thread *thread = &lfsck->li_thread;
-	int rc;
+	int rc = 0;
 
 	ENTRY;
 	CDEBUG(D_LFSCK, "%s: layout LFSCK slave phase2 scan start\n",
@@ -6431,10 +6485,10 @@ static int lfsck_layout_slave_double_scan(const struct lu_env *env,
 	com->lc_time_next_checkpoint = com->lc_time_last_checkpoint +
 				       LFSCK_CHECKPOINT_INTERVAL;
 
-	while (1) {
+	while (!lfsck_should_stop(lfsck)) {
 		rc = lfsck_layout_slave_query_master(env, com);
 		if (list_empty(&llsd->llsd_master_list)) {
-			if (unlikely(!thread_is_running(thread)))
+			if (unlikely(lfsck_should_stop(lfsck)))
 				rc = 0;
 			else
 				rc = 1;
@@ -6445,14 +6499,11 @@ static int lfsck_layout_slave_double_scan(const struct lu_env *env,
 		if (rc < 0)
 			GOTO(done, rc);
 
-		rc = wait_event_idle_timeout(
-			thread->t_ctl_waitq,
-			!thread_is_running(thread) ||
+		rc = wait_var_event_timeout(lfsck,
+			lfsck_should_stop(lfsck) ||
 			lo->ll_flags & LF_INCOMPLETE ||
 			list_empty(&llsd->llsd_master_list),
 			cfs_time_seconds(30));
-		if (unlikely(!thread_is_running(thread)))
-			GOTO(done, rc = 0);
 
 		if (lo->ll_flags & LF_INCOMPLETE)
 			GOTO(done, rc = 1);
@@ -6469,7 +6520,7 @@ done:
 			(rc > 0 && lo->ll_flags & LF_INCOMPLETE) ? 0 : rc);
 	lfsck_layout_slave_quit(env, com);
 	if (atomic_dec_and_test(&lfsck->li_double_scan_count))
-		wake_up(&lfsck->li_thread.t_ctl_waitq);
+		wake_up_var(lfsck);
 
 	CDEBUG(D_LFSCK,
 	       "%s: layout LFSCK slave phase2 scan finished, status %d: rc = %d\n",
@@ -6488,8 +6539,7 @@ static void lfsck_layout_master_data_release(const struct lu_env *env,
 	struct lfsck_tgt_desc *next;
 
 	LASSERT(lad != NULL);
-	LASSERT(thread_is_init(&lad->lad_thread) ||
-		thread_is_stopped(&lad->lad_thread));
+	LASSERT(!lad->lad_task);
 	LASSERT(list_empty(&lad->lad_req_list));
 
 	com->lc_data = NULL;
@@ -6544,43 +6594,30 @@ static void lfsck_layout_slave_data_release(const struct lu_env *env,
 static void lfsck_layout_master_quit(const struct lu_env *env,
 				     struct lfsck_component *com)
 {
-	struct lfsck_assistant_data	*lad	= com->lc_data;
-	struct lfsck_instance		*lfsck	= com->lc_lfsck;
-	struct lfsck_tgt_descs		*ltds;
-	struct lfsck_tgt_desc		*ltd;
-	struct lfsck_tgt_desc		*next;
+	struct lfsck_instance *lfsck = com->lc_lfsck;
+	struct lfsck_assistant_data *lad = com->lc_data;
+	struct list_head *tmp;
+	struct list_head *next;
 
 	LASSERT(lad != NULL);
 
-	lfsck_quit_generic(env, com);
+	lfsck_stop_assistant(lad);
 
-	LASSERT(thread_is_init(&lad->lad_thread) ||
-		thread_is_stopped(&lad->lad_thread));
 	LASSERT(list_empty(&lad->lad_req_list));
 
-	ltds = &lfsck->li_ost_descs;
-	spin_lock(&ltds->ltd_lock);
-	list_for_each_entry_safe(ltd, next, &lad->lad_ost_phase1_list,
-				 ltd_layout_phase_list) {
-		list_del_init(&ltd->ltd_layout_phase_list);
-	}
-	list_for_each_entry_safe(ltd, next, &lad->lad_ost_phase2_list,
-				 ltd_layout_phase_list) {
-		list_del_init(&ltd->ltd_layout_phase_list);
-	}
-	spin_unlock(&ltds->ltd_lock);
+	spin_lock(&lfsck->li_mdt_descs.ltd_lock);
+	list_for_each_safe(tmp, next, &lad->lad_mdt_phase1_list)
+		list_del_init(tmp);
+	list_for_each_safe(tmp, next, &lad->lad_mdt_phase2_list)
+		list_del_init(tmp);
+	spin_unlock(&lfsck->li_mdt_descs.ltd_lock);
 
-	ltds = &lfsck->li_mdt_descs;
-	spin_lock(&ltds->ltd_lock);
-	list_for_each_entry_safe(ltd, next, &lad->lad_mdt_phase1_list,
-				 ltd_layout_phase_list) {
-		list_del_init(&ltd->ltd_layout_phase_list);
-	}
-	list_for_each_entry_safe(ltd, next, &lad->lad_mdt_phase2_list,
-				 ltd_layout_phase_list) {
-		list_del_init(&ltd->ltd_layout_phase_list);
-	}
-	spin_unlock(&ltds->ltd_lock);
+	spin_lock(&lfsck->li_ost_descs.ltd_lock);
+	list_for_each_safe(tmp, next, &lad->lad_ost_phase1_list)
+		list_del_init(tmp);
+	list_for_each_safe(tmp, next, &lad->lad_ost_phase2_list)
+		list_del_init(tmp);
+	spin_unlock(&lfsck->li_ost_descs.ltd_lock);
 }
 
 static void lfsck_layout_slave_quit(const struct lu_env *env,
@@ -6725,7 +6762,7 @@ static int lfsck_layout_master_in_notify(const struct lu_env *env,
 		stop->ls_flags = lr->lr_param & ~LPF_BROADCAST;
 		lfsck_stop(env, lfsck->li_bottom, stop);
 	} else if (lfsck_phase2_next_ready(lad)) {
-		wake_up(&lad->lad_thread.t_ctl_waitq);
+		wake_up_var(lfsck);
 	}
 
 	RETURN(0);
@@ -6812,7 +6849,7 @@ static int lfsck_layout_slave_in_notify(const struct lu_env *env,
 			if (llst != NULL) {
 				kref_put(&llst->llst_ref,
 					 lfsck_layout_llst_put);
-				wake_up(&lfsck->li_thread.t_ctl_waitq);
+				wake_up_var(lfsck);
 			}
 		}
 
@@ -6835,7 +6872,7 @@ static int lfsck_layout_slave_in_notify(const struct lu_env *env,
 
 	kref_put(&llst->llst_ref, lfsck_layout_llst_put);
 	if (list_empty(&llsd->llsd_master_list))
-		wake_up(&lfsck->li_thread.t_ctl_waitq);
+		wake_up_var(lfsck);
 
 	if (lr->lr_event == LE_PEER_EXIT &&
 	    (lfsck->li_bookmark_ram.lb_param & LPF_FAILOUT ||
@@ -6962,7 +6999,7 @@ static int lfsck_layout_slave_join(const struct lu_env *env,
 	spin_unlock(&lfsck->li_lock);
 	rc = lfsck_layout_llst_add(llsd, lsp->lsp_index);
 	spin_lock(&lfsck->li_lock);
-	if (rc == 0 && !thread_is_running(&lfsck->li_thread)) {
+	if (rc == 0 && !lfsck->li_task) {
 		spin_unlock(&lfsck->li_lock);
 		llst = lfsck_layout_llst_find_and_del(llsd, lsp->lsp_index,
 						      true);
@@ -7391,9 +7428,14 @@ static void lfsck_orphan_it_fini(const struct lu_env *env,
 }
 
 /**
- * \retval	 +1: the iteration finished
- * \retval	  0: on success, not finished
- * \retval	-ve: on error
+ * lfsck_orphan_it_next() - Move orphan iterator forward
+ * @env: Lustre environment
+ * @di: Pointer to struct dt_it (iterator)
+ *
+ * Return:
+ * * %+1 the iteration finished
+ * * %0 on success, not finished
+ * * %negative on error
  */
 static int lfsck_orphan_it_next(const struct lu_env *env,
 				struct dt_it *di)
@@ -7610,10 +7652,16 @@ out:
 }
 
 /**
- * \retval	 +1: locate to the exactly position
- * \retval	  0: cannot locate to the exactly position,
- *		     call next() to move to a valid position.
- * \retval	-ve: on error
+ * lfsck_orphan_it_get() - Get orphan iterator
+ * @env: Lustre environment
+ * @di: Pointer to struct dt_it (iterator)
+ * @key: Pointer to struct dt_key (target key)
+ *
+ * Return:
+ * * %+1 locate to the exactly position
+ * * %0 cannot locate to the exactly position, call next() to move to a valid
+ *   position.
+ * * %negative on error
  */
 static int lfsck_orphan_it_get(const struct lu_env *env,
 			       struct dt_it *di,
@@ -7673,10 +7721,16 @@ static __u64 lfsck_orphan_it_store(const struct lu_env *env,
 }
 
 /**
- * \retval	 +1: locate to the exactly position
- * \retval	  0: cannot locate to the exactly position,
- *		     call next() to move to a valid position.
- * \retval	-ve: on error
+ * lfsck_orphan_it_load() - Load orphan iterator
+ * @env: Lustre environment
+ * @di: Pointer to struct dt_it (iterator)
+ * @hash: Hash value
+ *
+ * Return:
+ * * %+1 locate to the exactly position
+ * * %0 cannot locate to the exactly position, call next() to move to a valid
+ *   position.
+ * * %negative on error
  */
 static int lfsck_orphan_it_load(const struct lu_env *env,
 				const struct dt_it *di,

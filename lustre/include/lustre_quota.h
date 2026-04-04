@@ -22,6 +22,7 @@
 #include <linux/sort.h>
 #include <lustre_fid.h>
 #include <lustre_dlm.h>
+#include <lustre_nodemap.h>
 
 #ifndef MAX_IQ_TIME
 #define MAX_IQ_TIME  604800     /* (7*24*60*60) 1 week */
@@ -46,9 +47,10 @@ union lquota_rec {
 
 /* flags for inode/block quota accounting */
 enum osd_qid_declare_flags {
-	OSD_QID_INODE	= BIT(0),
-	OSD_QID_BLK	= BIT(1),
-	OSD_QID_FORCE	= BIT(2),
+	OSD_QID_INODE		= BIT(0),
+	OSD_QID_BLK		= BIT(1),
+	OSD_QID_FORCE		= BIT(2), /* Ignore -EDQUOT */
+	OSD_QID_IGNORE_ROOT_PRJ = BIT(3), /* Ignore QUOTA_FL_ROOT_PRJQUOTA */
 };
 
 /* the length of the buffer to contain the quotas gotten from QMT/QSD,
@@ -98,7 +100,8 @@ extern struct dt_index_features dt_quota_bgrp_features;
 struct qmt_handlers {
 	/* Handle quotactl request from client. */
 	int (*qmth_quotactl)(const struct lu_env *env, struct lu_device *d,
-			     struct obd_quotactl *, char *buf, int len);
+			     struct lu_nodemap *nodemap, struct obd_quotactl *,
+			     char *buf);
 
 	/* Handle dqacq/dqrel request from slave. */
 	int (*qmth_dqacq)(const struct lu_env *env, struct lu_device *d,
@@ -238,6 +241,8 @@ struct lquota_id_info {
 
 	/* whether we are reporting blocks or inodes */
 	bool			 lqi_is_blk;
+	/* enforce project quota for root */
+	bool			 lqi_ignore_root_proj_quota;
 };
 
 /* With the DoM, both inode quota in meta pool and block quota in data pool
@@ -264,7 +269,53 @@ struct lquota_trans {
  * on slave
  */
 int lquotactl_slv(const struct lu_env *env, struct dt_device *dt,
-		  struct obd_quotactl *obdq, char *buf, int len);
+		  struct lu_nodemap *nm, struct obd_quotactl *obdq, char *buf);
+
+static inline int lquota_iter_change_qid(struct lu_nodemap *nodemap,
+			    struct obd_quotactl *oqctl)
+{
+	unsigned long end, start;
+
+	if (!nodemap)
+		return 0;
+
+	start = nodemap_map_id(nodemap, oqctl->qc_type, NODEMAP_CLIENT_TO_FS,
+			       oqctl->qc_iter_qid_start);
+	end = oqctl->qc_iter_qid_end;
+	if (!end) {
+		switch (oqctl->qc_type) {
+		case USRQUOTA:
+			end = nodemap->nm_offset_limit_uid - 1;
+			break;
+		case GRPQUOTA:
+			end = nodemap->nm_offset_limit_gid - 1;
+			break;
+		case PRJQUOTA:
+			end = nodemap->nm_offset_limit_projid - 1;
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+
+	end = nodemap_map_id(nodemap, oqctl->qc_type, NODEMAP_CLIENT_TO_FS,
+			     end);
+
+	/* start and end sanity check */
+	if ((!start && !end) || start > end)
+		return -EINVAL;
+
+	if (oqctl->qc_iter_qid_start != start ||
+	    oqctl->qc_iter_qid_end != end) {
+		CDEBUG(D_QUOTA, "set IDs according to nodemap start:%llu->%lu end:%llu->%lu\n",
+		       oqctl->qc_iter_qid_start, start, oqctl->qc_iter_qid_end,
+		       end);
+		oqctl->qc_iter_qid_start = start;
+		oqctl->qc_iter_qid_end = end;
+	}
+
+	return 0;
+}
 
 /** @} quota */
 #endif /* _LUSTRE_QUOTA_H */

@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -476,7 +456,7 @@ check_ptlrpc_body(void)
 	CHECK_MEMBER(ptlrpc_body, pb_last_xid);
 	CHECK_MEMBER(ptlrpc_body, pb_tag);
 	CHECK_MEMBER(ptlrpc_body, pb_padding0);
-	CHECK_MEMBER(ptlrpc_body, pb_padding1);
+	CHECK_MEMBER(ptlrpc_body, pb_projid);
 	CHECK_MEMBER(ptlrpc_body, pb_last_committed);
 	CHECK_MEMBER(ptlrpc_body, pb_transno);
 	CHECK_MEMBER(ptlrpc_body, pb_flags);
@@ -504,7 +484,7 @@ check_ptlrpc_body(void)
 	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_last_xid);
 	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_tag);
 	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_padding0);
-	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_padding1);
+	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_projid);
 	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_last_committed);
 	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_transno);
 	CHECK_MEMBER_SAME(ptlrpc_body_v3, ptlrpc_body_v2, pb_flags);
@@ -614,7 +594,7 @@ check_obd_connect_data(void)
 	CHECK_DEFINE_64X(OBD_CONNECT_GRANT);
 	CHECK_DEFINE_64X(OBD_CONNECT_SRVLOCK);
 	CHECK_DEFINE_64X(OBD_CONNECT_VERSION);
-	CHECK_DEFINE_64X(OBD_CONNECT_REQPORTAL);
+	CHECK_DEFINE_64X(OBD_CONNECT_MGS_NIDLIST);
 	CHECK_DEFINE_64X(OBD_CONNECT_ACL);
 	CHECK_DEFINE_64X(OBD_CONNECT_XATTR);
 	CHECK_DEFINE_64X(OBD_CONNECT_LARGE_ACL);
@@ -703,8 +683,12 @@ check_obd_connect_data(void)
 	CHECK_DEFINE_64X(OBD_CONNECT2_COMPRESS);
 	CHECK_DEFINE_64X(OBD_CONNECT2_UNALIGNED_DIO);
 	CHECK_DEFINE_64X(OBD_CONNECT2_CONN_POLICY);
+	CHECK_DEFINE_64X(OBD_CONNECT2_SPARSE);
 	CHECK_DEFINE_64X(OBD_CONNECT2_MIRROR_ID_FIX);
 	CHECK_DEFINE_64X(OBD_CONNECT2_UPDATE_LAYOUT);
+	CHECK_DEFINE_64X(OBD_CONNECT2_FLR_EC);
+	CHECK_DEFINE_64X(OBD_CONNECT2_FLR_IMMED_MIRROR);
+	CHECK_DEFINE_64X(OBD_CONNECT2_NO_APPEND);
 
 	BLANK_LINE();
 	CHECK_VALUE_X(OBD_CKSUM_CRC32);
@@ -880,6 +864,7 @@ check_lov_mds_md_v3(void)
 
 	CHECK_VALUE_X(LOV_PATTERN_RAID0);
 	CHECK_VALUE_X(LOV_PATTERN_RAID1);
+	CHECK_VALUE_X(LOV_PATTERN_PARITY);
 	CHECK_VALUE_X(LOV_PATTERN_MDT);
 	CHECK_VALUE_X(LOV_PATTERN_OVERSTRIPING);
 }
@@ -942,7 +927,7 @@ check_lov_comp_md_entry_v1(void)
 	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_offset);
 	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_size);
 	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_layout_gen);
-	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_timestamp);
+	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_time_and_id);
 	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_dstripe_count);
 	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_cstripe_count);
 	CHECK_MEMBER(lov_comp_md_entry_v1, lcme_compr_type);
@@ -961,6 +946,7 @@ check_lov_comp_md_entry_v1(void)
 	CHECK_CVALUE_X(LCME_FL_COMPRESS);
 	CHECK_CVALUE_X(LCME_FL_PARTIAL);
 	CHECK_CVALUE_X(LCME_FL_NOCOMPR);
+	CHECK_CVALUE_X(LCME_FL_IS_LINK_ID);
 	CHECK_CVALUE_X(LCME_FL_NEG);
 }
 
@@ -1247,6 +1233,9 @@ check_mds_op_bias(void)
 	CHECK_VALUE_X(MDS_FID_OP);
 	CHECK_VALUE_X(MDS_MIGRATE_NSONLY);
 	CHECK_VALUE_X(MDS_CREATE_DEFAULT_LMV);
+	CHECK_VALUE_X(MDS_CLOSE_LAYOUT_SWAP_HSM);
+	CHECK_VALUE_X(MDS_RENAME_AGAIN);
+	CHECK_VALUE_X(MDS_NAMEHASH);
 }
 
 static void
@@ -2095,6 +2084,7 @@ check_rsc_downcall_data(void)
 	CHECK_MEMBER(rsc_downcall_data, scd_uid);
 	CHECK_MEMBER(rsc_downcall_data, scd_gid);
 	CHECK_MEMBER(rsc_downcall_data, scd_mechname);
+	CHECK_MEMBER(rsc_downcall_data, scd_nmname);
 	CHECK_MEMBER(rsc_downcall_data, scd_offset);
 	CHECK_MEMBER(rsc_downcall_data, scd_len);
 	CHECK_MEMBER(rsc_downcall_data, scd_padding);
@@ -2250,6 +2240,20 @@ check_mgs_target_info(void)
 }
 
 static void
+check_mgs_target_nidlist(void)
+{
+	BLANK_LINE();
+	CHECK_STRUCT(mgs_target_nidlist);
+	CHECK_MEMBER(mgs_target_nidlist, mtn_flags);
+	CHECK_MEMBER(mgs_target_nidlist, mtn_nids);
+	CHECK_MEMBER(mgs_target_nidlist, mtn_inline_list[0]);
+
+	CHECK_CVALUE_X(NIDLIST_APPEND);
+	CHECK_CVALUE_X(NIDLIST_IN_BULK);
+	CHECK_CVALUE_X(NIDLIST_COMPRESSED);
+}
+
+static void
 check_mgs_nidtbl_entry(void)
 {
 	BLANK_LINE();
@@ -2363,9 +2367,6 @@ check_posix_acl_xattr_header(void)
 	printf("#ifdef CONFIG_FS_POSIX_ACL\n");
 	CHECK_STRUCT_TYPEDEF(posix_acl_xattr_header);
 	CHECK_MEMBER_TYPEDEF(posix_acl_xattr_header, a_version);
-	printf("#ifndef HAVE_STRUCT_POSIX_ACL_XATTR\n");
-	CHECK_MEMBER_IS_FLEXIBLE_TYPEDEF(posix_acl_xattr_header, a_entries);
-	printf("#endif /* HAVE_STRUCT_POSIX_ACL_XATTR */\n");
 	printf("#endif /* CONFIG_FS_POSIX_ACL */\n");
 }
 
@@ -2549,6 +2550,33 @@ static void check_layout_intent(void)
 	CHECK_VALUE(LAIF_INCOMPRESSIBLE);
 }
 
+static void check_swap_layout(void)
+{
+	BLANK_LINE();
+	CHECK_STRUCT(lustre_swap_layouts);
+	CHECK_MEMBER(lustre_swap_layouts, sl_flags);
+	CHECK_MEMBER(lustre_swap_layouts, sl_fd);
+	CHECK_MEMBER(lustre_swap_layouts, sl_gid);
+	CHECK_MEMBER(lustre_swap_layouts, sl_dv1);
+	CHECK_MEMBER(lustre_swap_layouts, sl_dv2);
+
+	BLANK_LINE();
+	CHECK_STRUCT(mdc_swap_layouts);
+	CHECK_MEMBER(mdc_swap_layouts, msl_flags);
+	CHECK_MEMBER(mdc_swap_layouts, msl_dv1);
+	CHECK_MEMBER(mdc_swap_layouts, msl_dv2);
+
+	BLANK_LINE();
+	COMMENT("Checks for mdc_swap_layouts::msl_flags");
+	CHECK_VALUE(SWAP_LAYOUTS_CHECK_DV1);
+	CHECK_VALUE(SWAP_LAYOUTS_CHECK_DV2);
+	CHECK_VALUE(SWAP_LAYOUTS_KEEP_MTIME);
+	CHECK_VALUE(SWAP_LAYOUTS_KEEP_ATIME);
+	CHECK_VALUE(SWAP_LAYOUTS_CLOSE);
+	CHECK_VALUE(SWAP_LAYOUTS_MDS_RELEASE);
+	CHECK_VALUE(SWAP_LAYOUTS_WITH_DV12);
+}
+
 static void check_hsm_state_set(void)
 {
 	BLANK_LINE();
@@ -2595,6 +2623,7 @@ static void check_hsm_request(void)
 	CHECK_MEMBER(hsm_request, hr_data_len);
 	CHECK_VALUE_X(HSM_FORCE_ACTION);
 	CHECK_VALUE_X(HSM_GHOST_COPY);
+	CHECK_VALUE_X(HSM_REQ_BLOCKING);
 }
 
 static void check_hsm_user_request(void)
@@ -2847,7 +2876,7 @@ static void check_lr_server_data(void)
 	CHECK_MEMBER(lr_server_data, lsd_catalog_ogen);
 	CHECK_MEMBER(lr_server_data, lsd_peeruuid);
 	CHECK_MEMBER(lr_server_data, lsd_osd_index);
-	CHECK_MEMBER(lr_server_data, lsd_padding1);
+	CHECK_MEMBER(lr_server_data, lsd_max_clients);
 	CHECK_MEMBER(lr_server_data, lsd_start_epoch);
 	CHECK_MEMBER(lr_server_data, lsd_trans_table);
 	CHECK_MEMBER(lr_server_data, lsd_trans_table_time);
@@ -2958,6 +2987,33 @@ static void check_nodemap_id_rec(void)
 	CHECK_MEMBER(nodemap_id_rec, nir_padding4);
 }
 
+static void check_nodemap_offset_rec(void)
+{
+	BLANK_LINE();
+	CHECK_STRUCT(nodemap_offset_rec);
+	CHECK_MEMBER(nodemap_offset_rec, nor_start_uid);
+	CHECK_MEMBER(nodemap_offset_rec, nor_limit_uid);
+	CHECK_MEMBER(nodemap_offset_rec, nor_start_gid);
+	CHECK_MEMBER(nodemap_offset_rec, nor_limit_gid);
+	CHECK_MEMBER(nodemap_offset_rec, nor_start_projid);
+	CHECK_MEMBER(nodemap_offset_rec, nor_limit_projid);
+	CHECK_MEMBER(nodemap_offset_rec, nor_padding1);
+	CHECK_MEMBER(nodemap_offset_rec, nor_padding2);
+}
+
+static void check_nodemap_capabilities_rec(void)
+{
+	BLANK_LINE();
+	CHECK_STRUCT(nodemap_user_capabilities_rec);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_caps);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_type);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_padding1);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_padding2);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_padding3);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_padding4);
+	CHECK_MEMBER(nodemap_user_capabilities_rec, nucr_padding5);
+}
+
 static void check_nodemap_global_rec(void)
 {
 	BLANK_LINE();
@@ -2976,9 +3032,32 @@ static void check_nodemap_cluster_roles_rec(void)
 	BLANK_LINE();
 	CHECK_STRUCT(nodemap_cluster_roles_rec);
 	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_roles);
-	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_padding1);
-	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_padding2);
-	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_padding3);
+	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_privs);
+	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_roles_raise);
+	CHECK_MEMBER(nodemap_cluster_roles_rec, ncrr_unused1);
+}
+
+static void check_nodemap_fileset_header_rec(void)
+{
+	BLANK_LINE();
+	CHECK_STRUCT(nodemap_fileset_header_rec);
+	CHECK_BITFIELD(nodemap_fileset_header_rec, nfhr_flags);
+	CHECK_MEMBER(nodemap_fileset_header_rec, nfr_padding1);
+	CHECK_MEMBER(nodemap_fileset_header_rec, nfr_padding2);
+	CHECK_MEMBER(nodemap_fileset_header_rec, nfr_padding3);
+	CHECK_MEMBER(nodemap_fileset_header_rec, nfr_padding4);
+	CHECK_MEMBER(nodemap_fileset_header_rec, nfr_padding5);
+	CHECK_MEMBER(nodemap_fileset_header_rec, nfr_padding6);
+}
+
+static void check_nodemap_fileset_rec(void)
+{
+	BLANK_LINE();
+	CHECK_STRUCT(nodemap_fileset_rec);
+	CHECK_CDEFINE(LUSTRE_NODEMAP_FILESET_FRAGMENT_SIZE);
+	CHECK_MEMBER(nodemap_fileset_rec, nfr_path_fragment[LUSTRE_NODEMAP_FILESET_FRAGMENT_SIZE]);
+	CHECK_MEMBER(nodemap_fileset_rec, nfr_fragment_id);
+	CHECK_MEMBER(nodemap_fileset_rec, nfr_padding1);
 }
 
 static void check_nodemap_rec(void)
@@ -3007,6 +3086,8 @@ static void check_nodemap_key(void)
 
 	CHECK_VALUE(NODEMAP_CLUSTER_REC);
 	CHECK_VALUE(NODEMAP_CLUSTER_ROLES);
+	CHECK_VALUE(NODEMAP_CLUSTER_OFFSET);
+	CHECK_VALUE(NODEMAP_CLUSTER_CAPS);
 
 	CHECK_VALUE_X(NM_TYPE_MASK);
 	CHECK_VALUE(NM_TYPE_SHIFT);
@@ -3020,6 +3101,13 @@ static void check_nodemap_key(void)
 	CHECK_VALUE_X(NM_FL_FORBID_ENCRYPT);
 	CHECK_VALUE_X(NM_FL_MAP_PROJID);
 	CHECK_VALUE_X(NM_FL2_READONLY_MOUNT);
+	CHECK_VALUE_X(NM_FL2_DENY_MOUNT);
+	CHECK_VALUE_X(NM_FL2_FILESET_USE_IAM);
+	CHECK_VALUE_X(NM_FL2_GSS_IDENTIFY);
+
+	CHECK_VALUE_X(NM_FS_FL_READONLY);
+	CHECK_VALUE_X(NM_RANGE_FL_REG);
+	CHECK_VALUE_X(NM_RANGE_FL_BAN);
 
 	CHECK_VALUE(NODEMAP_UID);
 	CHECK_VALUE(NODEMAP_GID);
@@ -3042,8 +3130,24 @@ static void check_nodemap_key(void)
 	CHECK_VALUE_X(NODEMAP_RBAC_CHLG_OPS);
 	CHECK_VALUE_X(NODEMAP_RBAC_FSCRYPT_ADMIN);
 	CHECK_VALUE_X(NODEMAP_RBAC_SERVER_UPCALL);
+	CHECK_VALUE_X(NODEMAP_RBAC_IGN_ROOT_PRJQUOTA);
+	CHECK_VALUE_X(NODEMAP_RBAC_HSM_OPS);
+	CHECK_VALUE_X(NODEMAP_RBAC_LOCAL_ADMIN);
+	CHECK_VALUE_X(NODEMAP_RBAC_POOL_QUOTA_OPS);
 	CHECK_VALUE_X(NODEMAP_RBAC_NONE);
 	CHECK_VALUE_X(NODEMAP_RBAC_ALL);
+
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_RAISE);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_ADMIN);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_TRUSTED);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_DENY_UNKN);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_RO);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_RBAC);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_FORBID_ENC);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_CAPS);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_DENY_MNT);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_NONE);
+	CHECK_VALUE_X(NODEMAP_RAISE_PRIV_ALL);
 }
 
 static void check_scrub_file(void)
@@ -3286,6 +3390,8 @@ check_lustre_cfg(void)
 	CHECK_VALUE_X(LCFG_NODEMAP_ADMIN);
 	CHECK_VALUE_X(LCFG_NODEMAP_ADD_PROJIDMAP);
 	CHECK_VALUE_X(LCFG_NODEMAP_DEL_PROJIDMAP);
+	CHECK_VALUE_X(LCFG_NODEMAP_ADD_OFFSET);
+	CHECK_VALUE_X(LCFG_NODEMAP_DEL_OFFSET);
 	CHECK_VALUE_X(LCFG_NODEMAP_TRUSTED);
 	CHECK_VALUE_X(LCFG_NODEMAP_SQUASH_UID);
 	CHECK_VALUE_X(LCFG_NODEMAP_SQUASH_GID);
@@ -3302,6 +3408,16 @@ check_lustre_cfg(void)
 	CHECK_VALUE_X(LCFG_NODEMAP_SQUASH_PROJID);
 	CHECK_VALUE_X(LCFG_NODEMAP_READONLY_MOUNT);
 	CHECK_VALUE_X(LCFG_NODEMAP_RBAC);
+	CHECK_VALUE_X(LCFG_NODEMAP_DENY_MOUNT);
+	CHECK_VALUE_X(LCFG_NODEMAP_RAISE_PRIVS);
+	CHECK_VALUE_X(LCFG_NODEMAP_FILESET_ADD);
+	CHECK_VALUE_X(LCFG_NODEMAP_SET_CAPS);
+	CHECK_VALUE_X(LCFG_NODEMAP_FILESET_DEL);
+	CHECK_VALUE_X(LCFG_NODEMAP_GSS_IDENTIFY);
+	CHECK_VALUE_X(LCFG_NODEMAP_LOOKUP_SHA);
+	CHECK_VALUE_X(LCFG_NODEMAP_FILESET_MODIFY);
+	CHECK_VALUE_X(LCFG_NODEMAP_BANLIST_ADD);
+	CHECK_VALUE_X(LCFG_NODEMAP_BANLIST_DEL);
 	printf("#endif /* HAVE_SERVER_SUPPORT */\n");
 #endif /* !HAVE_NATIVE_LINUX_CLIENT */
 	CHECK_VALUE(PORTALS_CFG_TYPE);
@@ -3508,7 +3624,7 @@ main(int argc, char **argv)
 	CHECK_VALUE(LDLM_SET_INFO);
 	CHECK_VALUE(LDLM_LAST_OPC);
 
-	CHECK_VALUE(LCK_MINMODE);
+	CHECK_VALUE(LCK_MODE_MIN);
 	CHECK_VALUE(LCK_EX);
 	CHECK_VALUE(LCK_PW);
 	CHECK_VALUE(LCK_PR);
@@ -3518,14 +3634,14 @@ main(int argc, char **argv)
 	CHECK_VALUE(LCK_GROUP);
 	CHECK_VALUE(LCK_COS);
 	CHECK_VALUE(LCK_TXN);
-	CHECK_VALUE(LCK_MAXMODE);
+	CHECK_VALUE(LCK_MODE_END);
 	CHECK_VALUE(LCK_MODE_NUM);
 
 	CHECK_CVALUE(LDLM_PLAIN);
 	CHECK_CVALUE(LDLM_EXTENT);
 	CHECK_CVALUE(LDLM_FLOCK);
 	CHECK_CVALUE(LDLM_IBITS);
-	CHECK_CVALUE(LDLM_MAX_TYPE);
+	CHECK_CVALUE(LDLM_TYPE_END);
 
 	CHECK_CVALUE(LUSTRE_RES_ID_SEQ_OFF);
 	CHECK_CVALUE(LUSTRE_RES_ID_VER_OID_OFF);
@@ -3701,6 +3817,7 @@ main(int argc, char **argv)
 	check_quota_body();
 #endif /* !HAVE_NATIVE_LINUX_CLIENT */
 	check_mgs_target_info();
+	check_mgs_target_nidlist();
 	check_mgs_nidtbl_entry();
 	check_mgs_config_body();
 	check_mgs_config_res();
@@ -3719,6 +3836,7 @@ main(int argc, char **argv)
 	check_hsm_progress_kernel();
 	check_hsm_user_item();
 	check_hsm_user_state();
+	check_swap_layout();
 	check_hsm_state_set();
 	check_hsm_current_action();
 	check_hsm_request();
@@ -3752,8 +3870,12 @@ main(int argc, char **argv)
 	check_nodemap_range_rec();
 	check_nodemap_range2_rec();
 	check_nodemap_id_rec();
+	check_nodemap_offset_rec();
+	check_nodemap_capabilities_rec();
 	check_nodemap_global_rec();
 	check_nodemap_cluster_roles_rec();
+	check_nodemap_fileset_header_rec();
+	check_nodemap_fileset_rec();
 	check_nodemap_rec();
 	check_nodemap_key();
 

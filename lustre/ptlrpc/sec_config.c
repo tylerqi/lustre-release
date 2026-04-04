@@ -1,37 +1,18 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
 
 #define DEBUG_SUBSYSTEM S_SEC
 
-#include <libcfs/libcfs.h>
 #include <linux/crypto.h>
 #include <linux/key.h>
 
@@ -377,7 +358,14 @@ int sptlrpc_rule_set_merge(struct sptlrpc_rule_set *rset,
 EXPORT_SYMBOL(sptlrpc_rule_set_merge);
 
 /**
- * given from/to/nid, determine a matching flavor in ruleset.
+ * sptlrpc_rule_set_choose() - given from/to/nid, determine a matching flavor
+ * in ruleset.
+ * @rset: pointer to rule set to be searched
+ * @from: where request is coming (client, MDT, OST)
+ * @to: where request is going
+ * @nid: pointer to lnet_nid (network identifier)
+ * @sf: Choosen flavor is stored [out]
+ *
  * return 1 if a match found, otherwise return 0.
  */
 int sptlrpc_rule_set_choose(struct sptlrpc_rule_set *rset,
@@ -594,8 +582,8 @@ static int sptlrpc_conf_merge_rule(struct sptlrpc_conf *conf,
 	return sptlrpc_rule_set_merge(rule_set, rule);
 }
 
-/**
- * process one LCFG_SPTLRPC_CONF record. if \a conf is NULL, we
+/*
+ * process one LCFG_SPTLRPC_CONF record. if @conf is NULL, we
  * find one through the target name in the record inside conf_lock;
  * otherwise means caller already hold conf_lock.
  */
@@ -630,6 +618,14 @@ static int __sptlrpc_process_config(char *target, const char *fsname,
 	RETURN(rc);
 }
 
+/**
+ * sptlrpc_process_config() - process a config record related to the sec policy
+ * @lcfg: pointer to struct lustre_cfg (config record)
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
 int sptlrpc_process_config(struct lustre_cfg *lcfg)
 {
 	char fsname[MTI_NAME_MAXLEN];
@@ -854,7 +850,7 @@ out:
 	flavor_set_flags(sf, from, to, 1);
 }
 
-/**
+/*
  * called by target devices, determine the expected flavor from
  * certain peer (from, nid).
  */
@@ -870,6 +866,9 @@ void sptlrpc_target_choose_flavor(struct sptlrpc_rule_set *rset,
 #define SEC_ADAPT_DELAY         (10)
 
 /**
+ * sptlrpc_conf_client_adapt() - notify the sptlrpc config has changed
+ * @obd: pointer to obd device (client side, OSC/MDC)
+ *
  * called by client devices, notify the sptlrpc config has changed and
  * do import_sec_adapt later.
  */
@@ -899,7 +898,7 @@ void sptlrpc_conf_client_adapt(struct obd_device *obd)
 }
 EXPORT_SYMBOL(sptlrpc_conf_client_adapt);
 
-/**
+/*
  * called by target devices, extract sptlrpc rules which applies to
  * this target, to be used for future rpc flavor checking.
  */

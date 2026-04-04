@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -68,10 +48,10 @@ sem_t sem;
 char usage[] =
 "Usage: %s filename command-sequence [path...]\n"
 "    command-sequence items:\n"
-"	 A  fsetxattr(\"user.multiop\")\n"
 "	 a[num] fgetxattr(\"user.multiop\") [optional buffer size, default 0]\n"
-"	 c  close\n"
+"	 A  fsetxattr(\"user.multiop\")\n"
 "	 B[num] call setstripe ioctl to create stripes\n"
+"	 c  close\n"
 "	 C[num] create with optional stripes\n"
 "	 d  mkdir\n"
 "	 D  open(O_DIRECTORY)\n"
@@ -79,13 +59,15 @@ char usage[] =
 "	 E[+|-] get lease. +/-: expect lease to (not) exist\n"
 "	 f  statfs\n"
 "	 F  print FID\n"
-"	 G gid get grouplock\n"
 "	 g gid put grouplock\n"
+"	 G gid get grouplock\n"
 "	 H[num] create HSM released file with num stripes\n"
+"	 i  random fadvise\n"
 "	 I  fiemap\n"
+"	 J  madvise(MADV_HUGEPAGE)\n"
 "	 K  link path to filename\n"
-"	 L  link\n"
 "	 l  symlink filename to path\n"
+"	 L  link\n"
 "	 m  mknod\n"
 "	 M  rw mmap to EOF (must open and stat prior)\n"
 "	 n  rename path to filename\n"
@@ -93,6 +75,7 @@ char usage[] =
 "	 o  open(O_RDONLY)\n"
 "	 O  open(O_CREAT|O_RDWR)\n"
 "	 p  print return value of last command\n"
+"	 P[num] write optional length as a single syscall\n"
 "	 Q  open filename (should be dir), stat first entry to init statahead"
 "	 r[num] read [optional length]\n"
 "	 R  reference entire mmap-ed region\n"
@@ -105,9 +88,12 @@ char usage[] =
 "	 v  verbose\n"
 "	 V  open a volatile file\n"
 "	 w[num] write optional length\n"
-"	 P[num] like w, but only one write call\n"
-"	 x  get file data version\n"
 "	 W  write entire mmap-ed region\n"
+"	 x  get file data version\n"
+"	 X[cmd] prefix for extended commands:\n"
+"	     Xe[num] lseek(SEEK_END) [optional offset, default 0]\n"
+"	     Xx  get OST layout version\n"
+"	     XX  reserved for future use as a sub-prefix\n"
 "	 y  fsync\n"
 "	 Y  fdatasync\n"
 "	 z[num] lseek(SEEK_SET) [optional offset, default 0]\n"
@@ -273,28 +259,33 @@ static int do_fiemap(int fd)
 
 int main(int argc, char **argv)
 {
-	char *fname, *commands;
+	struct lov_user_md_v3 lum;
+	struct statfs stfs;
+	struct timespec ts;
+	struct lu_fid fid;
+	struct stat st;
+	unsigned char *mmap_ptr = NULL;
+	size_t xattr_buf_size = 0;
+	int msg_len = strlen(msg);
+	unsigned char junk = 1;
+	char *xattr_buf = NULL;
 	const char *newfile;
 	const char *oldpath;
-	struct stat st;
-	struct statfs stfs;
-	size_t mmap_len = 0, i;
-	unsigned char *mmap_ptr = NULL, junk = 1;
-	int len, fd = -1;
-	int flags;
-	int save_errno;
-	int verbose = 0;
-	int gid = 0;
-	struct lu_fid fid;
-	struct timespec ts;
-	struct lov_user_md_v3 lum;
-	char *xattr_buf = NULL;
-	size_t xattr_buf_size = 0;
-	long long rc = 0;
-	long long last_rc;
-	bool unaligned;
-	int msg_len = strlen(msg);
+	size_t mmap_len = 0;
 	size_t total_bytes;
+	long long last_rc;
+	long long rc = 0;
+	int verbose = 0;
+	char *commands;
+	bool unaligned;
+	int save_errno;
+	uint64_t len;
+	char *endptr;
+	char *fname;
+	int fd = -1;
+	int gid = 0;
+	int flags;
+	size_t i;
 
 	if (argc < 3) {
 		fprintf(stderr, usage, argv[0]);
@@ -325,7 +316,7 @@ int main(int argc, char **argv)
 				printf("PAUSING\n");
 				fflush(stdout);
 			}
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			if (len <= 0)
 				len = 3600; /* 1 hour */
 			ts.tv_sec = time(NULL) + len;
@@ -341,7 +332,7 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'a':
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			if (xattr_buf_size < len) {
 				xattr_buf = realloc(xattr_buf, len);
 				if (!xattr_buf) {
@@ -381,7 +372,7 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'C':
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			fd = llapi_file_open(fname, O_CREAT | O_WRONLY, 0644,
 					     0, 0, len, 0);
 			if (fd == -1) {
@@ -501,7 +492,7 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'H':
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			fd = llapi_file_open(fname, O_CREAT | O_WRONLY, 0644,
 					     0, 0, len, LOV_PATTERN_RAID0 |
 					     LOV_PATTERN_F_RELEASED);
@@ -515,9 +506,24 @@ int main(int argc, char **argv)
 		case 'I':
 			do_fiemap(fd);
 			break;
+		case 'i':
+			rc = posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+			if (rc) {
+				save_errno = errno;
+				perror("fadvise");
+				exit(save_errno);
+			}
+			break;
 		case 'j':
 			if (flock(fd, LOCK_EX) == -1)
 				errx(-1, "flock()");
+			break;
+		case 'J':
+			if (madvise(mmap_ptr, mmap_len, MADV_HUGEPAGE)) {
+				save_errno = errno;
+				perror("madvise()");
+				exit(save_errno);
+			}
 			break;
 		case 'K':
 			oldpath = POP_ARG();
@@ -632,7 +638,7 @@ int main(int argc, char **argv)
 				unaligned = true;
 				commands++;
 			}
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			if (len <= 0)
 				len = 1;
 			/* for unaligned, we realloc every time, so the
@@ -686,7 +692,7 @@ int main(int argc, char **argv)
 				}
 				if (rc < len) {
 					off = lseek(fd, 0, SEEK_CUR);
-					fprintf(stderr, "short read: %ld ->+ %u -> %ld %lld\n",
+					fprintf(stderr, "short read: %ld ->+ %lu -> %ld %lld\n",
 						start, len, off, rc);
 					if (rc == 0)
 						break;
@@ -727,10 +733,10 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'T':
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			if (ftruncate(fd, len) == -1) {
 				save_errno = errno;
-				printf("ftruncate (%d,%d)\n", fd, len);
+				printf("ftruncate (%d,%lu)\n", fd, len);
 				perror("ftruncate");
 				exit(save_errno);
 			}
@@ -771,7 +777,7 @@ int main(int argc, char **argv)
 				unaligned = true;
 				commands++;
 			}
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			if (len <= 0)
 				len = 1;
 			/* for unaligned, we realloc every time, so the
@@ -832,7 +838,7 @@ int main(int argc, char **argv)
 				}
 				if (rc < len)
 					fprintf(stderr,
-						"short write: %lld/%u\n",
+						"short write: %lld/%lu\n",
 						rc, len);
 				if (commands[0] == 'P')
 					break;
@@ -864,19 +870,45 @@ int main(int argc, char **argv)
 			printf("dataversion is %ju\n", (uintmax_t)dv);
 			break;
 		}
-		case 'X': {
-			__u32 layout_version;
+		case 'X':
+			commands++;
+			switch (*commands) {
+			case 'e': {
+				off_t off;
 
-			rc = llapi_get_ost_layout_version(fd, &layout_version);
-			if (rc) {
-				fprintf(stderr,
-					"cannot get ost layout version %lld\n",
-					rc);
-				exit(-rc);
+				len = atoi(commands + 1);
+				off = lseek(fd, len, SEEK_END);
+				if (off == (off_t)-1) {
+					save_errno = errno;
+					perror("lseek");
+					exit(save_errno);
+				}
+
+				rc = off;
+				break;
 			}
-			printf("ostlayoutversion: %u\n", layout_version);
+			case 'x': {
+				__u32 layout_version;
+
+				rc = llapi_get_ost_layout_version(fd,
+								   &layout_version);
+				if (rc) {
+					fprintf(stderr,
+						"cannot get ost layout version %lld\n",
+						rc);
+					exit(-rc);
+				}
+				printf("ostlayoutversion: %u\n", layout_version);
+				break;
+			}
+			case 'X':
+				/* reserved for future use as a sub-prefix */
+				errx(-1, "'XX' prefix reserved for future use as a sub-prefix");
+				break;
+			default:
+				errx(-1, "unknown 'X' subcommand: %c", *commands);
+			}
 			break;
-		}
 		case 'y':
 			if (fsync(fd) == -1) {
 				save_errno = errno;
@@ -894,7 +926,7 @@ int main(int argc, char **argv)
 		case 'z': {
 			off_t off;
 
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			off = lseek(fd, len, SEEK_SET);
 			if (off == (off_t)-1) {
 				save_errno = errno;
@@ -908,7 +940,7 @@ int main(int argc, char **argv)
 		case 'Z': {
 			off_t off;
 
-			len = atoi(commands + 1);
+			len = strtoul(commands + 1, &endptr, 10);
 			off = lseek(fd, len, SEEK_CUR);
 			if (off == (off_t)-1) {
 				save_errno = errno;
@@ -930,6 +962,8 @@ int main(int argc, char **argv)
 		case '7':
 		case '8':
 		case '9':
+			/* preserve rc from previous command */
+			rc = last_rc;
 			break;
 		default:
 			fprintf(stderr, "unknown command \"%c\"\n", *commands);

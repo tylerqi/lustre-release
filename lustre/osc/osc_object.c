@@ -21,15 +21,8 @@
 
 #include "osc_internal.h"
 
-/** \addtogroup osc
- *  @{
- */
+/* Object operations. */
 
-/*****************************************************************************
- *
- * Object operations.
- *
- */
 static void osc_obj_build_res_name(struct osc_object *osc,
 				   struct ldlm_res_id *resname)
 {
@@ -44,8 +37,8 @@ static const struct osc_object_operations osc_object_ops = {
 int osc_object_init(const struct lu_env *env, struct lu_object *obj,
 		    const struct lu_object_conf *conf)
 {
-        struct osc_object           *osc   = lu2osc(obj);
-        const struct cl_object_conf *cconf = lu2cl_conf(conf);
+	struct osc_object *osc = lu2osc(obj);
+	const struct cl_object_conf *cconf = lu2cl_conf(conf);
 
 	osc->oo_oinfo = cconf->u.coc_oinfo;
 #ifdef CONFIG_LUSTRE_DEBUG_EXPENSIVE_CHECK
@@ -58,6 +51,7 @@ int osc_object_init(const struct lu_env *env, struct lu_object *obj,
 
 	osc->oo_root.rb_node = NULL;
 	INIT_LIST_HEAD(&osc->oo_hp_exts);
+	INIT_LIST_HEAD(&osc->oo_hp_read_exts);
 	INIT_LIST_HEAD(&osc->oo_urgent_exts);
 	INIT_LIST_HEAD(&osc->oo_full_exts);
 	INIT_LIST_HEAD(&osc->oo_reading_exts);
@@ -65,6 +59,7 @@ int osc_object_init(const struct lu_env *env, struct lu_object *obj,
 	atomic_set(&osc->oo_nr_writes, 0);
 	spin_lock_init(&osc->oo_lock);
 	spin_lock_init(&osc->oo_tree_lock);
+	INIT_RADIX_TREE(&osc->oo_tree, GFP_ATOMIC);
 	spin_lock_init(&osc->oo_ol_spin);
 	INIT_LIST_HEAD(&osc->oo_ol_list);
 
@@ -90,6 +85,7 @@ void osc_object_free(const struct lu_env *env, struct lu_object *obj)
 
 	LASSERT(osc->oo_root.rb_node == NULL);
 	LASSERT(list_empty(&osc->oo_hp_exts));
+	LASSERT(list_empty(&osc->oo_hp_read_exts));
 	LASSERT(list_empty(&osc->oo_urgent_exts));
 	LASSERT(list_empty(&osc->oo_full_exts));
 	LASSERT(list_empty(&osc->oo_reading_exts));
@@ -99,7 +95,7 @@ void osc_object_free(const struct lu_env *env, struct lu_object *obj)
 	LASSERT(atomic_read(&osc->oo_nr_ios) == 0);
 
 	lu_object_fini(obj);
-	/* osc doen't contain an lu_object_header, so we don't need call_rcu */
+	/* OSC doen't contain an lu_object_header, so we don't need call_rcu */
 	OBD_SLAB_FREE_PTR(osc, osc_object_kmem);
 }
 EXPORT_SYMBOL(osc_object_free);
@@ -109,8 +105,8 @@ int osc_lvb_print(const struct lu_env *env, void *cookie,
 {
 	return (*p)(env, cookie, "size: %llu mtime: %llu atime: %llu "
 		    "ctime: %llu blocks: %llu",
-                    lvb->lvb_size, lvb->lvb_mtime, lvb->lvb_atime,
-                    lvb->lvb_ctime, lvb->lvb_blocks);
+		    lvb->lvb_size, lvb->lvb_mtime, lvb->lvb_atime,
+		    lvb->lvb_ctime, lvb->lvb_blocks);
 }
 EXPORT_SYMBOL(osc_lvb_print);
 
@@ -145,7 +141,7 @@ int osc_attr_get(const struct lu_env *env, struct cl_object *obj,
 EXPORT_SYMBOL(osc_attr_get);
 
 int osc_attr_update(const struct lu_env *env, struct cl_object *obj,
-		    const struct cl_attr *attr, unsigned valid)
+		    const struct cl_attr *attr, enum cl_attr_valid valid)
 {
 	struct lov_oinfo *oinfo = cl2osc(obj)->oo_oinfo;
 	struct ost_lvb   *lvb   = &oinfo->loi_lvb;
@@ -211,7 +207,7 @@ static int osc_object_ast_clear(struct ldlm_lock *lock, void *data)
 		cl_object_attr_lock(&osc->oo_cl);
 		memcpy(lvb, &oinfo->loi_lvb, sizeof(oinfo->loi_lvb));
 		cl_object_attr_unlock(&osc->oo_cl);
-		ldlm_clear_lvb_cached(lock);
+		(lock->l_flags &= ~LDLM_FL_LVB_CACHED);
 	}
 	RETURN(LDLM_ITER_CONTINUE);
 }
@@ -222,7 +218,8 @@ int osc_object_prune(const struct lu_env *env, struct cl_object *obj)
 	struct ldlm_res_id *resname = &osc_env_info(env)->oti_resname;
 
 	/* DLM locks don't hold a reference of osc_object so we have to
-	 * clear it before the object is being destroyed. */
+	 * clear it before the object is being destroyed.
+	 */
 	osc_build_res_name(osc, resname);
 	ldlm_resource_iterate(osc_export(osc)->exp_obd->obd_namespace, resname,
 			      osc_object_ast_clear, osc);
@@ -238,7 +235,7 @@ static int osc_object_fiemap(const struct lu_env *env, struct cl_object *obj,
 	struct ldlm_res_id resid;
 	union ldlm_policy_data policy;
 	struct lustre_handle lockh;
-	enum ldlm_mode mode = LCK_MINMODE;
+	enum ldlm_mode mode = LCK_MODE_MIN;
 	struct ptlrpc_request *req;
 	struct fiemap *reply;
 	char *tmp;
@@ -263,7 +260,7 @@ static int osc_object_fiemap(const struct lu_env *env, struct cl_object *obj,
 	mode = ldlm_lock_match(exp->exp_obd->obd_namespace,
 			       LDLM_FL_BLOCK_GRANTED | LDLM_FL_LVB_READY,
 			       &resid, LDLM_EXTENT, &policy,
-			       LCK_PR | LCK_PW, &lockh);
+			       LCK_PR | LCK_PW, 0, &lockh);
 	fmkey->lfik_oa.o_valid |= OBD_MD_FLFLAGS;
 	if (mode) { /* lock is cached on client */
 		fmkey->lfik_oa.o_flags &= ~OBD_FL_SRVLOCK;
@@ -318,8 +315,13 @@ drop_lock:
 }
 
 /**
+ * osc_req_attr_set() - Update attribute of a client object
+ * @env: Lustre environment
+ * @obj: client object which Attributes is being updated [out]
+ * @attr: pointer to struct cl_req_attr (input comes in this struct)
+ *
  * Implementation of struct cl_object_operations::coo_req_attr_set() for osc
- * layer. osc is responsible for struct obdo::o_id and struct obdo::o_seq
+ * layer. OSC is responsible for struct obdo::o_id and struct obdo::o_seq
  * fields.
  */
 static void osc_req_attr_set(const struct lu_env *env, struct cl_object *obj,
@@ -336,7 +338,7 @@ static void osc_req_attr_set(const struct lu_env *env, struct cl_object *obj,
 	oa = attr->cra_oa;
 	opg = osc_cl_page_osc(attr->cra_page, cl2osc(obj));
 
-	if ((flags & OBD_MD_FLMTIME) != 0) {
+	if ((flags & OBD_MD_FLMTIME) != 0 && lvb->lvb_mtime > oa->o_mtime) {
 		oa->o_mtime = lvb->lvb_mtime;
 		oa->o_valid |= OBD_MD_FLMTIME;
 	}
@@ -404,6 +406,7 @@ static void osc_req_attr_set(const struct lu_env *env, struct cl_object *obj,
 
 static const struct cl_object_operations osc_ops = {
 	.coo_page_init    = osc_page_init,
+	.coo_dio_pages_init = osc_dio_pages_init,
 	.coo_lock_init    = osc_lock_init,
 	.coo_io_init      = osc_io_init,
 	.coo_attr_get     = osc_attr_get,
@@ -462,4 +465,3 @@ int osc_object_invalidate(const struct lu_env *env, struct osc_object *osc)
 	RETURN(0);
 }
 EXPORT_SYMBOL(osc_object_invalidate);
-/** @} osc */

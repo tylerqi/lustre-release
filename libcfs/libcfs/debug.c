@@ -1,52 +1,32 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
- * libcfs/libcfs/debug.c
- *
  * Author: Phil Schwan <phil@clusterfs.com>
- *
  */
 
 # define DEBUG_SUBSYSTEM S_LNET
 
 #include <linux/module.h>
 #include <linux/ctype.h>
-#include <libcfs/libcfs_string.h>
 #include <linux/kthread.h>
 #include <linux/stacktrace.h>
 #include <linux/utsname.h>
-#include <linux/kallsyms.h>
 #include <linux/delay.h>
 #ifdef HAVE_PANIC_NOTIFIER_H
 #include <linux/panic_notifier.h>
 #endif
+
+#include <linux/libcfs/libcfs.h>
+#include <lustre_compat/linux/linux-misc.h>
 #include "tracefile.h"
 
 static char debug_file_name[1024];
@@ -62,7 +42,7 @@ module_param(libcfs_debug, int, 0644);
 MODULE_PARM_DESC(libcfs_debug, "Lustre kernel debug mask");
 
 static int libcfs_param_debug_mb_set(const char *val,
-				     cfs_kernel_param_arg_t *kp)
+				     const struct kernel_param *kp)
 {
 	int rc;
 	unsigned int num;
@@ -87,21 +67,20 @@ static int libcfs_param_debug_mb_set(const char *val,
  * debug_mb parameter type with corresponding methods to handle this case
  */
 static const struct kernel_param_ops param_ops_debug_mb = {
-	.set = libcfs_param_debug_mb_set,
-	.get = param_get_uint,
+	.set		= libcfs_param_debug_mb_set,
+	.get		= param_get_uint,
 };
 
 #define param_check_debug_mb(name, p) \
 		__param_check(name, p, unsigned int)
 
 static unsigned int libcfs_debug_mb;
-#ifdef HAVE_KERNEL_PARAM_OPS
 module_param(libcfs_debug_mb, debug_mb, 0644);
-#else
-module_param_call(libcfs_debug_mb, libcfs_param_debug_mb_set, param_get_uint,
-		  &param_ops_debug_mb, 0644);
-#endif
 MODULE_PARM_DESC(libcfs_debug_mb, "Total debug buffer size.");
+
+unsigned int libcfs_subsystem_printk;
+module_param(libcfs_subsystem_printk, uint, 0644);
+MODULE_PARM_DESC(libcfs_subsystem_printk, "Lustre kernel debug subsystem console mask");
 
 unsigned int libcfs_printk = D_CANTMASK;
 module_param(libcfs_printk, uint, 0644);
@@ -112,7 +91,7 @@ module_param(libcfs_console_ratelimit, uint, 0644);
 MODULE_PARM_DESC(libcfs_console_ratelimit, "Lustre kernel debug console ratelimit (0 to disable)");
 
 static int param_set_delay_minmax(const char *val,
-				  cfs_kernel_param_arg_t *kp,
+				  const struct kernel_param *kp,
 				  long min, long max)
 {
 	long d;
@@ -133,7 +112,7 @@ static int param_set_delay_minmax(const char *val,
 	return 0;
 }
 
-static int param_get_delay(char *buffer, cfs_kernel_param_arg_t *kp)
+static int param_get_delay(char *buffer, const struct kernel_param *kp)
 {
 	unsigned int d = *(unsigned int *)kp->arg;
 
@@ -146,7 +125,7 @@ unsigned int libcfs_console_max_delay;
 unsigned int libcfs_console_min_delay;
 
 static int param_set_console_max_delay(const char *val,
-				       cfs_kernel_param_arg_t *kp)
+				       const struct kernel_param *kp)
 {
 	return param_set_delay_minmax(val, kp,
 				      libcfs_console_min_delay, INT_MAX);
@@ -160,16 +139,11 @@ static const struct kernel_param_ops param_ops_console_max_delay = {
 #define param_check_console_max_delay(name, p) \
 		__param_check(name, p, unsigned int)
 
-#ifdef HAVE_KERNEL_PARAM_OPS
 module_param(libcfs_console_max_delay, console_max_delay, 0644);
-#else
-module_param_call(libcfs_console_max_delay, param_set_console_max_delay,
-		  param_get_delay, &param_ops_console_max_delay, 0644);
-#endif
 MODULE_PARM_DESC(libcfs_console_max_delay, "Lustre kernel debug console max delay (jiffies)");
 
 static int param_set_console_min_delay(const char *val,
-				       cfs_kernel_param_arg_t *kp)
+				       const struct kernel_param *kp)
 {
 	return param_set_delay_minmax(val, kp,
 				      1, libcfs_console_max_delay);
@@ -183,17 +157,12 @@ static const struct kernel_param_ops param_ops_console_min_delay = {
 #define param_check_console_min_delay(name, p) \
 		__param_check(name, p, unsigned int)
 
-#ifdef HAVE_KERNEL_PARAM_OPS
 module_param(libcfs_console_min_delay, console_min_delay, 0644);
-#else
-module_param_call(libcfs_console_min_delay, param_set_console_min_delay,
-		  param_get_delay, &param_ops_console_min_delay, 0644);
-#endif
 MODULE_PARM_DESC(libcfs_console_min_delay, "Lustre kernel debug console min delay (jiffies)");
 
 #ifndef HAVE_PARAM_SET_UINT_MINMAX
 static int param_set_uint_minmax(const char *val,
-				 cfs_kernel_param_arg_t *kp,
+				 const struct kernel_param *kp,
 				 unsigned int min, unsigned int max)
 {
 	unsigned int num;
@@ -212,7 +181,7 @@ static int param_set_uint_minmax(const char *val,
 #endif
 
 static int param_set_uintpos(const char *val,
-			     cfs_kernel_param_arg_t *kp)
+			     const struct kernel_param *kp)
 {
 	return param_set_uint_minmax(val, kp, 1, -1);
 }
@@ -226,12 +195,7 @@ static const struct kernel_param_ops param_ops_uintpos = {
 		__param_check(name, p, unsigned int)
 
 unsigned int libcfs_console_backoff = CDEBUG_DEFAULT_BACKOFF;
-#ifdef HAVE_KERNEL_PARAM_OPS
 module_param(libcfs_console_backoff, uintpos, 0644);
-#else
-module_param_call(libcfs_console_backoff, param_set_uintpos, param_get_uint,
-		  &param_ops_uintpos, 0644);
-#endif
 MODULE_PARM_DESC(libcfs_console_backoff, "Lustre kernel debug console backoff factor");
 
 unsigned int libcfs_debug_binary = 1;
@@ -283,6 +247,136 @@ static const char *libcfs_debug_dbg2str(int debug)
 
 	return libcfs_debug_masks[debug];
 }
+
+/* convert a binary mask to a string of bit names */
+int cfs_mask2str(char *str, int size, u64 mask, const char *(*bit2str)(int bit),
+		 char sep)
+{
+	const char *token;
+	int len = 0;
+	int i;
+
+	if (mask == 0) {                        /* "0" */
+		if (size > 0)
+			str[0] = '0';
+		len = 1;
+	} else {                                /* space-separated tokens */
+		for (i = 0; i < 64; i++) {
+			if ((mask & BIT(i)) == 0)
+				continue;
+
+			token = bit2str(i);
+			if (!token)             /* unused bit */
+				continue;
+
+			if (len > 0) {          /* separator? */
+				if (len < size)
+					str[len] = sep;
+				len++;
+			}
+
+			while (*token != 0) {
+				if (len < size)
+					str[len] = *token;
+				token++;
+				len++;
+			}
+		}
+	}
+
+	/* terminate 'str' */
+	if (len < size)
+		str[len++] = '\n';
+	if (len < size)
+		str[len] = '\0';
+	else if (size)
+		str[size - 1] = '\0';
+
+	return len;
+}
+EXPORT_SYMBOL(cfs_mask2str);
+
+/* Convert a text string to a bitmask */
+int cfs_str2mask(const char *str, const char *(*bit2str)(int bit),
+		 u64 *oldmask, u64 minmask, u64 allmask, u64 defmask)
+{
+	const char *debugstr;
+	u64 newmask = *oldmask, found = 0;
+
+	ENTRY;
+	/* <str> must be a list of tokens separated by whitespace or comma,
+	 * and optionally an operator ('+' or '-').  If an operator
+	 * appears first in <str>, '*oldmask' is used as the starting point
+	 * (relative), otherwise minmask is used (absolute).  An operator
+	 * applies to all following tokens up to the next operator.
+	 */
+	while (*str != 0) {
+		int i, len;
+		char op = 0;
+
+		while (isspace(*str) || *str == ',')
+			str++;
+		if (*str == 0)
+			break;
+		if (*str == '+' || *str == '-') {
+			op = *str++;
+			while (isspace(*str))
+				str++;
+			if (*str == 0)          /* trailing op */
+				return -EINVAL;
+		} else if (!found)
+			newmask = minmask;
+
+
+		/* find token length */
+		for (len = 0; str[len] != 0 && !isspace(str[len]) &&
+		     str[len] != '+' && str[len] != '-' && str[len] != ',';
+		     len++);
+
+		/* match token */
+		found = 0;
+		for (i = 0; i < 32; i++) {
+			debugstr = bit2str(i);
+			if (debugstr != NULL &&
+			    strlen(debugstr) == len &&
+			    strncasecmp(str, debugstr, len) == 0) {
+				if (op == '-')
+					newmask &= ~BIT(i);
+			       else
+					newmask |= BIT(i);
+				found = 1;
+				break;
+			}
+		}
+		if (!found && len == 3 &&
+		    (strncasecmp(str, "ALL", len) == 0)) {
+			if (op == '-')
+				newmask = minmask;
+			else
+				newmask = allmask;
+			found = 1;
+		}
+		if (!found && strcasecmp(str, "DEFAULT") == 0) {
+			if (op == '-')
+				newmask = (newmask & ~defmask) | minmask;
+			else if (op == '+')
+				newmask |= defmask;
+			else
+				newmask = defmask;
+			found = 1;
+		}
+		if (!found) {
+			CWARN("unknown mask '%.*s'.\n"
+			      "mask usage: [+|-]<all|type> ...\n", len, str);
+			return -EINVAL;
+		}
+		str += len;
+	}
+
+	*oldmask = newmask;
+	return 0;
+}
+EXPORT_SYMBOL(cfs_str2mask);
 
 int libcfs_debug_mask2str(char *str, int size, int mask, int is_subsys)
 {
@@ -434,7 +528,6 @@ lbug_with_loc(struct libcfs_debug_msg_data *msgdata)
 
 	dump_stack();
 	if (libcfs_panic_on_lbug) {
-		msleep(cfs_time_seconds(6));
 		panic("LBUG");
 	} else
 		libcfs_debug_dumplog();
@@ -447,136 +540,6 @@ lbug_with_loc(struct libcfs_debug_msg_data *msgdata)
 #endif
 }
 EXPORT_SYMBOL(lbug_with_loc);
-
-#ifdef CONFIG_STACKTRACE
-
-#ifndef HAVE_SAVE_STACK_TRACE_TSK
-#define save_stack_trace_tsk(tsk, trace)				       \
-do {									       \
-	if (tsk == current)						       \
-		save_stack_trace(trace);				       \
-	else								       \
-		pr_info("No stack, save_stack_trace_tsk() not exported\n");    \
-} while (0)
-#endif
-
-static void cfs_print_stack_trace(unsigned long *entries, unsigned int nr)
-{
-	unsigned int i;
-
-	/* Prefer %pB for backtraced symbolic names since it was added in:
-	 * Linux v2.6.38-6557-g0f77a8d37825
-	 * vsprintf: Introduce %pB format specifier
-	 */
-	for (i = 0; i < nr; i++)
-		pr_info("[<0>] %pB\n", (void *)entries[i]);
-}
-
-#define MAX_ST_ENTRIES	100
-static DEFINE_SPINLOCK(st_lock);
-
-static void libcfs_call_trace(struct task_struct *tsk)
-{
-	static unsigned long entries[MAX_ST_ENTRIES];
-#ifdef CONFIG_ARCH_STACKWALK
-	unsigned int nr_entries;
-
-	spin_lock(&st_lock);
-	pr_info("Pid: %d, comm: %.20s %s %s\n", tsk->pid, tsk->comm,
-		init_utsname()->release, init_utsname()->version);
-	pr_info("Call Trace TBD:\n");
-	nr_entries = cfs_stack_trace_save_tsk(tsk, entries, MAX_ST_ENTRIES, 0);
-	cfs_print_stack_trace(entries, nr_entries);
-	spin_unlock(&st_lock);
-#else
-	struct stack_trace trace;
-
-	trace.nr_entries = 0;
-	trace.max_entries = MAX_ST_ENTRIES;
-	trace.entries = entries;
-	trace.skip = 0;
-
-	spin_lock(&st_lock);
-	pr_info("Pid: %d, comm: %.20s %s %s\n", tsk->pid, tsk->comm,
-		init_utsname()->release, init_utsname()->version);
-	pr_info("Call Trace:\n");
-	save_stack_trace_tsk(tsk, &trace);
-	cfs_print_stack_trace(trace.entries, trace.nr_entries);
-	spin_unlock(&st_lock);
-#endif
-}
-
-#else /* !CONFIG_STACKTRACE */
-
-#ifdef CONFIG_X86
-#include <linux/nmi.h>
-#include <asm/stacktrace.h>
-
-#ifdef HAVE_STACKTRACE_OPS
-static int print_trace_stack(void *data, char *name)
-{
-	printk(" <%s> ", name);
-	return 0;
-}
-
-#ifdef STACKTRACE_OPS_ADDRESS_RETURN_INT
-static int
-#else
-static void
-#endif
-print_trace_address(void *data, unsigned long addr, int reliable)
-{
-	char fmt[32];
-
-	touch_nmi_watchdog();
-	sprintf(fmt, " [<%016lx>] %s%%s\n", addr, reliable ? "" : "? ");
-	__print_symbol(fmt, addr);
-#ifdef STACKTRACE_OPS_ADDRESS_RETURN_INT
-	return 0;
-#endif
-}
-
-static const struct stacktrace_ops print_trace_ops = {
-	.stack		= print_trace_stack,
-	.address	= print_trace_address,
-	.walk_stack	= print_context_stack,
-};
-#endif /* HAVE_STACKTRACE_OPS */
-
-static void libcfs_call_trace(struct task_struct *tsk)
-{
-#ifdef HAVE_STACKTRACE_OPS
-	printk("Pid: %d, comm: %.20s\n", tsk->pid, tsk->comm);
-	printk("\nCall Trace:\n");
-	dump_trace(tsk, NULL, NULL, 0, &print_trace_ops, NULL);
-	printk("\n");
-#else /* !HAVE_STACKTRACE_OPS */
-	if (tsk == current)
-		dump_stack();
-	else
-		CWARN("can't show stack: kernel doesn't export show_task\n");
-#endif /* HAVE_STACKTRACE_OPS */
-}
-
-#else /* !CONFIG_X86 */
-
-static void libcfs_call_trace(struct task_struct *tsk)
-{
-	if (tsk == current)
-		dump_stack();
-	else
-		CWARN("can't show stack: kernel doesn't export show_task\n");
-}
-
-#endif /* CONFIG_X86 */
-
-#endif /* CONFIG_STACKTRACE */
-
-void libcfs_debug_dumpstack(struct task_struct *tsk)
-{
-	libcfs_call_trace(tsk ?: current);
-}
-EXPORT_SYMBOL(libcfs_debug_dumpstack);
 
 static int panic_notifier(struct notifier_block *self, unsigned long unused1,
 			  void *unused2)
@@ -670,6 +633,7 @@ int libcfs_debug_clear_buffer(void)
 	cfs_trace_flush_pages();
 	return 0;
 }
+EXPORT_SYMBOL(libcfs_debug_clear_buffer);
 
 /* Debug markers, although printed by S_LNET should not be be marked as such. */
 #undef DEBUG_SUBSYSTEM
@@ -684,6 +648,7 @@ int libcfs_debug_mark_buffer(const char *text)
 
 	return 0;
 }
+EXPORT_SYMBOL(libcfs_debug_mark_buffer);
 
 #undef DEBUG_SUBSYSTEM
 #define DEBUG_SUBSYSTEM S_LNET

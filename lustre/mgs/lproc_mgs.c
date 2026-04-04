@@ -21,8 +21,6 @@
 #include <uapi/linux/lustre/lustre_param.h>
 #include "mgs_internal.h"
 
-#ifdef CONFIG_PROC_FS
-
 static int mgs_fs_seq_show(struct seq_file *seq, void *v)
 {
 	struct obd_device	*obd = seq->private;
@@ -110,7 +108,7 @@ LDEBUGFS_SEQ_FOPS_RO(mgsself_srpc);
 
 static int mgs_live_seq_show(struct seq_file *seq, void *v)
 {
-	struct fs_db             *fsdb = seq->private;
+	struct fs_db *fsdb = seq->private;
 	struct mgs_tgt_srpc_conf *srpc_tgt;
 	int i;
 
@@ -147,8 +145,8 @@ static int mgs_live_seq_show(struct seq_file *seq, void *v)
 static ssize_t mgs_live_seq_write(struct file *file, const char __user *buf,
 				  size_t len, loff_t *off)
 {
-	struct seq_file *seq  = file->private_data;
-	struct fs_db    *fsdb = seq->private;
+	struct seq_file *seq = file->private_data;
+	struct fs_db *fsdb = seq->private;
 	ssize_t rc;
 
 	rc = lprocfs_wr_ir_state(file, buf, len, fsdb);
@@ -156,49 +154,45 @@ static ssize_t mgs_live_seq_write(struct file *file, const char __user *buf,
 		rc = len;
 	return rc;
 }
-LPROC_SEQ_FOPS(mgs_live);
+LDEBUGFS_SEQ_FOPS(mgs_live);
 
 int lproc_mgs_add_live(struct mgs_device *mgs, struct fs_db *fsdb)
 {
-	int rc;
-
-	if (!mgs->mgs_proc_live || fsdb->fsdb_has_lproc_entry)
+	if (IS_ERR_OR_NULL(mgs->mgs_debugfs_live))
 		return 0;
 
-	rc = lprocfs_seq_create(mgs->mgs_proc_live, fsdb->fsdb_name, 0644,
-				&mgs_live_fops, fsdb);
-	if (!rc)
-		fsdb->fsdb_has_lproc_entry = 1;
+	debugfs_create_file(fsdb->fsdb_name, 0644, mgs->mgs_debugfs_live,
+			    fsdb, &mgs_live_fops);
+	fsdb->fsdb_has_debugfs_entry = 1;
 
-	return rc;
+	return 0;
 }
 
 int lproc_mgs_del_live(struct mgs_device *mgs, struct fs_db *fsdb)
 {
-	if (!mgs->mgs_proc_live || !fsdb->fsdb_has_lproc_entry)
+	if (IS_ERR_OR_NULL(mgs->mgs_debugfs_live) ||
+	    !fsdb->fsdb_has_debugfs_entry)
 		return 0;
 
 	/* didn't create the proc file for MGSSELF_NAME */
 	if (!test_bit(FSDB_MGS_SELF, &fsdb->fsdb_flags))
-		lprocfs_remove_proc_entry(fsdb->fsdb_name, mgs->mgs_proc_live);
+		debugfs_lookup_and_remove(fsdb->fsdb_name,
+					  mgs->mgs_debugfs_live);
 	return 0;
 }
 
-LPROC_SEQ_FOPS_RO_TYPE(mgs, hash);
-LPROC_SEQ_FOPS_WR_ONLY(mgs, evict_client);
-LPROC_SEQ_FOPS_RW_TYPE(mgs, ir_timeout);
-LPROC_SEQ_FOPS_RW_TYPE(mgs, nid_stats_clear);
+LDEBUGFS_SEQ_FOPS_RO_TYPE(mgs, hash);
+/* belongs to export directory */
+LDEBUGFS_SEQ_FOPS_RW_TYPE(mgs, nid_stats_clear);
 
-static struct lprocfs_vars lprocfs_mgs_obd_vars[] = {
+static struct ldebugfs_vars ldebugfs_mgs_obd_vars[] = {
 	{ .name	=	"hash_stats",
 	  .fops	=	&mgs_hash_fops		},
-	{ .name	=	"evict_client",
-	  .fops	=	&mgs_evict_client_fops	},
-	{ .name	=	"ir_timeout",
-	  .fops	=	&mgs_ir_timeout_fops	},
 	{ NULL }
 };
 
+LUSTRE_WO_ATTR(evict_client);
+LUSTRE_RW_ATTR(ir_timeout);
 LUSTRE_RO_ATTR(num_exports);
 LUSTRE_RO_ATTR(eviction_count);
 
@@ -246,9 +240,12 @@ LUSTRE_OBD_UINT_PARAM_ATTR(at_min);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_max);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_history);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_unhealthy_factor);
+LUSTRE_OBD_UINT_PARAM_ATTR(ldlm_enqueue_min);
 
 static struct attribute *mgs_attrs[] = {
+	&lustre_attr_evict_client.attr,
 	&lustre_attr_fstype.attr,
+	&lustre_attr_ir_timeout.attr,
 	&lustre_attr_mntdev.attr,
 	&lustre_attr_eviction_count.attr,
 	&lustre_attr_num_exports.attr,
@@ -256,6 +253,7 @@ static struct attribute *mgs_attrs[] = {
 	&lustre_attr_at_max.attr,
 	&lustre_attr_at_history.attr,
 	&lustre_attr_at_unhealthy_factor.attr,
+	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,
 };
 
@@ -263,14 +261,14 @@ KOBJ_ATTRIBUTE_GROUPS(mgs); /* creates mgs_groups from mgs_attrs */
 
 int lproc_mgs_setup(struct mgs_device *mgs, const char *osd_name)
 {
-	int osd_len = strlen(osd_name) - strlen("-osd");
 	struct obd_device *obd = mgs->mgs_obd;
 	const struct kobj_type *bottom_type;
 	struct attribute *attr;
 	struct obd_device *osd_obd;
+	char path[MAX_OBD_NAME];
 	int rc;
 
-	obd->obd_vars = lprocfs_mgs_obd_vars;
+	obd->obd_debugfs_vars = ldebugfs_mgs_obd_vars;
 	obd->obd_ktype.default_groups = KOBJ_ATTR_GROUPS(mgs);
 	rc = lprocfs_obd_setup(obd, true);
 	if (rc != 0)
@@ -282,31 +280,31 @@ int lproc_mgs_setup(struct mgs_device *mgs, const char *osd_name)
 	debugfs_create_file("srpc_rules", 0400, obd->obd_debugfs_entry, obd,
 			    &mgsself_srpc_fops);
 
-	mgs->mgs_proc_live = lprocfs_register("live", obd->obd_proc_entry,
-					      NULL, NULL);
-        if (IS_ERR(mgs->mgs_proc_live)) {
-                rc = PTR_ERR(mgs->mgs_proc_live);
-                mgs->mgs_proc_live = NULL;
-		GOTO(out, rc);
-        }
+	mgs->mgs_debugfs_live = debugfs_create_dir("live",
+						   obd->obd_debugfs_entry);
 
 	obd->obd_debugfs_gss_dir = debugfs_create_dir("gss",
 						      obd->obd_debugfs_entry);
-	if (obd->obd_debugfs_gss_dir)
-		ldebugfs_add_vars(obd->obd_debugfs_gss_dir,
-				  ldebugfs_ofd_gss_vars, obd);
+	if (IS_ERR(obd->obd_debugfs_gss_dir))
+		obd->obd_debugfs_gss_dir = NULL;
 
-	obd->obd_proc_exports_entry = lprocfs_register("exports",
-						       obd->obd_proc_entry,
-						       NULL, NULL);
-        if (IS_ERR(obd->obd_proc_exports_entry)) {
-                rc = PTR_ERR(obd->obd_proc_exports_entry);
-                obd->obd_proc_exports_entry = NULL;
-		GOTO(out, rc);
-        }
-	if (obd->obd_proc_exports_entry)
-		lprocfs_add_simple(obd->obd_proc_exports_entry, "clear",
-				   obd, &mgs_nid_stats_clear_fops);
+	ldebugfs_add_vars(obd->obd_debugfs_gss_dir,
+			  ldebugfs_ofd_gss_vars, obd);
+
+	obd->obd_debugfs_exports = debugfs_create_dir("exports",
+						      obd->obd_debugfs_entry);
+	if (IS_ERR(obd->obd_debugfs_exports))
+		obd->obd_debugfs_exports = NULL;
+
+	debugfs_create_file("clear", 0644, obd->obd_debugfs_exports,
+			    obd, &mgs_nid_stats_clear_fops);
+
+	/* mgs_bottom has the proper name from the kobject */
+	osd_obd = mgs->mgs_bottom->dd_lu_dev.ld_obd;
+	snprintf(path, sizeof(path), "../../%s/%s",
+		 osd_obd->obd_type->typ_name,
+		 kobject_name(&mgs->mgs_bottom->dd_kobj));
+	debugfs_create_symlink("osd", obd->obd_debugfs_entry, path);
 
 	rc = sysfs_create_link(&obd->obd_kset.kobj, &mgs->mgs_bottom->dd_kobj,
 			       "osd");
@@ -324,15 +322,6 @@ int lproc_mgs_setup(struct mgs_device *mgs, const char *osd_name)
 	attr = get_attr_by_name(bottom_type, "mntdev");
 	if (attr)
 		mgs->mgs_fstype = mgs->mgs_mntdev;
-	osd_obd = mgs->mgs_bottom->dd_lu_dev.ld_obd;
-	mgs->mgs_proc_osd = lprocfs_add_symlink("osd",
-						obd->obd_proc_entry,
-						"../../%s/%.*s",
-						osd_obd->obd_type->typ_name,
-						osd_len, /* Strip "-osd". */
-						osd_name);
-	if (mgs->mgs_proc_osd == NULL)
-		rc = -ENOMEM;
 out:
 	if (rc != 0)
 		lproc_mgs_cleanup(mgs);
@@ -347,21 +336,12 @@ void lproc_mgs_cleanup(struct mgs_device *mgs)
 	if (obd == NULL)
 		return;
 
-	if (mgs->mgs_proc_osd != NULL)
-		lprocfs_remove(&mgs->mgs_proc_osd);
-
 	sysfs_remove_link(&obd->obd_kset.kobj, "osd");
 
-	if (mgs->mgs_proc_live != NULL) {
-		/* Should be no live entries */
-		lprocfs_remove(&mgs->mgs_proc_live);
-		mgs->mgs_proc_live = NULL;
-	}
-
 	lprocfs_free_per_client_stats(obd);
-	lprocfs_obd_cleanup(obd);
 	ldebugfs_free_obd_stats(obd);
 	lprocfs_free_md_stats(obd);
+	lprocfs_obd_cleanup(obd);
 }
 
 void mgs_counter_incr(struct obd_export *exp, int opcode)
@@ -379,4 +359,3 @@ void mgs_stats_counter_init(struct lprocfs_stats *stats)
 	lprocfs_counter_init(stats, LPROC_MGS_TARGET_REG, 0, "tgtreg");
 	lprocfs_counter_init(stats, LPROC_MGS_TARGET_DEL, 0, "tgtdel");
 }
-#endif

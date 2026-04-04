@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -68,62 +48,44 @@
 #include "mount_utils.h"
 
 char *progname;
+int replace = 0;
 int verbose = 1;
 int version;
 static int print_only;
 
-#ifdef HAVE_LDISKFS_OSD
-#define FSLIST_LDISKFS "ldiskfs"
-#define HAVE_FSLIST
-#else
- #define FSLIST_LDISKFS ""
-#endif /* HAVE_LDISKFS_OSD */
-#ifdef HAVE_ZFS_OSD
- #ifdef HAVE_FSLIST
-   #define FSLIST_ZFS "|zfs"
- #else
-  #define FSLIST_ZFS "zfs"
-  #define HAVE_FSLIST
- #endif
-#else
- #define FSLIST_ZFS ""
-#endif /* HAVE_ZFS_OSD */
-
-#ifndef HAVE_FSLIST
- #error "no backing OSD types (ldiskfs or ZFS) are configured"
-#endif
-
-#define FSLIST FSLIST_LDISKFS FSLIST_ZFS
-
 static void usage(FILE *out)
 {
-	fprintf(out, "usage: %s <target type> [--backfstype="FSLIST"] "
-		"--fsname=<filesystem name>\n"
-		"\t--index=<target index> [options] <device>\n", progname);
-#ifdef HAVE_ZFS_OSD
-	fprintf(out, "usage: %s <target type> --backfstype=zfs "
-		"--fsname=<filesystem name> [options]\n"
-		"\t<pool name>/<dataset name>\n"
-		"\t[[<vdev type>] <device> [<device> ...] [vdev type>] ...]\n",
-		progname);
-#endif
+	if (backfs_mount_type_loaded(LDD_MT_LDISKFS)) {
+		fprintf(out, "usage: %s <target type> --backfstype=ldiskfs "
+			"--fsname=<filesystem name>\n"
+			"\t--index=<target index> [options] <device>\n\n",
+			progname);
+	}
+
+	if (backfs_mount_type_loaded(LDD_MT_ZFS)) {
+		fprintf(out, "usage: %s <target type> --backfstype=zfs "
+			"--fsname=<filesystem name> [options]\n"
+			"\t<pool name>/<dataset name>\n"
+			"\t[[<vdev type>] <device> [<device> ...] [vdev type>] ...]\n",
+			progname);
+		fprintf(out,
+			"\t<device>:block device or file (e.g /dev/sda or /tmp/ost1)\n"
+			"\t<pool name>: name of ZFS pool where target is created "
+				"(e.g. tank)\n"
+			"\t<dataset name>: name of new dataset, must be unique within "
+				"pool (e.g. ost1)\n"
+			"\t<vdev type>: type of vdev (mirror, raidz, raidz2, spare, "
+				"cache, log)\n");
+	}
+
 	fprintf(out,
-		"\t<device>:block device or file (e.g /dev/sda or /tmp/ost1)\n"
-#ifdef HAVE_ZFS_OSD
-		"\t<pool name>: name of ZFS pool where target is created "
-			"(e.g. tank)\n"
-		"\t<dataset name>: name of new dataset, must be unique within "
-			"pool (e.g. ost1)\n"
-		"\t<vdev type>: type of vdev (mirror, raidz, raidz2, spare, "
-			"cache, log)\n"
-#endif
 		"\n"
 		"\ttarget types:\n"
 		"\t\t--mgs: configuration management service\n"
 		"\t\t--nomgs: turn off MGS service on this MDT\n"
 #ifndef TUNEFS
 		"\t\t--mdt: metadata storage, mutually exclusive with ost\n"
-		"\t\t--ost: object storage, mutually exclusive with mdt, mgs\n"
+		"\t\t--ost: object storage, mutually exclusive with mdt, mgs\n\n"
 #endif
 		"\toptions (in order of popularity):\n"
 		"\t\t--index=#N: numerical target index (0..N)\n"
@@ -150,7 +112,6 @@ static void usage(FILE *out)
 		"\t\t--device-size=#N(KB): device size for loop devices\n"
 		"\t\t--mkfsoptions=<opts>: format options\n"
 		"\t\t--reformat: overwrite an existing disk\n"
-		"\t\t--replace: replace an old target with the same index\n"
 		"\t\t--stripe-count-hint=#N: for optimizing MDT inode size\n"
 #else
 		"\t\t--erase-param <key>: erase all instances of a parameter\n"
@@ -159,7 +120,9 @@ static void usage(FILE *out)
 		"\t\t--nolocallogs: use logs from MGS, not local ones.\n"
 		"\t\t--quota: enable space accounting on old 2.x device.\n"
 		"\t\t--rename: rename the filesystem name\n"
+		"\t\t--mountdata-reset-from=<dev|file>: reset CONFIGS/mountdata file.\n"
 #endif
+		"\t\t--replace: replace an old target with the same index\n"
 		"\t\t--comment=<user comment>: arbitrary string (%d bytes)\n"
 		"\t\t--dryrun: report what we would do; don't write to disk\n"
 		"\t\t--verbose: e.g. show mkfs progress\n"
@@ -170,8 +133,6 @@ static void usage(FILE *out)
 		"\t\t--quiet\n",
 		(int)sizeof(((struct lustre_disk_data *)0)->ldd_userdata));
 }
-
-/* ==================== Lustre config functions =============*/
 
 static void print_ldd(char *str, struct mkfs_opts *mop)
 {
@@ -261,6 +222,12 @@ static inline void badopt(const char *opt, char *type)
 
 #ifdef TUNEFS
 /**
+ * erase_param() - Removes all existing instances depending upon param
+ * @buf: the buffer holding on-disk server parameters.
+ * @param: the parameter whose instances are to be removed from \a buf.
+ * @withval: true means the parameter is in the form of "key=<value>"
+ *           false means the parameter is in the form of "key"
+ *
  * Removes all existing instances of the parameter passed in \a param,
  * which are in the form of "key=<value>", from the buffer at \a buf.
  *
@@ -268,14 +235,10 @@ static inline void badopt(const char *opt, char *type)
  * "--erase-param", or in the form of "key=<value>" when passed by option
  * "--param".
  *
- * \param buf	  the buffer holding on-disk server parameters.
- * \param param	  the parameter whose instances are to be removed from \a buf.
- * \param withval true means the parameter is in the form of "key=<value>"
- *		  false means the parameter is in the form of "key"
- *
- * \retval 0	  success, parameter was erased,
- * \retval 1	  success, parameter was not found, don't need to do erase_ldd,
- * \retval EINVAL failure, invalid input parameter.
+ * Return:
+ * * %0 success, parameter was erased,
+ * * %1 success, parameter was not found, don't need to do erase_ldd,
+ * * %-EINVAL failure, invalid input parameter.
  */
 static int erase_param(const char *const buf, const char *const param,
 		       bool withval)
@@ -324,7 +287,7 @@ static int erase_param(const char *const buf, const char *const param,
 #endif
 
 static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
-		      char **mountopts, char *old_fsname)
+		      char **mountopts, char *old_fsname, char *mountdata_arg)
 {
 	static struct option long_opts[] = {
 	{ .val = 'B',	.name =  "backfs-mount-opts",
@@ -343,6 +306,7 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 						.has_arg = required_argument},
 	{ .val = 'p',	.name =  "param",	.has_arg = required_argument},
 	{ .val = 'q',	.name =  "quiet",	.has_arg = no_argument},
+	{ .val = 'R',	.name =  "replace",	.has_arg = no_argument},
 	{ .val = 's',	.name =  "servicenode",	.has_arg = required_argument},
 	{ .val = 't',	.name =  "network",	.has_arg = required_argument},
 	{ .val = 'u',	.name =  "comment",	.has_arg = required_argument},
@@ -359,29 +323,29 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 	{ .val = 'M',	.name =  "mdt",		.has_arg = no_argument},
 	{ .val = 'O',	.name =  "ost",		.has_arg = no_argument},
 	{ .val = 'r',	.name =  "reformat",	.has_arg = no_argument},
-	{ .val = 'R',	.name =  "replace",	.has_arg = no_argument},
 #else
 	{ .val = 'E',	.name =  "erase-param",	.has_arg = required_argument},
 	{ .val = 'e',	.name =  "erase-params",
 						.has_arg = no_argument},
 	{ .val = 'l',	.name =  "nolocallogs", .has_arg = no_argument},
+	{ .val = 'M',	.name =  "mountdata-reset-from",
+						.has_arg = required_argument},
 	{ .val = 'Q',	.name =  "quota",	.has_arg = no_argument},
-	{ .val = 'R',	.name =  "rename",	.has_arg = optional_argument},
+	{ .val = 'r',	.name =  "rename",	.has_arg = optional_argument},
 	{ .val = 'w',	.name =  "writeconf",	.has_arg = no_argument},
 #endif
 	{ .name = NULL } };
-	char *short_opts = "B:f:Ghi:L:m:nNo:p:qs:t:u:vV"
+	char *short_opts = "B:f:Ghi:L:m:nNo:p:qRs:t:u:UvV"
 #ifndef TUNEFS
-			  "b:c:d:k:MOrR";
+			  "b:c:d:k:MOr";
 #else
-			  "E:elQR::w";
+			  "E:elM:Qr::w";
 #endif
 	struct lustre_disk_data *ldd = &mop->mo_ldd;
 	char new_fsname[16] = { 0 };
 	int opt;
 	int rc, longidx;
 	int failnode_set = 0, servicenode_set = 0;
-	int replace = 0;
 	bool index_option = false;
 
 #ifdef TUNEFS
@@ -470,11 +434,11 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 					progname, optarg);
 				return 1;
 			}
-			if (ldd->ldd_svindex >= INDEX_UNASSIGNED) {
+			if (ldd->ldd_svindex > LOV_V1_INSANE_STRIPE_INDEX) {
 				fprintf(stderr,
 					"%s: wrong index %u. Target index must be less than %u.\n",
 					progname, ldd->ldd_svindex,
-					INDEX_UNASSIGNED);
+					LOV_V1_INSANE_STRIPE_INDEX + 1);
 				return 1;
 			}
 
@@ -550,6 +514,9 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 			break;
 		case 'q':
 			verbose--;
+			break;
+		case 'R':
+			replace = 1;
 			break;
 		case 't':
 			if (!IS_MDT(ldd) && !IS_OST(ldd)) {
@@ -633,9 +600,6 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 		case 'r':
 			mop->mo_flags |= MO_FORCEFORMAT;
 			break;
-		case 'R':
-			replace = 1;
-			break;
 #else /* TUNEFS */
 		case 'E':
 			rc = erase_param(ldd->ldd_params, optarg, false);
@@ -659,7 +623,7 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 		case 'Q':
 			mop->mo_flags |= MO_QUOTA;
 			break;
-		case 'R': {
+		case 'r': {
 			char *tmp;
 
 			mop->mo_flags |= MO_RENAME;
@@ -700,6 +664,14 @@ static int parse_opts(int argc, char *const argv[], struct mkfs_opts *mop,
 			}
 			break;
 		}
+		case 'M':
+			if (access(optarg, F_OK) != 0) {
+				fprintf(stderr, "%s: Given path does not exist (%s)",
+					progname, optarg);
+				return 1;
+			}
+			strscpy(mountdata_arg, optarg, PATH_MAX);
+			break;
 		case 'w':
 			ldd->ldd_flags |= LDD_F_WRITECONF;
 			break;
@@ -829,6 +801,7 @@ int main(int argc, char *const argv[])
 	char *mountopts = NULL;
 	char wanted_mountopts[512] = "";
 	char old_fsname[16] = "";
+	char mountdata_arg[PATH_MAX] = "";
 	unsigned int mount_type;
 	int ret = 0;
 	int ret2 = 0;
@@ -838,6 +811,13 @@ int main(int argc, char *const argv[])
 		progname++;
 	else
 		progname = argv[0];
+
+	ret = osd_init();
+	if (ret != 0) {
+		fprintf(stderr, "%s: no OSD plugins found: %d (%s)\n",
+			progname, ret, strerror(ret));
+		return ret;
+	}
 
 	if (chk_args(argc, argv)) {
 		usage(stderr);
@@ -849,13 +829,6 @@ int main(int argc, char *const argv[])
 
 	/* device is last arg */
 	strscpy(mop.mo_device, argv[argc - 1], sizeof(mop.mo_device));
-
-	ret = osd_init();
-	if (ret != 0) {
-		fprintf(stderr, "%s: osd_init() failed: %d (%s)\n",
-			progname, ret, strerror(ret));
-		return ret;
-	}
 
 #ifdef TUNEFS
 	/*
@@ -875,14 +848,7 @@ int main(int argc, char *const argv[])
 	}
 	ldd->ldd_mount_type = mount_type;
 
-	ret = osd_read_ldd(mop.mo_device, ldd);
-	if (ret != 0) {
-		fatal();
-		fprintf(stderr,
-			"Failed to read previous Lustre data from %s (%d)\n",
-			mop.mo_device, ret);
-		goto out;
-	}
+	ret2 = osd_read_ldd(mop.mo_device, ldd);
 
 	strscpy(old_fsname, ldd->ldd_fsname, sizeof(ldd->ldd_fsname));
 	ldd->ldd_flags &= ~(LDD_F_WRITECONF | LDD_F_VIRGIN |
@@ -908,9 +874,30 @@ int main(int argc, char *const argv[])
 		print_ldd("Read previous values", &mop);
 #endif /* TUNEFS */
 
-	ret = parse_opts(argc, argv, &mop, &mountopts, old_fsname);
+	ret = parse_opts(argc, argv, &mop, &mountopts, old_fsname,
+			 mountdata_arg);
 	if (ret != 0 || version)
 		goto out;
+
+#ifdef TUNEFS
+	/* Reset mountdata */
+	if (mountdata_arg[0] != '\0') {
+		ret = osd_mountdata_reset(&mop, mountdata_arg);
+		if (ret != 0)
+			goto out;
+		if (verbose >= 0)
+			print_ldd("Updated values", &mop);
+		goto write;
+	}
+
+	if (ret2 != 0) {
+		fatal();
+		fprintf(stderr,
+			"Failed to read previous Lustre data from %s (%s)\n",
+			mop.mo_device, strerror(ret2));
+		goto out;
+	}
+#endif
 
 	if (!IS_MDT(ldd) && !IS_OST(ldd) && !IS_MGS(ldd)) {
 		fatal();
@@ -1077,6 +1064,15 @@ int main(int argc, char *const argv[])
 		goto out;
 	}
 #else /* TUNEFS */
+	/* update svname with '-' */
+	if (replace) {
+		struct mount_opts opts;
+
+		opts.mo_ldd = *ldd;
+		opts.mo_source = mop.mo_device;
+		(void)osd_label_lustre(&opts);
+	}
+
 	/* update svname with '=' to refresh config */
 	if (ldd->ldd_flags & LDD_F_WRITECONF) {
 		struct mount_opts opts;
@@ -1107,6 +1103,9 @@ int main(int argc, char *const argv[])
 		ret = osd_enable_quota(&mop);
 		goto out;
 	}
+
+write:
+
 #endif /* !TUNEFS */
 
 	/* Write our config files */

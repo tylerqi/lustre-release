@@ -24,14 +24,15 @@
 
 #include "osc_internal.h"
 
-/** \addtogroup osc
- *  @{
- */
-
 /**
+ * osc_handle_ptr() - Returns weak pointer to ldlm lock identified by a handle
+ * @handle: pointer to lustre_handle (to uniquely identify lock)
+ *
  * Returns a weak pointer to the ldlm lock identified by a handle. Returned
  * pointer cannot be dereferenced, as lock is not protected from concurrent
  * reclaim. This function is a helper for osc_lock_invariant().
+ *
+ * Return pointer to ldlm_lock
  */
 static struct ldlm_lock *osc_handle_ptr(struct lustre_handle *handle)
 {
@@ -44,7 +45,12 @@ static struct ldlm_lock *osc_handle_ptr(struct lustre_handle *handle)
 }
 
 /**
- * Invariant that has to be true all of the time.
+ * osc_lock_invariant() - Invariant that has to be true all of the time.
+ * @ols: osc-private state of cl_lock
+ *
+ * Return:
+ * * %1 All invariant conditon is met
+ * * %0 Any one of invariant condition is false
  */
 static inline int osc_lock_invariant(struct osc_lock *ols)
 {
@@ -82,7 +88,7 @@ static inline int osc_lock_invariant(struct osc_lock *ols)
 	 * ast.
 	 */
 	if (! ergo(olock != NULL && ols->ols_state < OLS_CANCELLED,
-		   !ldlm_is_destroyed(olock)))
+		   !(olock->l_flags & LDLM_FL_DESTROYED)))
 		return 0;
 
 	if (! ergo(ols->ols_state == OLS_GRANTED,
@@ -93,11 +99,7 @@ static inline int osc_lock_invariant(struct osc_lock *ols)
 	return 1;
 }
 
-/*****************************************************************************
- *
- * Lock operations.
- *
- */
+/* Lock operations */
 
 void osc_lock_fini(const struct lu_env *env, struct cl_lock_slice *slice)
 {
@@ -121,6 +123,12 @@ static void osc_lock_build_policy(const struct lu_env *env,
 }
 
 /**
+ * osc_lock_lvb_update() - Updates obj attributes from a lock value block (LVB)
+ * @env: lustre environment
+ * @osc: OSC object to be updated [out]
+ * @dlmlock: A pointer to struct ldlm_lock
+ * @lvb: Attributes to be applied to @osc
+ *
  * Updates object attributes from a lock value block (lvb) received together
  * with the DLM lock reply from the server. Copy of osc_update_enqueue()
  * logic.
@@ -135,7 +143,8 @@ void osc_lock_lvb_update(const struct lu_env *env,
 	struct cl_object *obj = osc2cl(osc);
 	struct lov_oinfo *oinfo = osc->oo_oinfo;
 	struct cl_attr *attr = &osc_env_info(env)->oti_attr;
-	unsigned valid, setkms = 0;
+	unsigned int setkms = 0;
+	enum cl_attr_valid valid;
 
 	ENTRY;
 
@@ -224,11 +233,11 @@ static void osc_lock_granted(const struct lu_env *env, struct osc_lock *oscl,
 		descr->cld_gid   = ext->gid;
 
 		/* no lvb update for matched lock */
-		if (!ldlm_is_lvb_cached(dlmlock)) {
+		if (!(dlmlock->l_flags & LDLM_FL_LVB_CACHED)) {
 			LASSERT(oscl->ols_flags & LDLM_FL_LVB_READY);
 			LASSERT(osc == dlmlock->l_ast_data);
 			osc_lock_lvb_update(env, osc, dlmlock, NULL);
-			ldlm_set_lvb_cached(dlmlock);
+			(dlmlock->l_flags |= LDLM_FL_LVB_CACHED);
 		}
 		LINVRNT(osc_lock_invariant(oscl));
 	}
@@ -239,9 +248,18 @@ static void osc_lock_granted(const struct lu_env *env, struct osc_lock *oscl,
 }
 
 /**
+ * osc_lock_upcall() - Lock upcall function
+ * @cookie: pointer to osc_lock structure
+ * @lockh: pointer to a lustre_handle (DLM lock)
+ * @errcode: status of DLM operation
+ *
  * Lock upcall function that is executed either when a reply to ENQUEUE rpc is
  * received from a server, or after osc_enqueue_base() matched a local DLM
  * lock.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_lock_upcall(void *cookie, struct lustre_handle *lockh,
 			   int errcode)
@@ -340,9 +358,15 @@ static int osc_lock_flush(struct osc_object *obj, pgoff_t start, pgoff_t end,
 	if (IS_ERR(env))
 		RETURN(PTR_ERR(env));
 
+	/* For blocking AST, it only needs to check conflict read extents. */
+	rc = osc_ldlm_hp_handle(env, obj, start, end, true);
+	if (rc < 0)
+		CERROR("%s: HP read check failed: rc = %d\n",
+		       cli_name(osc_cli(obj)), rc);
+
 	if (mode == CLM_WRITE) {
 		rc = osc_cache_writeback_range(env, obj, start, end, 1,
-					       discard);
+					       discard, IO_PRIO_NORMAL);
 		CDEBUG(D_CACHE, "object %p: [%lu -> %lu] %d pages were %s.\n",
 		       obj, start, end, rc,
 		       discard ? "discarded" : "written back");
@@ -364,12 +388,23 @@ static int osc_lock_flush(struct osc_object *obj, pgoff_t start, pgoff_t end,
 }
 
 /**
+ * __osc_dlm_blocking_ast() - Helper for osc_dlm_blocking_ast()
+ * @env: lustre environment
+ * @dlmlock: A pointer to struct ldlm_lock
+ * @data: unused
+ * @flag: LDLM_CB_BLOCKING or LDLM_CB_CANCELING. Used to distinguish
+ *        cancellation and blocking ast's.
+ *
  * Helper for osc_dlm_blocking_ast() handling discrepancies between cl_lock
  * and ldlm_lock caches.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
-static int osc_dlm_blocking_ast0(const struct lu_env *env,
-                                 struct ldlm_lock *dlmlock,
-                                 void *data, int flag)
+static int __osc_dlm_blocking_ast(const struct lu_env *env,
+				  struct ldlm_lock *dlmlock, void *data,
+				  int flag)
 {
 	struct cl_object	*obj = NULL;
 	int			result = 0;
@@ -386,7 +421,7 @@ static int osc_dlm_blocking_ast0(const struct lu_env *env,
 		RETURN(0);
 	}
 
-	discard = ldlm_is_discard_data(dlmlock);
+	discard = (dlmlock->l_flags & LDLM_FL_DISCARD_DATA);
 	if (dlmlock->l_granted_mode & (LCK_PW | LCK_GROUP))
 		mode = CLM_WRITE;
 
@@ -434,6 +469,13 @@ static int osc_dlm_blocking_ast0(const struct lu_env *env,
 }
 
 /**
+ * osc_ldlm_blocking_ast() - Blocking ast invoked by ldlm
+ * @dlmlock: lock for which ast occurred.
+ * @new: description of a conflicting lock in case of blocking ast.
+ * @data: value of dlmlock->l_ast_data
+ * @flag: LDLM_CB_BLOCKING or LDLM_CB_CANCELING. Used to distinguish
+ *        cancellation and blocking ast's.
+ *
  * Blocking ast invoked by ldlm when dlm lock is either blocking progress of
  * some other lock, or is canceled. This function is installed as a
  * ldlm_lock::l_blocking_ast() for client extent locks.
@@ -473,11 +515,13 @@ static int osc_dlm_blocking_ast0(const struct lu_env *env,
  *             osc_lock_cancel()->
  *               ldlm_cli_cancel()->
  *                 dlmlock->l_blocking_ast(..., LDLM_CB_CANCELING)
- *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int osc_ldlm_blocking_ast(struct ldlm_lock *dlmlock,
-                                 struct ldlm_lock_desc *new, void *data,
-                                 int flag)
+				 struct ldlm_lock_desc *new, void *data,
+				 int flag)
 {
 	int result = 0;
 	ENTRY;
@@ -513,7 +557,7 @@ static int osc_ldlm_blocking_ast(struct ldlm_lock *dlmlock,
 			break;
 		}
 
-		result = osc_dlm_blocking_ast0(env, dlmlock, data, flag);
+		result = __osc_dlm_blocking_ast(env, dlmlock, data, flag);
 		cl_env_put(env, &refcheck);
 		break;
 	}
@@ -640,7 +684,7 @@ static unsigned long osc_lock_weight(const struct lu_env *env,
 				     struct osc_object *oscobj,
 				     loff_t start, loff_t end)
 {
-	struct cl_io *io = osc_env_thread_io(env);
+	struct cl_io *io = osc_env_new_io(env);
 	struct cl_object *obj = cl_object_top(&oscobj->oo_cl);
 	pgoff_t page_index;
 	int result;
@@ -665,7 +709,12 @@ static unsigned long osc_lock_weight(const struct lu_env *env,
 }
 
 /**
- * Get the weight of dlm lock for early cancellation.
+ * osc_ldlm_weigh_ast() - Get the weight of dlm lock for early cancellation.
+ * @dlmlock: A pointer to struct ldlm_lock whose weight is returned
+ *
+ * Return:
+ * * %0 lock not in use
+ * * %1 lock in use
  */
 unsigned long osc_ldlm_weigh_ast(struct ldlm_lock *dlmlock)
 {
@@ -755,7 +804,11 @@ static void osc_lock_build_einfo(const struct lu_env *env,
 }
 
 /**
- * Determine if the lock should be converted into a lockless lock.
+ * osc_lock_to_lockless() - Determine if the lock should be converted into a
+ *                          lockless lock.
+ * @env: lustre environment
+ * @ols: pointer to the osc_lock structure
+ * @force: If true, it is able to tolerate the -EUSERS error.
  *
  * Steps to check:
  * - if the lock has an explicite requirment for a non-lockless lock;
@@ -906,6 +959,12 @@ restart:
 EXPORT_SYMBOL(osc_lock_enqueue_wait);
 
 /**
+ * osc_lock_enqueue() - Enqueue/Acquire OSC lock
+ * @env: lustre environment
+ * @slice: client-side lock structure
+ * @unused: unused
+ * @anchor: This is used for to wait for the resources before getting lock
+ *
  * Implementation of cl_lock_operations::clo_enqueue() method for osc
  * layer. This initiates ldlm enqueue:
  *
@@ -918,6 +977,10 @@ EXPORT_SYMBOL(osc_lock_enqueue_wait);
  * when a reply from the server is received.
  *
  * This function does not wait for the network communication to complete.
+ *
+ * Return:
+ * * %0 on success
+ * * %-ERRNO on failure
  */
 static int osc_lock_enqueue(const struct lu_env *env,
 			    const struct cl_lock_slice *slice,
@@ -934,7 +997,8 @@ static int osc_lock_enqueue(const struct lu_env *env,
 	osc_enqueue_upcall_f		upcall   = osc_lock_upcall;
 	void				*cookie  = oscl;
 	bool				async    = false;
-	int				result;
+	__u32 projid;
+	int result;
 
         ENTRY;
 
@@ -1004,11 +1068,13 @@ enqueue_base:
 		upcall = osc_lock_upcall_speculative;
 		cookie = osc;
 	}
+
+	cl_req_projid_set(env, osc2cl(osc), &projid);
 	result = osc_enqueue_base(exp, resname, &oscl->ols_flags,
 				  policy, &oscl->ols_lvb,
 				  upcall, cookie,
 				  &oscl->ols_einfo, PTLRPCD_SET, async,
-				  oscl->ols_speculative);
+				  oscl->ols_speculative, projid);
 	if (result == 0) {
 		if (osc_lock_is_lockless(oscl)) {
 			oio->oi_lockless = 1;
@@ -1042,7 +1108,9 @@ out:
 }
 
 /**
- * Breaks a link between osc_lock and dlm_lock.
+ * osc_lock_detach() - Breaks a link between osc_lock and dlm_lock.
+ * @env: lustre environment
+ * @olck: pointer to the osc_lock structure
  */
 static void osc_lock_detach(const struct lu_env *env, struct osc_lock *olck)
 {
@@ -1071,7 +1139,11 @@ static void osc_lock_detach(const struct lu_env *env, struct osc_lock *olck)
 }
 
 /**
- * Implements cl_lock_operations::clo_cancel() method for osc layer. This is
+ * osc_lock_cancel() - Cancel lock
+ * @env: lustre environment
+ * @slice: client-side lock structure
+ *
+ * Implements cl_lock_operations::clo_cancel() method for OSC layer. This is
  * called (as part of cl_lock_cancel()) when lock is canceled either voluntary
  * (LRU pressure, early cancellation, umount, etc.) or due to the conflict
  * with some other lock some where in the cluster. This function does the
@@ -1241,8 +1313,16 @@ int osc_lock_init(const struct lu_env *env,
 }
 
 /**
+ * osc_obj_dlmlock_at_pgoff() - Finds an existing lock covering given @index
+ * @env: lustre environment
+ * @obj: pointer to the osc_object
+ * @index: start offset
+ * @dap_flags: Bit flags for osc_dlm_lock_at_pageoff
+ *
  * Finds an existing lock covering given index and optionally different from a
- * given \a except lock.
+ * given except lock.
+ *
+ * Return matching DLM lock if found on success or %NULL on not found
  */
 struct ldlm_lock *osc_obj_dlmlock_at_pgoff(const struct lu_env *env,
 					   struct osc_object *obj,
@@ -1294,4 +1374,3 @@ again:
 
 	RETURN(lock);
 }
-/** @} osc */

@@ -14,7 +14,7 @@
 #ifndef _MGS_INTERNAL_H
 #define _MGS_INTERNAL_H
 
-#include <libcfs/libcfs.h>
+#include <lustre_compat/linux/xarray.h>
 #include <lustre_log.h>
 #include <lustre_export.h>
 #include <lustre_nodemap.h>
@@ -29,19 +29,32 @@
  * restarting targets.
  */
 struct mgs_nidtbl;
+
+struct tnt_nidlist {
+	u64	     tnl_version;
+	unsigned int tnl_size; /* preallocated size */
+	unsigned int tnl_count;
+	char	     tnl_nids[][LNET_NIDSTR_SIZE];
+};
+
+#define TNL_SIZE(count) (LNET_NIDSTR_SIZE * count + \
+			 offsetof(struct tnt_nidlist, tnl_nids))
+
 struct mgs_nidtbl_target {
 	struct list_head	mnt_list;
 	struct mgs_nidtbl      *mnt_fs;
 	u64			mnt_version;
-	int			mnt_type;	/* OST or MDT */
-	struct mgs_target_info	mnt_mti;
+	int			mnt_type; /* OST or MDT */
+	__u32			mnt_stripe_index;
+	__u32			mnt_instance; /* Running instance of target */
+	struct xarray		mnt_xa_nids;
 };
 
 enum {
-        IR_FULL = 0,
-        IR_STARTUP,
-        IR_DISABLED,
-        IR_PARTIAL
+	IR_FULL = 0,
+	IR_STARTUP,
+	IR_DISABLED,
+	IR_PARTIAL
 };
 
 #define IR_STRINGS { "full", "startup", "disabled", "partial" }
@@ -74,7 +87,7 @@ struct mgs_fsc {
 struct mgs_nidtbl {
 	struct fs_db		*mn_fsdb;
 	struct file		*mn_version_file;
-	struct mutex		 mn_lock;
+	struct rw_semaphore	 mn_lock;
 	u64			 mn_version;
 	int			 mn_nr_targets;
 	struct list_head	 mn_targets;
@@ -137,7 +150,7 @@ struct fs_db {
 	atomic_t	      fsdb_notify_phase;
 	volatile unsigned int fsdb_notify_async:1,
 			      fsdb_notify_stop:1,
-			      fsdb_has_lproc_entry:1,
+			      fsdb_has_debugfs_entry:1,
 			      fsdb_barrier_disabled:1;
 	/* statistic data */
 	ktime_t		fsdb_notify_total;
@@ -155,8 +168,7 @@ struct mgs_device {
 	struct dt_object		*mgs_nidtbl_dir;
 	struct list_head		 mgs_fs_db_list;
 	spinlock_t			 mgs_lock; /* covers mgs_fs_db_list */
-	struct proc_dir_entry		*mgs_proc_live;
-	struct proc_dir_entry           *mgs_proc_osd;
+	struct dentry			*mgs_debugfs_live;
 	struct attribute		*mgs_fstype;
 	struct attribute		*mgs_mntdev;
 	time64_t			 mgs_start_time;
@@ -228,10 +240,10 @@ int  mgs_get_ir_logs(struct ptlrpc_request *req);
 int  lprocfs_wr_ir_state(struct file *file, const char __user *buffer,
 			 size_t count, void *data);
 int  lprocfs_rd_ir_state(struct seq_file *seq, void *data);
-ssize_t
-lprocfs_ir_timeout_seq_write(struct file *file, const char __user *buffer,
-			     size_t count, loff_t *off);
-int  lprocfs_ir_timeout_seq_show(struct seq_file *seq, void *data);
+ssize_t ir_timeout_show(struct kobject *kobj, struct attribute *attr,
+			char *buf);
+ssize_t ir_timeout_store(struct kobject *kobj, struct attribute *attr,
+			 const char *buffer, size_t count);
 void mgs_fsc_cleanup(struct obd_export *exp);
 void mgs_fsc_cleanup_by_fsdb(struct fs_db *fsdb);
 int  mgs_fsc_attach(const struct lu_env *env, struct obd_export *exp,
@@ -249,21 +261,10 @@ int mgs_iocontrol_barrier(const struct lu_env *env,
 			  struct mgs_device *mgs,
 			  struct obd_ioctl_data *data);
 
-#ifdef CONFIG_PROC_FS
 int lproc_mgs_setup(struct mgs_device *mgs, const char *osd_name);
 void lproc_mgs_cleanup(struct mgs_device *mgs);
 int lproc_mgs_add_live(struct mgs_device *mgs, struct fs_db *fsdb);
 int lproc_mgs_del_live(struct mgs_device *mgs, struct fs_db *fsdb);
-#else
-static inline int lproc_mgs_setup(struct mgs_device *mgs, const char *osd_name)
-{return 0;}
-static inline void lproc_mgs_cleanup(struct mgs_device *mgs)
-{}
-static inline int lproc_mgs_add_live(struct mgs_device *mgs, struct fs_db *fsdb)
-{return 0;}
-static inline int lproc_mgs_del_live(struct mgs_device *mgs, struct fs_db *fsdb)
-{return 0;}
-#endif
 
 /* mgs/lproc_mgs.c */
 enum {
@@ -314,38 +315,10 @@ static inline struct lu_device *mgs2lu_dev(struct mgs_device *d)
 	return (&d->mgs_dt_dev.dd_lu_dev);
 }
 
-static inline struct mgs_device *dt2mgs_dev(struct dt_device *d)
-{
-	LASSERT(lu_device_is_mgs(&d->dd_lu_dev));
-	return container_of(d, struct mgs_device, mgs_dt_dev);
-}
-
 static inline struct mgs_object *lu2mgs_obj(struct lu_object *o)
 {
 	LASSERT(ergo(o != NULL, lu_device_is_mgs(o->lo_dev)));
 	return container_of_safe(o, struct mgs_object, mgo_obj.do_lu);
-}
-
-static inline struct lu_object *mgs2lu_obj(struct mgs_object *obj)
-{
-	return &obj->mgo_obj.do_lu;
-}
-
-static inline struct mgs_object *mgs_obj(const struct lu_object *o)
-{
-	LASSERT(lu_device_is_mgs(o->lo_dev));
-	return container_of(o, struct mgs_object, mgo_obj.do_lu);
-}
-
-static inline struct mgs_object *dt2mgs_obj(const struct dt_object *d)
-{
-	return mgs_obj(&d->do_lu);
-}
-
-static inline struct dt_object* mgs_object_child(struct mgs_object *o)
-{
-	return container_of(lu_object_next(mgs2lu_obj(o)),
-			    struct dt_object, do_lu);
 }
 
 struct mgs_direntry {

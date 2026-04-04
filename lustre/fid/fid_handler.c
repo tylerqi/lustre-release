@@ -17,14 +17,15 @@
 
 #define DEBUG_SUBSYSTEM S_FID
 
-#include <libcfs/libcfs.h>
 #include <linux/module.h>
+
 #include <obd.h>
 #include <obd_class.h>
 #include <dt_object.h>
 #include <obd_support.h>
 #include <lustre_req_layout.h>
 #include <lustre_fid.h>
+
 #include "fid_internal.h"
 
 /* Assigns client to sequence controller node. */
@@ -77,12 +78,21 @@ static inline void range_alloc(struct lu_seq_range *to,
 }
 
 /**
+ * __seq_server_alloc_super() - allocate new super sequence
+ * @seq: server sequence from which the super sequence will be derived
+ * @out: (Output Param) store the returned super seq range
+ * @env: execution environment
+ *
  * On controller node, allocate new super sequence for regular sequence server.
  * As this super sequence controller, this node suppose to maintain fld
- * and update index.
- * \a out range always has currect mds node number of requester.
+ * and update index. @out range always has correct mds node number of requester
+ * (Super sequence is pool of sequence number. Server sequence is a subset of
+ *  sequence number allocated from super sequence pool)
+ *
+ * Return:
+ * * %0: Success
+ * * %negative: Failure
  */
-
 static int __seq_server_alloc_super(struct lu_server_seq *seq,
 				    struct lu_seq_range *out,
 				    const struct lu_env *env)
@@ -233,17 +243,17 @@ static int range_alloc_set(const struct lu_env *env,
 }
 
 /**
- * Check if the sequence server has sequence avaible
+ * seq_server_check_and_alloc_super() - Check if the sequence server has
+ * sequence available
+ * @env: execution environment
+ * @seq: server sequence
  *
- * Check if the sequence server has sequence avaible, if not, then
+ * Check if the sequence server has sequence available, if not, then
  * allocating super sequence from sequence manager (MDT0).
  *
- * \param[in] env	execution environment
- * \param[in] seq	server sequence
- *
- * \retval		negative errno if allocating new sequence fails
- * \retval		0 if there is enough sequence or allocating
- *                      new sequence succeeds
+ * Return:
+ * * %0: if there is enough sequence or allocating new sequence succeeds
+ * * %-ERRNO: if allocating new sequence fails
  */
 int seq_server_check_and_alloc_super(const struct lu_env *env,
 				     struct lu_server_seq *seq)
@@ -283,7 +293,7 @@ int seq_server_check_and_alloc_super(const struct lu_env *env,
 		}
 	}
 
-	if (lu_seq_range_is_zero(&seq->lss_lowater_set))
+	if (lu_seq_range_is_zero(&seq->lss_lowater_set) && seq->lss_set_width)
 		__seq_set_init(env, seq);
 
 	RETURN(rc);
@@ -301,9 +311,10 @@ static int __seq_server_alloc_meta(struct lu_server_seq *seq,
 
 	LASSERT(lu_seq_range_is_sane(space));
 
+restart:
 	rc = seq_server_check_and_alloc_super(env, seq);
 	if (rc < 0) {
-		if (rc == -EINPROGRESS) {
+		if (rc == -EINPROGRESS || rc == -EAGAIN) {
 			static int printed;
 
 			if (printed++ % 8 == 0)
@@ -316,7 +327,33 @@ static int __seq_server_alloc_meta(struct lu_server_seq *seq,
 		RETURN(rc);
 	}
 
-	rc = range_alloc_set(env, out, seq);
+	if (seq->lss_set_width) {
+		rc = range_alloc_set(env, out, seq);
+	} else {
+		__u64 last_seq;
+
+		rc = dt_last_seq_get(env, seq->lss_dev, &last_seq);
+		if (!rc) {
+			if (last_seq + 1 >= space->lsr_end) {
+				LCONSOLE_INFO("%s: On disk last known sequence %#llx beyond super-sequence "
+					      DRANGE", getting new super-sequence\n",
+					      seq->lss_name, last_seq,
+					      PRANGE(space));
+				space->lsr_start = space->lsr_end;
+				GOTO(restart, rc);
+			}
+			if (last_seq >= space->lsr_start) {
+				LCONSOLE_INFO("%s: On disk last known sequence %#llx within super-sequence "
+					      DRANGE", updating super-sequence\n",
+					      seq->lss_name, last_seq,
+					      PRANGE(space));
+				space->lsr_start = last_seq + 1;
+			}
+		}
+		range_alloc(out, space, seq->lss_width);
+		rc = seq_store_update(env, seq, NULL, 1);
+	}
+
 	if (rc != 0) {
 		CERROR("%s: Allocated meta-sequence failed: rc = %d\n",
 		       seq->lss_name, rc);
@@ -458,12 +495,10 @@ static void seq_server_debugfs_init(struct lu_server_seq *seq)
 				    seq, &seq_fld_debugfs_seq_fops);
 }
 
-int seq_server_init(const struct lu_env *env,
-		    struct lu_server_seq *seq,
-		    struct dt_device *dev,
-		    const char *prefix,
-		    enum lu_mgr_type type,
-		    struct seq_server_site *ss)
+int seq_server_init(const struct lu_env *env, struct lu_server_seq *seq,
+		    struct dt_device *dev, const char *prefix,
+		    enum lu_mgr_type type, struct seq_server_site *ss,
+		    bool set_batch_width)
 {
 	int rc, is_srv = (type == LUSTRE_SEQ_SERVER);
 	ENTRY;
@@ -491,7 +526,7 @@ int seq_server_init(const struct lu_env *env,
 
 	lu_seq_range_init(&seq->lss_lowater_set);
 	lu_seq_range_init(&seq->lss_hiwater_set);
-	seq->lss_set_width = LUSTRE_SEQ_BATCH_WIDTH;
+	seq->lss_set_width = set_batch_width ? LUSTRE_SEQ_BATCH_WIDTH : 0;
 
 	mutex_init(&seq->lss_mutex);
 

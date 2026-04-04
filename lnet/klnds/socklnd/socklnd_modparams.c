@@ -24,7 +24,7 @@
 
 #define CURRENT_LND_VERSION 1
 
-static int sock_timeout;
+static int sock_timeout = SOCKNAL_TIMEOUT_DEFAULT;
 module_param(sock_timeout, int, 0644);
 MODULE_PARM_DESC(sock_timeout, "dead socket timeout (seconds)");
 
@@ -166,8 +166,7 @@ MODULE_PARM_DESC(protocol, "protocol version");
 #endif
 
 static int tos = -1;
-static int param_set_tos(const char *val, cfs_kernel_param_arg_t *kp);
-#ifdef HAVE_KERNEL_PARAM_OPS
+static int param_set_tos(const char *val, const struct kernel_param *kp);
 static const struct kernel_param_ops param_ops_tos = {
 	.set = param_set_tos,
 	.get = param_get_int,
@@ -176,26 +175,12 @@ static const struct kernel_param_ops param_ops_tos = {
 #define param_check_tos(name, p) \
 	__param_check(name, p, int)
 module_param(tos, tos, 0444);
-#else
-module_param_call(tos, param_set_tos, param_get_int, &tos, 0444);
-#endif
 MODULE_PARM_DESC(tos, "Set the type of service (=-1 to disable)");
-
-static inline bool is_native_host(void)
-{
-#ifdef HAVE_HYPERVISOR_IS_TYPE
-	return hypervisor_is_type(X86_HYPER_NATIVE);
-#elif defined(__x86_64__) || defined(__i386__)
-	return x86_hyper == NULL;
-#else
-	return true;
-#endif
-}
 
 struct ksock_tunables ksocknal_tunables;
 struct lnet_ioctl_config_socklnd_tunables ksock_default_tunables;
 
-static int param_set_tos(const char *val, cfs_kernel_param_arg_t *kp)
+static int param_set_tos(const char *val, const struct kernel_param *kp)
 {
 	int rc, t;
 
@@ -229,7 +214,7 @@ static int ksocklnd_ni_get_eth_intf_speed(struct lnet_ni *ni)
 
 	rtnl_lock();
 	for_each_netdev(ni->ni_net_ns, dev) {
-		int flags = dev_get_flags(dev);
+		int flags = netif_get_flags(dev);
 		struct in_device *in_dev;
 
 		if (flags & IFF_LOOPBACK) /* skip the loopback IF */
@@ -309,7 +294,7 @@ static int ksocklnd_speed2cpp(int speed)
 }
 #endif
 
-static int ksocklnd_lookup_conns_per_peer(struct lnet_ni *ni)
+int ksocklnd_lookup_conns_per_peer(struct lnet_ni *ni)
 {
 	int cpp = 1;
 #ifdef HAVE_ETHTOOL_LINK_SETTINGS
@@ -384,31 +369,17 @@ int ksocknal_tunables_init(void)
 	if (*ksocknal_tunables.ksnd_zc_min_payload < (2 << 10))
 		*ksocknal_tunables.ksnd_zc_min_payload = (2 << 10);
 
-	/* When on a hypervisor set the minimum zero copy size
-	 * above the maximum payload size
-	 */
-	if (!is_native_host())
-		*ksocknal_tunables.ksnd_zc_min_payload = (16 << 20) + 1;
-
 	return 0;
 }
 
-void ksocknal_tunables_setup(struct lnet_ni *ni)
+void ksocknal_tunables_setup(struct lnet_lnd_tunables *lnd_tunables,
+			     struct lnet_ioctl_config_lnd_cmn_tunables *net_tunables)
 {
 	struct lnet_ioctl_config_socklnd_tunables *tunables;
-	struct lnet_ioctl_config_lnd_cmn_tunables *net_tunables;
 
-	/* If no tunables specified, setup default tunables */
-	if (!ni->ni_lnd_tunables_set)
-		memcpy(&ni->ni_lnd_tunables.lnd_tun_u.lnd_sock,
-		       &ksock_default_tunables, sizeof(*tunables));
-
-	tunables = &ni->ni_lnd_tunables.lnd_tun_u.lnd_sock;
-
+	tunables = &lnd_tunables->lnd_tun_u.lnd_sock;
 	/* Current API version */
 	tunables->lnd_version = CURRENT_LND_VERSION;
-
-	net_tunables = &ni->ni_net->net_tunables;
 
 	if (net_tunables->lct_peer_timeout == -1)
 		net_tunables->lct_peer_timeout =
@@ -430,10 +401,6 @@ void ksocknal_tunables_setup(struct lnet_ni *ni)
 	if (net_tunables->lct_peer_rtr_credits == -1)
 		net_tunables->lct_peer_rtr_credits =
 			*ksocknal_tunables.ksnd_peerrtrcredits;
-
-	if (!tunables->lnd_conns_per_peer)
-		tunables->lnd_conns_per_peer =
-			ksocklnd_lookup_conns_per_peer(ni);
 
 	if (tunables->lnd_tos < 0)
 		tunables->lnd_tos = tos;

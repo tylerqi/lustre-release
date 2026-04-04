@@ -12,6 +12,7 @@
 
 #define DEBUG_SUBSYSTEM S_LQUOTA
 
+#include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/workqueue.h>
 
@@ -197,6 +198,7 @@ int qmt_lvbo_init(struct lu_device *ld, struct ldlm_resource *res)
 		struct qmt_pool_info	*pool;
 		struct lquota_entry	*lqe;
 		struct lqe_glbl_data	*lgd;
+		int wait = 0;
 
 		pool = qmt_pool_lookup_glb(env, qmt, pool_type);
 		if (IS_ERR(pool))
@@ -210,21 +212,49 @@ int qmt_lvbo_init(struct lu_device *ld, struct ldlm_resource *res)
 			GOTO(out, rc = PTR_ERR(lqe));
 		}
 
+again:
+		mutex_lock(&lqe->lqe_glbl_data_lock);
+		/* Is the old lqe_glbl_data still waiting to be freed in
+		 * qmt_lvbo_free_wq?
+		 */
+		if (lqe->lqe_glbl_data) {
+			mutex_unlock(&lqe->lqe_glbl_data_lock);
+
+			wait++;
+			/* wait one second */
+			if (wait < 1000) {
+				msleep_interruptible(1);
+				goto again;
+			}
+
+			LQUOTA_ERROR(lqe, "the lvb is held by qmt_wq: %p\n",
+				     res->lr_lvb_data);
+			lqe_putref(lqe);
+			GOTO(out_put_qpi, rc = -EBUSY);
+		}
+
 		/* TODO: need something like qmt_extend_lqe_gd that has
-		 * to be calledeach time when qpi_slv_nr is incremented */
+		 * to be called each time when qpi_slv_nr is incremented
+		 */
 		lgd = qmt_alloc_lqe_gd(pool, qtype);
 		if (!lgd) {
+			mutex_unlock(&lqe->lqe_glbl_data_lock);
 			lqe_putref(lqe);
-			qpi_putref(env, pool);
-			GOTO(out, rc = -ENOMEM);
+			GOTO(out_put_qpi, rc = -ENOMEM);
 		}
 
 		qmt_setup_lqe_gd(env, qmt, lqe, lgd, pool_type);
+		lqe->lqe_glbl_data = lgd;
+		mutex_unlock(&lqe->lqe_glbl_data_lock);
+
+		qmt_id_lock_notify(qmt, lqe);
 
 		/* store reference to lqe in lr_lvb_data */
 		res->lr_lvb_data = lqe;
-		qpi_putref(env, pool);
 		LQUOTA_DEBUG(lqe, "initialized res lvb");
+
+out_put_qpi:
+		qpi_putref(env, pool);
 	} else {
 		struct dt_object	*obj;
 
@@ -401,9 +431,12 @@ int qmt_lvbo_update(struct lu_device *ld, struct ldlm_resource *res,
 	need_revoke = qmt_clear_lgeg_arr_nu(lqe, stype, idx);
 	if (lvb->lvb_id_rel == 0) {
 		/* nothing to release */
-		if (lvb->lvb_id_may_rel != 0)
+		if (lvb->lvb_id_may_rel != 0) {
 			/* but might still release later ... */
+			lqe_write_lock(lqe);
 			lqe->lqe_may_rel += lvb->lvb_id_may_rel;
+			lqe_write_unlock(lqe);
+		}
 	}
 
 	if (!need_revoke && lvb->lvb_id_rel == 0)
@@ -942,12 +975,6 @@ static void qmt_id_lock_glimpse(const struct lu_env *env,
 	}
 
 	lqe_write_lock(lqe);
-	/*
-	 * It is possible to add an lqe in a 2nd time while the same lqe
-	 * from the 1st time is still sending glimpse
-	 */
-	if (lqe->lqe_gl)
-		GOTO(out, 0);
 	/* The purpose of glimpse callback on per-ID lock is twofold:
 	 * - notify slaves of new qunit value and hope they will release some
 	 *   spare quota space in return
@@ -966,6 +993,8 @@ static void qmt_id_lock_glimpse(const struct lu_env *env,
 		 * replies if needed */
 		lqe->lqe_may_rel = 0;
 
+	/* The rebalance thread is the only thread which can issue glimpses */
+	LASSERT(!lqe->lqe_gl);
 	lqe->lqe_gl = true;
 	lqe_write_unlock(lqe);
 
@@ -982,7 +1011,6 @@ static void qmt_id_lock_glimpse(const struct lu_env *env,
 	}
 	LASSERT(lqe->lqe_gl);
 	lqe->lqe_gl = false;
-out:
 	lqe_write_unlock(lqe);
 	ldlm_resource_putref(res);
 	EXIT;
@@ -1059,7 +1087,7 @@ static int qmt_reba_thread(void *_args)
 			 * so no need to send glimpse callbacks.
 			 */
 			if (!kthread_should_stop() &&
-			    atomic_read(&lqe->lqe_ref) > 1)
+			    kref_read(&lqe->lqe_ref) > 1)
 				qmt_id_lock_glimpse(env, qmt, lqe, NULL);
 
 			lqe_putref(lqe);

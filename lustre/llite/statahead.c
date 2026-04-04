@@ -1,30 +1,12 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -175,10 +157,18 @@ static inline int agl_list_empty(struct ll_statahead_info *sai)
 }
 
 /**
+ * sa_low_hit() - Return if hit ratio is low
+ *
+ * @sai: (ll_statahead_info struct) holds info about the SA process for a
+ * directory
+ *
+ * Low hit ratio is defined as:
  * (1) hit ratio less than 80%
  * or
- * (2) consecutive miss more than 32
- * then means low hit.
+ * (2) consecutive miss more than 32, this means low hit.
+ *
+ * Returns:
+ * * %0  Hit ratio is not low, else if !0 then hit ratio is low
  */
 static inline int sa_low_hit(struct ll_statahead_info *sai)
 {
@@ -214,8 +204,8 @@ sa_alloc(struct dentry *parent, struct ll_statahead_info *sai, __u64 index,
 	if (unlikely(!entry))
 		RETURN(ERR_PTR(-ENOMEM));
 
-	CDEBUG(D_READA, "alloc sa entry %.*s(%p) index %llu\n",
-	       len, name, entry, index);
+	CDEBUG(D_READA, "alloc sa entry "DNAME"(%p) index %llu\n",
+	       encode_fn_dname(len, name), entry, index);
 
 	entry->se_index = index;
 	entry->se_sai = sai;
@@ -225,7 +215,7 @@ sa_alloc(struct dentry *parent, struct ll_statahead_info *sai, __u64 index,
 	dname = (char *)entry + sizeof(struct sa_entry);
 	memcpy(dname, name, len);
 	dname[len] = 0;
-	entry->se_qstr.hash = ll_full_name_hash(parent, name, len);
+	entry->se_qstr.hash = full_name_hash(parent, name, len);
 	entry->se_qstr.len = len;
 	entry->se_qstr.name = dname;
 
@@ -246,8 +236,8 @@ sa_alloc(struct dentry *parent, struct ll_statahead_info *sai, __u64 index,
 /* free sa_entry, which should have been unhashed and not in any list */
 static void sa_free(struct ll_statahead_context *ctx, struct sa_entry *entry)
 {
-	CDEBUG(D_READA, "free sa entry %.*s(%p) index %llu\n",
-	       entry->se_qstr.len, entry->se_qstr.name, entry,
+	CDEBUG(D_READA, "free sa entry "DNAME"(%p) index %llu\n",
+	       encode_fn_qstr(entry->se_qstr), entry,
 	       entry->se_index);
 
 	LASSERT(list_empty(&entry->se_list));
@@ -332,13 +322,12 @@ static inline int sa_kill_try(struct ll_statahead_info *sai,
 }
 
 /* called by scanner after use, sa_entry will be killed */
-static void
-sa_put(struct inode *dir, struct ll_statahead_info *sai, struct sa_entry *entry)
+static void sa_put(struct inode *dir, struct ll_statahead_info *sai,
+		   struct sa_entry *entry, bool inuse)
 {
 	struct ll_inode_info *lli = ll_i2info(dir);
 	struct sa_entry *tmp;
 	bool wakeup = false;
-	bool inuse = false;
 
 	if (entry && entry->se_state == SA_ENTRY_SUCC) {
 		struct ll_sb_info *sbi = ll_i2sbi(sai->sai_dentry->d_inode);
@@ -863,9 +852,9 @@ static void ll_statahead_interpret_work(struct work_struct *work)
 		}
 	}
 
-	CDEBUG(D_READA, "%s: setting %.*s"DFID" l_data to inode %p\n",
-	       ll_i2sbi(dir)->ll_fsname, entry->se_qstr.len,
-	       entry->se_qstr.name, PFID(ll_inode2fid(child)), child);
+	CDEBUG(D_READA, "%s: setting "DNAME""DFID" l_data to inode %p\n",
+	       ll_i2sbi(dir)->ll_fsname, encode_fn_qstr(entry->se_qstr),
+	       PFID(ll_inode2fid(child)), child);
 	ll_set_lock_data(ll_i2sbi(dir)->ll_md_exp, child, it, NULL);
 
 	entry->se_inode = child;
@@ -892,7 +881,6 @@ static int ll_statahead_interpret(struct md_op_item *item, int rc)
 	struct ll_statahead_info *sai;
 	struct mdt_body *body;
 	struct inode *child;
-	__u64 handle = 0;
 
 	ENTRY;
 
@@ -907,8 +895,8 @@ static int ll_statahead_interpret(struct md_op_item *item, int rc)
 	sai = entry->se_sai;
 	LASSERT(sai != NULL);
 
-	CDEBUG(D_READA, "sa_entry %.*s rc %d\n",
-	       entry->se_qstr.len, entry->se_qstr.name, rc);
+	CDEBUG(D_READA, "sa_entry "DNAME" rc %d\n",
+	       encode_fn_qstr(entry->se_qstr), rc);
 
 	if (rc != 0)
 		GOTO(out, rc);
@@ -946,7 +934,6 @@ static int ll_statahead_interpret(struct md_op_item *item, int rc)
 	 * process enqueues lock on child with parent lock held, eg.
 	 * unlink.
 	 */
-	handle = it->it_lock_handle;
 	ll_intent_drop_lock(it);
 	ll_unlock_md_op_lsm(&item->mop_data);
 
@@ -1002,11 +989,17 @@ static int sa_lookup(struct inode *dir, struct sa_entry *entry)
 }
 
 /**
- * async stat for file found in dcache, similar to .revalidate
+ * sa_revalidate() - async stat for file found in dcache (directory cache),
+ * similar to .revalidate
  *
- * \retval	1 dentry valid, no RPC sent
- * \retval	0 dentry invalid, will send async stat RPC
- * \retval	negative number upon error
+ * @dir: inode struct for the @dir that contains file to be revalidated
+ * @entry: sa_entry structure (SA file state)
+ * @dentry: dentry struct for the @dentry that contains file to be revalidated
+ *
+ * Returns:
+ * * %1  dentry valid, no RPC sent
+ * * %0  dentry invalid, will send async stat RPC
+ * * %-ERRNO negative number upon error
  */
 static int sa_revalidate(struct inode *dir, struct sa_entry *entry,
 			 struct dentry *dentry)
@@ -1166,7 +1159,6 @@ static void ll_stop_agl(struct ll_statahead_info *sai)
 static void ll_start_agl(struct dentry *parent, struct ll_statahead_info *sai)
 {
 	int node = cfs_cpt_spread_node(cfs_cpt_tab, CFS_CPT_ANY);
-	struct ll_inode_info *plli;
 	struct task_struct *task;
 
 	ENTRY;
@@ -1174,7 +1166,6 @@ static void ll_start_agl(struct dentry *parent, struct ll_statahead_info *sai)
 	CDEBUG(D_READA, "start agl thread: sai %p, parent %pd\n",
 	       sai, parent);
 
-	plli = ll_i2info(parent->d_inode);
 	task = kthread_create_on_node(ll_agl_thread, sai, node, "ll_agl_%d",
 				      sai->sai_pid);
 	if (IS_ERR(task)) {
@@ -1201,6 +1192,7 @@ static int ll_statahead_by_list(struct ll_statahead_info *sai,
 	struct ll_sb_info *sbi = ll_i2sbi(dir);
 	struct md_op_data *op_data;
 	struct page *page = NULL;
+	bool is_hash64 = test_bit(LL_SBI_64BIT_HASH, sbi->ll_flags);
 	__u64 pos = 0;
 	int first = 0;
 	int rc = 0;
@@ -1220,16 +1212,19 @@ static int ll_statahead_by_list(struct ll_statahead_info *sai,
 	       smp_load_acquire(&sai->sai_task) &&
 	       lli->lli_sa_enabled) {
 		struct lu_dirpage *dp;
-		struct lu_dirent  *ent;
+		struct lu_dirent *ent;
+		struct md_op_data *ret;
+		void *kaddr = NULL;
+		u32 flags;
 
-		op_data = ll_prep_md_op_data(op_data, dir, dir, NULL, 0, 0,
-					     LUSTRE_OPC_ANY, dir);
-		if (IS_ERR(op_data)) {
-			rc = PTR_ERR(op_data);
+		ret = ll_prep_md_op_data(op_data, dir, dir, NULL, 0, 0,
+					 LUSTRE_OPC_ANY, dir);
+		if (IS_ERR(ret)) {
+			rc = PTR_ERR(ret);
 			break;
 		}
 
-		page = ll_get_dir_page(dir, op_data, pos, NULL);
+		page = ll_get_dir_page(dir, op_data, pos, is_hash64, NULL);
 		ll_unlock_md_op_lsm(op_data);
 		if (IS_ERR(page)) {
 			rc = PTR_ERR(page);
@@ -1239,8 +1234,8 @@ static int ll_statahead_by_list(struct ll_statahead_info *sai,
 			       lli->lli_stat_pid, rc);
 			break;
 		}
-
-		dp = page_address(page);
+		kaddr = kmap(page);
+		dp = kaddr;
 		for (ent = lu_dirent_start(dp);
 		     /* matches smp_store_release() in ll_deauthorize_statahead() */
 		     ent != NULL && smp_load_acquire(&sai->sai_task) &&
@@ -1364,8 +1359,12 @@ static int ll_statahead_by_list(struct ll_statahead_info *sai,
 		}
 
 		pos = le64_to_cpu(dp->ldp_hash_end);
-		ll_release_page(dir, page,
-				le32_to_cpu(dp->ldp_flags) & LDF_COLLIDE);
+		flags = le32_to_cpu(dp->ldp_flags);
+		if (kaddr) {
+			kunmap(kmap_to_page(kaddr));
+			kaddr = NULL;
+		}
+		ll_release_page(dir, page, flags & LDF_COLLIDE);
 
 		if (sa_low_hit(sai)) {
 			rc = -EFAULT;
@@ -1770,6 +1769,8 @@ static int is_first_dirent(struct inode *dir, struct dentry *dentry)
 	struct page *page = NULL;
 	int rc = LS_NOT_FIRST_DE;
 	__u64 pos = 0;
+	struct ll_sb_info *sbi = ll_i2sbi(dir);
+	bool is_hash64 = test_bit(LL_SBI_64BIT_HASH, sbi->ll_flags);
 	struct llcrypt_str lltr = LLTR_INIT(NULL, 0);
 
 	ENTRY;
@@ -1790,7 +1791,7 @@ static int is_first_dirent(struct inode *dir, struct dentry *dentry)
 	 *FIXME choose the start offset of the readdir
 	 */
 
-	page = ll_get_dir_page(dir, op_data, 0, NULL);
+	page = ll_get_dir_page(dir, op_data, 0, is_hash64, NULL);
 
 	while (1) {
 		struct lu_dirpage *dp;
@@ -1807,7 +1808,7 @@ static int is_first_dirent(struct inode *dir, struct dentry *dentry)
 			break;
 		}
 
-		dp = page_address(page);
+		dp = kmap_local_page(page);
 		for (ent = lu_dirent_start(dp); ent != NULL;
 		     ent = lu_dirent_next(ent)) {
 			__u64 hash;
@@ -1848,9 +1849,9 @@ static int is_first_dirent(struct inode *dir, struct dentry *dentry)
 			}
 
 			if (dot_de && target->name[0] != '.') {
-				CDEBUG(D_READA, "%.*s skip hidden file %.*s\n",
-				       target->len, target->name,
-				       namelen, name);
+				CDEBUG(D_READA, DNAME" skip hidden file "DNAME"\n",
+				       encode_fn_dentry(dentry),
+				       encode_fn_dname(namelen, name));
 				continue;
 			}
 
@@ -1875,6 +1876,7 @@ static int is_first_dirent(struct inode *dir, struct dentry *dentry)
 			else
 				rc = LS_FIRST_DOT_DE;
 
+			kunmap_local(dp);
 			ll_release_page(dir, page, false);
 			GOTO(out, rc);
 		}
@@ -1883,16 +1885,20 @@ static int is_first_dirent(struct inode *dir, struct dentry *dentry)
 			/*
 			 * End of directory reached.
 			 */
+			kunmap_local(dp);
 			ll_release_page(dir, page, false);
 			GOTO(out, rc);
 		} else {
+			u32 flags = le32_to_cpu(dp->ldp_flags);
+
 			/*
 			 * chain is exhausted
 			 * Normal case: continue to the next page.
 			 */
-			ll_release_page(dir, page, le32_to_cpu(dp->ldp_flags) &
-					      LDF_COLLIDE);
-			page = ll_get_dir_page(dir, op_data, pos, NULL);
+			kunmap_local(dp);
+			ll_release_page(dir, page, flags & LDF_COLLIDE);
+			page = ll_get_dir_page(dir, op_data, pos, is_hash64,
+						NULL);
 		}
 	}
 	EXIT;
@@ -1955,16 +1961,18 @@ out_unlock:
 }
 
 /**
- * revalidate @dentryp from statahead cache
+ * revalidate_statahead_dentry() - revalidate @dentryp from statahead cache
  *
- * \param[in] dir	parent directory
- * \param[in] sai	sai structure
- * \param[out] dentryp	pointer to dentry which will be revalidated
- * \param[in] unplug	unplug statahead window only (normally for negative
- *			dentry)
- * \retval		1 on success, dentry is saved in @dentryp
- * \retval		0 if revalidation failed (no proper lock on client)
- * \retval		negative number upon error
+ * @dir: parent directory
+ * @sai: sai structure
+ * @ctx: statahead context structure (cache info)
+ * @dentryp: pointer to dentry which will be revalidated
+ * @unplug: unplug statahead window only (normally for negative dentry)
+ *
+ * Returns:
+ * * %1  on success, dentry is saved in @dentryp
+ * * %0  if revalidation failed (no proper lock on client)
+ * * %-ERRNO upon error
  */
 static int revalidate_statahead_dentry(struct inode *dir,
 				       struct ll_statahead_info *sai,
@@ -1976,6 +1984,7 @@ static int revalidate_statahead_dentry(struct inode *dir,
 	struct ll_dentry_data *lld;
 	struct ll_inode_info *lli = ll_i2info(dir);
 	struct ll_statahead_info *info = NULL;
+	bool inuse = false;
 	int rc = 0;
 
 	ENTRY;
@@ -2045,6 +2054,7 @@ static int revalidate_statahead_dentry(struct inode *dir,
 	LASSERTF(sai != NULL, "pattern %#X entry %p se_sai %p %pd lli %p\n",
 		 lli->lli_sa_pattern, entry, entry->se_sai, *dentryp, lli);
 
+	inuse = true;
 	if (!sa_ready(entry)) {
 		spin_lock(&lli->lli_sa_lock);
 		sai->sai_index_wait = entry->se_index;
@@ -2071,7 +2081,7 @@ static int revalidate_statahead_dentry(struct inode *dir,
 		struct lookup_intent it = { .it_op = IT_GETATTR,
 					    .it_lock_handle =
 						entry->se_handle };
-		__u64 bits;
+		enum mds_ibits_locks bits;
 
 		rc = md_revalidate_lock(ll_i2mdexp(dir), &it,
 					ll_inode2fid(inode), &bits);
@@ -2123,7 +2133,7 @@ out:
 	if (lld)
 		lld->lld_sa_generation = lli->lli_sa_generation;
 	rcu_read_unlock();
-	sa_put(dir, sai, entry);
+	sa_put(dir, sai, entry, inuse);
 
 	RETURN(rc);
 }
@@ -2280,17 +2290,17 @@ static inline bool sa_pattern_shared_fname(struct ll_inode_info *lli)
 }
 
 /**
- * start statahead thread
+ * start_statahead_thread() - start statahead thread
  *
- * \param[in] dir	parent directory
- * \param[in] dentry	dentry that triggers statahead, normally the first
- *			dirent under @dir
- * \param[in] agl	indicate whether AGL is needed
- * \retval		-EAGAIN on success, because when this function is
- *			called, it's already in lookup call, so client should
- *			do it itself instead of waiting for statahead thread
- *			to do it asynchronously.
- * \retval		negative number upon error
+ * @dir: parent directory
+ * @dentry: dentry that triggers statahead, normally the first dirent under @dir
+ * @agl: indicate whether AGL(Asynchronous Glimpse Lock) is needed
+ *
+ * Returns:
+ * * %-EAGAIN success, because when this function is called, it's already
+ * in lookup call, so client should do it itself instead of waiting for
+ * statahead thread to do it asynchronously.
+ * * %-ERRNO  (other than -EAGAIN) on error
  */
 static int start_statahead_thread(struct inode *dir, struct dentry *dentry,
 				  bool agl)
@@ -2541,19 +2551,20 @@ static inline bool ll_statahead_started(struct inode *dir, bool agl)
 }
 
 /**
- * statahead entry function, this is called when client getattr on a file, it
- * will start statahead thread if this is the first dir entry, else revalidate
- * dentry from statahead cache.
+ * ll_start_statahead() - statahead entry function, this is called when client
  *
- * \param[in]  dir	parent directory
- * \param[out] dentryp	dentry to getattr
- * \param[in]  agl	whether start the agl thread
+ * @dir: parent directory
+ * @dentry: dentry to getattr
+ * @agl: whether start the agl thread
  *
- * \retval		1 on success
- * \retval		0 revalidation from statahead cache failed, caller needs
- *			to getattr from server directly
- * \retval		negative number on error, caller often ignores this and
- *			then getattr from server
+ * this is called when client getattr on a file, it will start statahead thread
+ * if this is the first dir entry, else revalidate dentry from statahead cache.
+ *
+ * Returns:
+ * * %1   success
+ * * %0   revalidation from statahead cache failed, caller needs to getattr
+ * from server directly
+ * * <0   on error, caller often ignores this and then getattrfrom server
  */
 int ll_start_statahead(struct inode *dir, struct dentry *dentry, bool agl)
 {
@@ -2563,17 +2574,18 @@ int ll_start_statahead(struct inode *dir, struct dentry *dentry, bool agl)
 }
 
 /**
- * revalidate dentry from statahead cache.
+ * ll_revalidate_statahead() - revalidate dentry from statahead cache.
  *
- * \param[in]  dir	parent directory
- * \param[out] dentryp	dentry to getattr
- * \param[in]  unplug	unplug statahead window only (normally for negative
- *			dentry)
- * \retval		1 on success
- * \retval		0 revalidation from statahead cache failed, caller needs
- *			to getattr from server directly
- * \retval		negative number on error, caller often ignores this and
- *			then getattr from server
+ * @dir: parent directory
+ * @dentryp: dentry to getattr
+ * @unplug: unplug statahead window only (normally for negative dentry)
+ *
+ * Returns:
+ * * %1  success
+ * * %0  revalidation from statahead cache failed, caller needs to getattr
+ *       from server directly
+ * * <0  negative number on error, caller often ignores this and then getattr
+ *       from server
  */
 int ll_revalidate_statahead(struct inode *dir, struct dentry **dentryp,
 			    bool unplug)

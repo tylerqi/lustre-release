@@ -16,7 +16,7 @@ noinst_DATA += zfs_mdt1_2_11.tar.bz2 zfs_mdt2_2_11.tar.bz2
 noinst_DATA += zfs_ost1_2_11.tar.bz2 zfs_ost2_2_11.tar.bz2
 noinst_SCRIPTS = leak_finder.pl llmount.sh llmountcleanup.sh functions.sh
 noinst_SCRIPTS += test-framework.sh runvmstat runiozone runtests sanity.sh
-noinst_SCRIPTS += rundbench acceptance-small.sh conf-sanity.sh
+noinst_SCRIPTS += acceptance-small.sh conf-sanity.sh conf-sanity-framework.sh
 noinst_SCRIPTS += insanity.sh oos.sh oos2.sh dne_sanity.sh sanity-compr.sh
 noinst_SCRIPTS += recovery-small.sh replay-dual.sh sanity-quota.sh
 noinst_SCRIPTS += replay-ost-single.sh replay-single.sh run-llog.sh sanityn.sh
@@ -30,13 +30,13 @@ noinst_SCRIPTS += run_dd.sh run_tar.sh run_iozone.sh
 noinst_SCRIPTS += run_dbench.sh run_IOR.sh recovery-double-scale.sh
 noinst_SCRIPTS += recovery-random-scale.sh parallel-scale.sh
 noinst_SCRIPTS += lustre-rsync-test.sh ost-pools.sh rpc.sh yaml.sh
-noinst_SCRIPTS += lutf.sh
+noinst_SCRIPTS += lutf.sh lcov-merge.sh
 noinst_SCRIPTS += lnet-selftest.sh obdfilter-survey.sh mmp.sh mmp_mark.sh
 noinst_SCRIPTS += sgpdd-survey.sh maloo_upload.sh auster setup-nfs.sh
 noinst_SCRIPTS += mds-survey.sh parallel-scale-nfs.sh large-lun.sh
-noinst_SCRIPTS += parallel-scale-nfsv3.sh parallel-scale-nfsv4.sh
+noinst_SCRIPTS += parallel-scale-nfsv3.sh parallel-scale-nfsv4.sh rundbench
 noinst_SCRIPTS += setup-cifs.sh parallel-scale-cifs.sh
-noinst_SCRIPTS += posix.sh sanity-scrub.sh scrub-performance.sh ha.sh pjdfstest.sh
+noinst_SCRIPTS += sanity-scrub.sh scrub-performance.sh ha.sh pjdfstest.sh
 noinst_SCRIPTS += sanity-lfsck.sh lfsck-performance.sh
 noinst_SCRIPTS += sanity-hsm.sh sanity-lsnapshot.sh sanity-pfl.sh sanity-flr.sh
 noinst_SCRIPTS += sanity-dom.sh sanity-pcc.sh dom-performance.sh sanity-lnet.sh
@@ -44,10 +44,10 @@ nobase_noinst_SCRIPTS = cfg/local.sh
 nobase_noinst_SCRIPTS += test-groups/regression test-groups/regression-mpi
 nobase_noinst_SCRIPTS += acl/make-tree acl/run cfg/ncli.sh
 nobase_noinst_SCRIPTS += racer/*.sh
-nobase_noinst_SCRIPTS += posix/posix.cfg
 nobase_noinst_DATA = acl/*.test
 nobase_noinst_DATA += clientapi/simple_test.c
 nobase_noinst_DATA += except/*.ex
+nobase_noinst_DATA += lcov-merge.sh.in
 
 EXTRA_DIST = $(noinst_SCRIPTS) $(noinst_DATA) \
              $(nobase_noinst_SCRIPTS) $(nobase_noinst_DATA)
@@ -108,7 +108,9 @@ endif # NO_STRINGOP_OVERFLOW
 
 mmap_sanity_LDADD = $(LIBLUSTREAPI) $(PTHREAD_LIBS)
 multiop_LDADD = $(LIBLUSTREAPI) $(PTHREAD_LIBS)
+llapi_layout_test_SOURCES = llapi_layout_test.c llapi_test_utils.c llapi_test_utils.h
 llapi_layout_test_LDADD = $(LIBLUSTREAPI)
+llapi_hsm_test_SOURCES = llapi_hsm_test.c llapi_test_utils.c llapi_test_utils.h
 llapi_hsm_test_LDADD = $(LIBLUSTREAPI)
 group_lock_test_LDADD = $(LIBLUSTREAPI)
 llapi_fid_test_LDADD = $(LIBLUSTREAPI)
@@ -134,3 +136,7 @@ aiocp_LDADD= -laio
 endif
 statx_LDADD = $(SELINUX)
 endif # TESTS
+
+lcov-merge.sh: lcov-merge.sh.in
+	sed "s:@BUILD_SRC@:$$(realpath $$(pwd)/../..):g" $< > $@
+	chmod a+x $@

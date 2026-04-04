@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Modifications for Lustre
  *
@@ -44,7 +46,6 @@
  *   uid/gidlist - for determining access rights
  *   mechanism type
  *   mechanism specific information, such as a key
- *
  */
 
 #define DEBUG_SUBSYSTEM S_SEC
@@ -58,6 +59,8 @@
 #include <net/sock.h>
 #include <linux/un.h>
 
+#include <linux/hash.h>
+
 #include <obd.h>
 #include <obd_class.h>
 #include <obd_support.h>
@@ -65,7 +68,6 @@
 #include <lustre_net.h>
 #include <lustre_nodemap.h>
 #include <lustre_sec.h>
-#include <libcfs/linux/linux-hash.h>
 
 #include "gss_err.h"
 #include "gss_internal.h"
@@ -106,7 +108,7 @@ static inline unsigned long hash_mem(char *buf, int length, int bits)
 		len++;
 
 		if ((len & (BITS_PER_LONG/8-1)) == 0)
-			hash = cfs_hash_long(hash^l, BITS_PER_LONG);
+			hash = hash_long(hash^l, BITS_PER_LONG);
 	} while (len);
 
 	return hash >> (BITS_PER_LONG - bits);
@@ -463,12 +465,15 @@ static void rsc_entry_init(struct upcall_cache_entry *entry,
 
 	memset(&rsc->sc_ctx.gsc_seqdata, 0, sizeof(rsc->sc_ctx.gsc_seqdata));
 	spin_lock_init(&rsc->sc_ctx.gsc_seqdata.ssd_lock);
+
+	rsc->sc_ctx.gsc_nm_name = NULL;
 }
 
 void __rsc_free(struct gss_rsc *rsc)
 {
 	rawobj_free(&rsc->sc_handle);
 	rawobj_free(&rsc->sc_ctx.gsc_rvs_hdl);
+	OBD_FREE(rsc->sc_ctx.gsc_nm_name, LUSTRE_NODEMAP_NAME_LENGTH + 1);
 	lgss_delete_sec_context(&rsc->sc_ctx.gsc_mechctx);
 }
 
@@ -567,6 +572,17 @@ static int rsc_parse_downcall(struct upcall_cache *cache,
 	rsc->sc_ctx.gsc_mapped_uid = scd->scd_mapped_uid;
 	rsc->sc_ctx.gsc_uid = scd->scd_uid;
 
+	if (strlen(scd->scd_nmname)) {
+		OBD_ALLOC(rsc->sc_ctx.gsc_nm_name,
+			  LUSTRE_NODEMAP_NAME_LENGTH + 1);
+		if (!rsc->sc_ctx.gsc_nm_name) {
+			status = -ENOMEM;
+			goto out;
+		}
+		strscpy(rsc->sc_ctx.gsc_nm_name, scd->scd_nmname,
+			LUSTRE_NODEMAP_NAME_LENGTH + 1);
+	}
+
 	rsc->sc_ctx.gsc_gid = scd->scd_gid;
 	gm = lgss_name_to_mech(scd->scd_mechname);
 	if (!gm) {
@@ -605,6 +621,44 @@ out:
 	RETURN(status);
 }
 
+/* Returns 1 to tell the expired entry is acceptable */
+static inline int rsc_accept_expired(struct upcall_cache *cache,
+				     struct upcall_cache_entry *entry)
+{
+	struct gss_rsc *rsc;
+	time64_t now = ktime_get_seconds();
+
+	if (!entry)
+		return 0;
+
+	rsc = &entry->u.rsc;
+
+	/* entry not expired? */
+	if (now < entry->ue_expire)
+		return 0;
+
+	/* We want to accept an expired entry in the following case:
+	 * the client received an ldlm callback request to release a lock,
+	 * and the server used an expired reverse context to send this request.
+	 * The server cannot be blamed for that, as it only has a reverse
+	 * context and cannot refresh it explicitly. And the client cannot
+	 * refuse to use the associated gss context, otherwise it fails to reply
+	 * to the ldlm callback request and gets evicted. The client, which is
+	 * responsible for the context, cannot refresh it immediately, as it
+	 * would not match the reverse context used by the server. But the
+	 * client context is going to be refreshed right after that, along with
+	 * the subsequent ldlm cancel request.
+	 * The way to make sure we are presently dealing with a client-side
+	 * rpc sec context is to check that sc_target is not NULL and
+	 * gsc_rvs_hdl is empty. On server side gsc_rvs_hdl (the reverse handle)
+	 * is always set.
+	 */
+	if (rsc->sc_target && rawobj_empty(&rsc->sc_ctx.gsc_rvs_hdl))
+		return 1;
+
+	return 0;
+}
+
 struct gss_rsc *rsc_entry_get(struct upcall_cache *cache, struct gss_rsc *rsc)
 {
 	struct upcall_cache_entry *entry;
@@ -637,6 +691,7 @@ struct upcall_cache_ops rsc_upcall_cache_ops = {
 	.downcall_compare = rsc_downcall_compare,
 	.do_upcall	  = rsc_do_upcall,
 	.parse_downcall	  = rsc_parse_downcall,
+	.accept_expired   = rsc_accept_expired,
 };
 
 struct upcall_cache *rsccache;
@@ -649,16 +704,20 @@ static struct gss_rsc *gss_svc_searchbyctx(rawobj_t *handle)
 {
 	struct gss_rsc rsc;
 	struct gss_rsc *found;
+	int rc;
 
 	memset(&rsc, 0, sizeof(rsc));
-	if (rawobj_dup(&rsc.sc_handle, handle))
-		return NULL;
+	rc = rawobj_dup(&rsc.sc_handle, handle);
+	if (rc)
+		return ERR_PTR(rc);
 
 	found = rsc_entry_get(rsccache, &rsc);
 	__rsc_free(&rsc);
 	if (IS_ERR_OR_NULL(found))
 		return found;
 	if (!found->sc_ctx.gsc_mechctx) {
+		CWARN("ctx hdl %#llx does not have mech ctx: rc = %d\n",
+		      gss_handle_to_u64(handle), -ENOENT);
 		rsc_entry_put(rsccache, found);
 		return ERR_PTR(-ENOENT);
 	}
@@ -964,9 +1023,10 @@ struct gss_svc_ctx *gss_svc_upcall_get_ctx(struct ptlrpc_request *req,
 
 	rscp = gss_svc_searchbyctx(&gw->gw_handle);
 	if (IS_ERR_OR_NULL(rscp)) {
-		CWARN("Invalid gss ctx hdl %#llx from %s\n",
+		CWARN("Invalid gss ctx hdl %#llx from %s: rc = %ld\n",
 		      gss_handle_to_u64(&gw->gw_handle),
-		      libcfs_nidstr(&req->rq_peer.nid));
+		      libcfs_nidstr(&req->rq_peer.nid),
+		      rscp ? PTR_ERR(rscp) : -1);
 		return NULL;
 	}
 

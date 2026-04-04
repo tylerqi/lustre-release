@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2016, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/mdt/mdt_identity.c
  *
  * Author: Lai Siyao <lsy@clusterfs.com>
  * Author: Fan Yong <fanyong@clusterfs.com>
@@ -52,15 +32,35 @@ static void mdt_identity_entry_free(struct upcall_cache *cache,
 {
 	struct md_identity *identity = &entry->u.identity;
 
-	if (identity->mi_ginfo) {
-		put_group_info(identity->mi_ginfo);
-		identity->mi_ginfo = NULL;
-	}
-
 	if (identity->mi_nperms) {
 		LASSERT(identity->mi_perms);
 		OBD_FREE_PTR_ARRAY(identity->mi_perms, identity->mi_nperms);
 		identity->mi_nperms = 0;
+	}
+}
+
+/*
+ * We have to do this action async since put_group_info could cause
+ * thread sleeping while uc_lock hold.
+ */
+static void mdt_identity_entry_free_work(struct work_struct *w)
+{
+	struct md_identity *mi = container_of(w, struct md_identity, mi_work);
+	struct upcall_cache_entry *entry = mi->mi_uc_entry;
+
+	put_group_info(mi->mi_ginfo);
+	OBD_FREE(entry, sizeof(*entry));
+}
+
+static void mdt_identity_free_delay(struct upcall_cache_entry *entry)
+{
+	struct md_identity *mi = &entry->u.identity;
+
+	if (mi->mi_ginfo) {
+		INIT_WORK(&mi->mi_work, mdt_identity_entry_free_work);
+		schedule_work(&mi->mi_work);
+	} else {
+		OBD_FREE(entry, sizeof(*entry));
 	}
 }
 
@@ -220,6 +220,7 @@ void mdt_identity_put(struct upcall_cache *cache, struct md_identity *identity)
 struct upcall_cache_ops mdt_identity_upcall_cache_ops = {
 	.init_entry     = mdt_identity_entry_init,
 	.free_entry     = mdt_identity_entry_free,
+	.free_delay     = mdt_identity_free_delay,
 	.do_upcall      = mdt_identity_do_upcall,
 	.parse_downcall = mdt_identity_parse_downcall,
 };

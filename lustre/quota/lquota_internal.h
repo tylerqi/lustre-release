@@ -7,6 +7,7 @@
 
 #include <obd.h>
 #include <dt_object.h>
+#include <cfs_hash.h>
 #include <lustre_quota.h>
 
 #ifndef _LQUOTA_INTERNAL_H
@@ -143,7 +144,7 @@ struct lquota_entry {
 	struct lquota_site	*lqe_site;
 
 	/* reference counter */
-	atomic_t		 lqe_ref;
+	struct kref		 lqe_ref;
 
 	/* linked to list of lqes which:
 	 * - need quota space adjustment on slave
@@ -250,19 +251,21 @@ struct lquota_site {
 
 extern struct kmem_cache *lqe_kmem;
 
+/* lquota_lib.c */
+void lqe_ref_free(struct kref *kref);
+
 /* helper routine to get/put reference on lquota_entry */
 static inline void lqe_getref(struct lquota_entry *lqe)
 {
 	LASSERT(lqe != NULL);
-	atomic_inc(&lqe->lqe_ref);
+	kref_get(&lqe->lqe_ref);
 }
 
 static inline void lqe_putref(struct lquota_entry *lqe)
 {
 	LASSERT(lqe != NULL);
-	LASSERT(atomic_read(&lqe->lqe_ref) > 0);
-	if (atomic_dec_and_test(&lqe->lqe_ref))
-		OBD_SLAB_FREE_PTR(lqe, lqe_kmem);
+	LASSERT(kref_read(&lqe->lqe_ref) > 0);
+	kref_put(&lqe->lqe_ref, lqe_ref_free);
 }
 
 static inline int lqe_is_master(struct lquota_entry *lqe)
@@ -309,7 +312,7 @@ static inline void lqe_read_unlock(struct lquota_entry *lqe)
 
 /* minimum qunit size, 1K inode for metadata pool and 1MB for data pool */
 #define LQUOTA_LEAST_QUNIT(type) \
-	(type == LQUOTA_RES_MD ? (1 << 10) : toqb(OFD_MAX_BRW_SIZE))
+	(type == LQUOTA_RES_MD ? (1 << 10) : stoqb(OFD_MAX_BRW_SIZE))
 
 static inline enum osd_quota_local_flags lquota_over_fl(int qtype)
 {
@@ -335,6 +338,7 @@ struct lquota_thread_info {
 	struct dt_object_format	qti_dof;
 	struct lu_fid		qti_fid;
 	char			qti_buf[LQUOTA_NAME_MAX];
+	struct lu_nodemap *nodemap;
 };
 
 #define qti_glb_rec	qti_rec.lqr_glb_rec
@@ -431,7 +435,8 @@ int lquota_extract_fid(const struct lu_fid *, enum lquota_res_type *,
 		       enum lquota_type *);
 const struct dt_index_features *glb_idx_feature(struct lu_fid *);
 int lquota_obj_iter(const struct lu_env *env, struct dt_device *dev,
-		    struct dt_object *obj, struct obd_quotactl *oqctl,
+		    struct dt_object *obj, struct lu_nodemap *nm,
+		    struct lquota_entry *lqe_def, struct obd_quotactl *oqctl,
 		    char *buffer, int size, bool is_glb, bool is_md);
 
 /* lquota_entry.c */
@@ -445,10 +450,11 @@ void lquota_site_free(const struct lu_env *, struct lquota_site *);
 #define lqe_find(env, site, id) lqe_locate_find(env, site, id, true)
 struct lquota_entry *lqe_locate_find(const struct lu_env *,
 				     struct lquota_site *,
-				     union lquota_id *, bool);
+				     const union lquota_id *, bool);
 
 static inline void lqe_set_deleted(struct lquota_entry *lqe)
 {
+	lqe_write_lock(lqe);
 	lqe->lqe_enforced = 0;
 	lqe->lqe_edquot = 0;
 	lqe->lqe_is_default = 0;
@@ -457,6 +463,7 @@ static inline void lqe_set_deleted(struct lquota_entry *lqe)
 	lqe->lqe_gracetime = 0;
 
 	lqe->lqe_is_deleted = 1;
+	lqe_write_unlock(lqe);
 }
 
 /* lquota_disk.c */

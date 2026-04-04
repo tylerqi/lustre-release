@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 PROG=$(basename $0)
 [ "$1" = "-h" -o "$1" = "--help" ] && echo "usage: $PROG [patch dir]" && exit 0
 [ "$1" = "-d" ] && shift && DELETE="git rm" || DELETE="echo Unused"
@@ -15,7 +15,7 @@ PATCHPATH=${PATCHPATH:-$BASEDIR/patches}
 
 CANONICAL_SERIESPATH=$(readlink -f ${SERIESPATH})
 pushd $PATCHPATH > /dev/null
-for PATCH in $(find -name "*.patch"); do
+for PATCH in $(find . -name "*.patch"); do
 	# Remove the leading "./"
 	PATCH=${PATCH##./}
 	$VERBOSE $PATCH

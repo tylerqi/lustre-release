@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -73,17 +53,15 @@ const char * lustre_svc_name[] =
 	[LUSTRE_GSS_SVC_OSS]    = "OSS",
 };
 
-/****************************************
- * exclusive startup                    *
- ****************************************/
+/* exclusive startup */
 
 static struct __sem_s {
-        char           *name;
-        key_t           sem_key;
-        int             sem_id;
+	char           *name;
+	key_t           sem_key;
+	int             sem_id;
 } sems[2] = {
-        [GSSD_CLI] = { "client",  0x3a92d473, 0 },
-        [GSSD_SVC] = { "server",  0x3b92d473, 0 },
+	[GSSD_CLI] = { "client",  0x3a92d473, 0 },
+	[GSSD_SVC] = { "server",  0x3b92d473, 0 },
 };
 
 void gssd_init_unique(int type)
@@ -144,13 +122,13 @@ again:
 
 void gssd_exit_unique(int type)
 {
-        assert(type == GSSD_CLI || type == GSSD_SVC);
+	assert(type == GSSD_CLI || type == GSSD_SVC);
 
-        /*
-         * do nothing. we can't remove the sem here, otherwise the race
-         * window would be much bigger. So it's sad we have to leave the
-         * sem in the system forever.
-         */
+	/*
+	 * do nothing. we can't remove the sem here, otherwise the race
+	 * window would be much bigger. So it's sad we have to leave the
+	 * sem in the system forever.
+	 */
 }
 
 /****************************************
@@ -230,6 +208,7 @@ out:
 static int getaddrcanonname(const uint32_t addr, char *buf, int buflen)
 {
 	struct sockaddr_in srcaddr;
+	char ipstr[INET_ADDRSTRLEN] = "\0";
 	int err = 0;
 	int rc = -1;
 
@@ -250,13 +229,18 @@ static int getaddrcanonname(const uint32_t addr, char *buf, int buflen)
 	srcaddr.sin_addr.s_addr = (in_addr_t)addr;
 
 	err = getnameinfo((struct sockaddr *)&srcaddr, sizeof(srcaddr),
-			  buf, buflen, NULL, 0, 0);
+			  buf, buflen, NULL, 0, NI_NAMEREQD);
 	if (err != 0) {
-		printerr(LL_ERR,
-			 "failed to get nameinfo for 0x%x: %s\n",
-			 addr, gai_strerror(err));
+		if (inet_ntop(srcaddr.sin_family, &srcaddr.sin_addr, ipstr,
+			      INET_ADDRSTRLEN))
+			printerr(LL_ERR, "failed to get name for %s: %s\n",
+				 ipstr, gai_strerror(err));
+		else
+			printerr(LL_ERR, "failed to get name for 0x%x: %s\n",
+				 addr, gai_strerror(err));
 		goto out;
 	}
+
 	rc = 0;
 
 out:
@@ -309,7 +293,7 @@ int lolnd_nid2hostname(char *lnd, uint32_t net, uint32_t addr,
 
 static int is_space(char c)
 {
-        return (c == ' ' || c == '\t' || c == '\n');
+	return (c == ' ' || c == '\t' || c == '\n');
 }
 
 static
@@ -375,8 +359,8 @@ int external_nid2hostname(char *lnd, uint32_t net, uint32_t addr,
 }
 
 struct convert_struct {
-        char                    *name;
-        lnd_nid2hostname_t      *nid2name;
+	char                    *name;
+	lnd_nid2hostname_t      *nid2name;
 };
 
 static struct convert_struct converter[] = {
@@ -385,7 +369,8 @@ static struct convert_struct converter[] = {
 	[O2IBLND] = { .name = "O2IBLND", .nid2name = ipv4_nid2hostname },
 	[LOLND]	  = { .name = "LOLND",	 .nid2name = lolnd_nid2hostname },
 	[PTL4LND] = { .name = "PTL4LND", .nid2name = external_nid2hostname },
-	[KFILND]  = { .name = "KFILND",  .nid2name = ipv4_nid2hostname }
+	[KFILND]  = { .name = "KFILND",  .nid2name = ipv4_nid2hostname },
+	[EFALND]  = { .name = "EFALND",  .nid2name = ipv4_nid2hostname },
 };
 
 #define LND_MAX         (sizeof(converter) / sizeof(converter[0]))
@@ -413,232 +398,20 @@ int lnet_nid2hostname(lnet_nid_t nid, char *buf, int buflen)
 				       buf, buflen);
 }
 
-
-/****************************************
- * user mapping database handling       *
- * (very rudiment)                      *
- ****************************************/
-
-#define MAPPING_GROW_SIZE       512
-#define MAX_LINE_LEN            256
-
-struct user_map_item {
-        char        *principal; /* NULL means match all */
-        lnet_nid_t   nid;
-        uid_t        uid;
-};
-
-struct user_mapping {
-        int                   nitems;
-        struct user_map_item *items;
-};
-
-static struct user_mapping mapping;
-/* FIXME to be finished: monitor change of mapping database */
-static int mapping_mtime = 0;
-
-void cleanup_mapping(void)
-{
-        if (mapping.items) {
-                for (; mapping.nitems > 0; mapping.nitems--)
-                        if (mapping.items[mapping.nitems-1].principal)
-                                free(mapping.items[mapping.nitems-1].principal);
-
-                free(mapping.items);
-                mapping.items = NULL;
-        }
-}
-
-static int grow_mapping(int nitems)
-{
-	struct user_map_item *new;
-	int oldsize, newsize;
-
-	oldsize = (mapping.nitems * sizeof(struct user_map_item) +
-		   MAPPING_GROW_SIZE - 1) / MAPPING_GROW_SIZE;
-	newsize = (nitems * sizeof(struct user_map_item) +
-		   MAPPING_GROW_SIZE - 1) / MAPPING_GROW_SIZE;
-	while (newsize <= oldsize)
-		return 0;
-
-	newsize *= MAPPING_GROW_SIZE;
-	new = malloc(newsize);
-	if (!new) {
-		printerr(LL_ERR, "can't alloc mapping size %d\n", newsize);
-		return -1;
-	}
-
-	if (mapping.items) {
-		memcpy(new, mapping.items,
-		       mapping.nitems * sizeof(struct user_map_item));
-		free(mapping.items);
-	}
-	mapping.items = new;
-	return 0;
-}
-
 uid_t parse_uid(char *uidstr)
 {
-        struct passwd *pw;
-        char *p = NULL;
-        long uid;
+	struct passwd *pw;
+	char *p = NULL;
+	long uid;
 
-        pw = getpwnam(uidstr);
-        if (pw)
-                return pw->pw_uid;
+	pw = getpwnam(uidstr);
+	if (pw)
+		return pw->pw_uid;
 
-        uid = strtol(uidstr, &p, 0);
-        if (*p == '\0')
-                return (uid_t) uid;
+	uid = strtol(uidstr, &p, 0);
+	if (*p == '\0')
+		return (uid_t) uid;
 
-        return -1;
-}
-
-static int read_mapping_db(void)
-{
-	char princ[MAX_LINE_LEN];
-	char nid_str[MAX_LINE_LEN];
-	char dest[MAX_LINE_LEN];
-	char linebuf[MAX_LINE_LEN];
-	char *line;
-	lnet_nid_t nid;
-	uid_t dest_uid;
-	FILE *f;
-
-	/* cleanup old mappings */
-	cleanup_mapping();
-
-	f = fopen(MAPPING_DATABASE_FILE, "r");
-	if (!f) {
-		printerr(LL_ERR, "can't open mapping database: %s\n",
-			 MAPPING_DATABASE_FILE);
-		return -1;
-	}
-
-	while ((line = fgets(linebuf, MAX_LINE_LEN, f)) != NULL) {
-		char *name;
-
-		if (sscanf(line, "%s %s %s", princ, nid_str, dest) != 3) {
-			printerr(LL_ERR, "mapping db: syntax error\n");
-			continue;
-		}
-
-		if (!strcmp(princ, "*")) {
-			name = NULL;
-		} else {
-			name = strdup(princ);
-			if (!name) {
-				printerr(LL_ERR, "fail to dup str %s\n", princ);
-				continue;
-			}
-		}
-
-		if (!strcmp(nid_str, "*")) {
-			nid = LNET_NID_ANY;
-		} else {
-			nid = libcfs_str2nid(nid_str);
-			if (nid == LNET_NID_ANY) {
-				printerr(LL_ERR, "fail to parse nid %s\n",
-					 nid_str);
-				if (name)
-					free(name);
-				continue;
-			}
-		}
-
-		dest_uid = parse_uid(dest);
-		if (dest_uid == -1) {
-			printerr(LL_ERR, "no valid user: %s\n", dest);
-			if (name)
-				free(name);
-			continue;
-		}
-
-		if (grow_mapping(mapping.nitems + 1)) {
-			printerr(LL_ERR, "fail to grow mapping to %d\n",
-				 mapping.nitems + 1);
-			if (name)
-				free(name);
-			fclose(f);
-			return -1;
-		}
-
-		mapping.items[mapping.nitems].principal = name;
-		mapping.items[mapping.nitems].nid = nid;
-		mapping.items[mapping.nitems].uid = dest_uid;
-		mapping.nitems++;
-		printerr(LL_WARN, "add mapping: %s(%s/0x%llx) ==> %d\n",
-			 name, nid_str, nid, dest_uid);
-	}
-
-	fclose(f);
-	return 0;
-}
-
-static inline int mapping_changed(void)
-{
-	struct stat st;
-
-	if (stat(MAPPING_DATABASE_FILE, &st) == -1) {
-		/* stat failed, treat it like doesn't exist or be removed */
-		if (mapping_mtime == 0)
-			return 0;
-
-		printerr(LL_ERR, "stat %s failed: %s\n",
-			 MAPPING_DATABASE_FILE, strerror(errno));
-
-		mapping_mtime = 0;
-		return 1;
-	} else {
-		printerr(LL_WARN,
-			 "Use of idmap.conf is deprecated.\nPlease consider switching to auth_to_local or equivalent as provided by Kerberos for cross-realm trust remapping.\n");
-	}
-
-	if (st.st_mtime != mapping_mtime) {
-		mapping_mtime = st.st_mtime;
-		return 1;
-	}
-
-	return 0;
-}
-
-void load_mapping(void)
-{
-	if (mapping_changed())
-		(void)read_mapping_db();
-}
-
-int mapping_empty(void)
-{
-	return !mapping.nitems;
-}
-
-int lookup_mapping(char *princ, lnet_nid_t nid, uid_t *uid)
-{
-	int n;
-
-	*uid = -1;
-
-	/* FIXME race condition here */
-	if (mapping_changed()) {
-		if (read_mapping_db())
-			printerr(LL_ERR, "all remote users will be denied\n");
-	}
-
-	for (n = 0; n < mapping.nitems; n++) {
-		struct user_map_item *entry = &mapping.items[n];
-
-		if (entry->nid != LNET_NID_ANY && entry->nid != nid)
-			continue;
-		if (!entry->principal || !strcasecmp(entry->principal, princ)) {
-			printerr(LL_WARN, "found mapping: %s ==> %d\n",
-				 princ, entry->uid);
-			*uid = entry->uid;
-			return 0;
-		}
-	}
-
-	printerr(LL_INFO, "no mapping for %s/%#Lx\n", princ, nid);
 	return -1;
 }
 

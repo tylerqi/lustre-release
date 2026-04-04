@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2015, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ptlrpc/llog_client.c
  *
  * remote api for llog - client side
  *
@@ -38,7 +18,6 @@
 #define DEBUG_SUBSYSTEM S_LOG
 
 #include <linux/list.h>
-#include <libcfs/libcfs.h>
 
 #include <obd_class.h>
 #include <lustre_log.h>
@@ -85,6 +64,7 @@ static int llog_client_open(const struct lu_env *env,
 	struct llogd_body *body;
 	struct llog_ctxt *ctxt = lgh->lgh_ctxt;
 	struct ptlrpc_request *req = NULL;
+	char *tmp;
 	int rc;
 
 	ENTRY;
@@ -101,9 +81,10 @@ static int llog_client_open(const struct lu_env *env,
 	if (!req)
 		GOTO(out, rc = -ENOMEM);
 
-	if (name)
-		req_capsule_set_size(&req->rq_pill, &RMF_NAME, RCL_CLIENT,
-				     strlen(name) + 1);
+	/* we have to set varlen name buffer even if name is not defined,
+	 * to be able to set mdt_body buffer after */
+	req_capsule_set_size(&req->rq_pill, &RMF_NAME, RCL_CLIENT,
+			name ? strlen(name) + 1 : 1);
 
 	rc = ptlrpc_request_pack(req, LUSTRE_LOG_VERSION,
 				 LLOG_ORIGIN_HANDLE_CREATE);
@@ -119,16 +100,14 @@ static int llog_client_open(const struct lu_env *env,
 		body->lgd_logid = *logid;
 	body->lgd_ctxt_idx = ctxt->loc_idx - 1;
 
-	if (name) {
-		char *tmp;
-
-		tmp = req_capsule_client_sized_get(&req->rq_pill, &RMF_NAME,
-						   strlen(name) + 1);
-		LASSERT(tmp);
+	tmp = req_capsule_client_sized_get(&req->rq_pill, &RMF_NAME,
+					   name ? strlen(name) + 1 : 1);
+	LASSERT(tmp);
+	if (name)
 		strcpy(tmp, name);
-
-		do_pack_body(req);
-	}
+	else
+		tmp[0] = '\0';
+	do_pack_body(req);
 
 	rc = ptlrpc_queue_wait(req);
 	if (rc)
@@ -183,17 +162,17 @@ static int llog_client_next_block(const struct lu_env *env,
 	ptlrpc_request_set_replen(req);
 	rc = ptlrpc_queue_wait(req);
 	/*
-	 * -EIO has a special meaning here. If llog_osd_next_block()
+	 * -EBADR has a special meaning here. If llog_osd_next_block()
 	 * reaches the end of the log without finding the desired
 	 * record then it updates *cur_offset and *cur_idx and returns
-	 * -EIO. In llog_process_thread() we use this to detect
-	 * EOF. But we must be careful to distinguish between -EIO
-	 * coming from llog_osd_next_block() and -EIO coming from
+	 * -EBADR. In llog_process_thread() we use this to detect
+	 * EOF. But we must be careful to distinguish between -EBADR
+	 * coming from llog_osd_next_block() and -EBADR coming from
 	 * ptlrpc or below.
 	 */
-	if (rc == -EIO) {
+	if (rc == -EBADR) {
 		if (!req->rq_repmsg ||
-		    lustre_msg_get_status(req->rq_repmsg) != -EIO)
+		    lustre_msg_get_status(req->rq_repmsg) != -EBADR)
 			GOTO(out, rc);
 	} else if (rc < 0) {
 		GOTO(out, rc);

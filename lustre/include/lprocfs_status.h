@@ -26,8 +26,7 @@
 #include <linux/string_helpers.h>
 #include <linux/seq_file.h>
 
-#include <libcfs/libcfs.h>
-#include <libcfs/linux/linux-fs.h>
+#include <lustre_compat/linux/linux-fs.h>
 #include <uapi/linux/lustre/lustre_idl.h>
 
 /*
@@ -180,7 +179,7 @@ enum lprocfs_fields_flags {
 
 struct lprocfs_stats {
 	/* source for the stats */
-	char				*ls_source;
+	char				ls_source[MAX_OBD_NAME * 4];
 	/* index in Xarray */
 	unsigned int			ls_index;
 	/* # of counters */
@@ -281,7 +280,7 @@ static inline int opcode_offset(__u32 opc)
 			OPC_RANGE(LDLM) +
 			OPC_RANGE(MDS) +
 			OPC_RANGE(OST));
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	} else if (opc < OUT_UPDATE_LAST_OPC) {
 		/* update opcode */
 		return (opc - OUT_UPDATE_FIRST_OPC +
@@ -309,7 +308,7 @@ static inline int opcode_offset(__u32 opc)
 			OPC_RANGE(LDLM) +
 			OPC_RANGE(MDS) +
 			OPC_RANGE(OST));
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 	} else {
 		/* Unknown Opcode */
 		return -1;
@@ -327,7 +326,7 @@ static inline int opcode_offset(__u32 opc)
 				   OPC_RANGE(SEC)  + \
 				   OPC_RANGE(FLD))
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 #define LUSTRE_MAX_OPCODES (LUSTRE_MAX_OPCODES_CLIENT + \
 			    OPC_RANGE(OUT_UPDATE) + \
 			    OPC_RANGE(LFSCK))
@@ -368,7 +367,7 @@ enum lprocfs_extra_opc {
 	EXTRA_LAST_OPC
 };
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 enum brw_rw_stats {
 	BRW_R_PAGES = 0,
 	BRW_W_PAGES,
@@ -395,10 +394,21 @@ struct brw_stats_props {
 	bool		 bsp_scale;
 };
 
+/* hard to get PTLRPC_MAX_BRW_BITS here, verified in lprocfs_init_brw_stats() */
+#define IO_LATENCY_BUCKETS (26 - 12 + 1) /* (PTLRPC_MAX_BRW_BITS - PAGE_SHIFT) */
+
 struct brw_stats {
 	ktime_t			bs_init;
 	struct obd_hist_pcpu	bs_hist[BRW_RW_STATS_NUM];
 	struct brw_stats_props	bs_props[BRW_RW_STATS_NUM / 2];
+	bool			bs_inflight_io_log2;
+	/* latency_by_size index log2(pages), stores "binary usec" (ns >> 10) */
+	ktime_t			bs_io_latency_init;
+	struct obd_hist_pcpu	bs_read_io_latency_by_size[IO_LATENCY_BUCKETS];
+	struct obd_hist_pcpu	bs_write_io_latency_by_size[IO_LATENCY_BUCKETS];
+	u32			bs_max_pages_per_rpc;
+	spinlock_t		bs_loi_list_lock;
+	char			*bs_devname;
 };
 
 int lprocfs_init_brw_stats(struct brw_stats *brw_stats);
@@ -406,7 +416,9 @@ void lprocfs_fini_brw_stats(struct brw_stats *brw_stats);
 
 void ldebugfs_register_brw_stats(struct dentry *parent,
 				 struct brw_stats *brw_stats);
-#endif /* HAVE_SERVER_SUPPORT */
+void ldebugfs_register_io_latency_stats(struct dentry *parent,
+					struct brw_stats *brw_stats);
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 #define EXTRA_FIRST_OPC LDLM_GLIMPSE_ENQUEUE
 /* class_obd.c */
@@ -422,18 +434,31 @@ struct obd_device;
 #define JOBSTATS_NODELOCAL		"nodelocal"
 #define JOBSTATS_SESSION		"session"
 
+enum ojb_info_flags {
+	OJS_CLEANING,		/* job cleaning is in operation */
+	OJS_HEADER,		/* seq_show() header */
+	OJS_ACTIVE_JOBS,	/* set while ojs_jobs > 0 */
+	OJS_FINI,		/* set at _fini */
+};
+
 typedef void (*cntr_init_callback)(struct lprocfs_stats *stats,
 				   unsigned int offset,
 				   enum lprocfs_counter_config cntr_umask);
 struct obd_job_stats {
-	struct cfs_hash	       *ojs_hash;	/* hash of jobids */
-	struct list_head	ojs_list;	/* list of job_stat structs */
-	spinlock_t		ojs_lock;	/* protect ojs_list/js_list */
+	struct rb_root		ojs_idtree;	/* root sorted on js_jobid */
+	struct rb_root		ojs_postree;	/* unique id (temporal) root */
+	atomic64_t		ojs_next_pos;	/* generate next unique id */
+	struct rw_semaphore	ojs_rwsem;	/* rbtree locking */
+	struct list_head	ojs_lru;	/* least recently used */
+	struct llist_head	ojs_deleted;	/* zero-ref to be purged */
+	unsigned long		ojs_flags;	/* see: ojb_info_flags */
+	atomic_t		ojs_readers;	/* active readers */
+	spinlock_t		ojs_lock;	/* protect ojs_lru/js_lru */
 	ktime_t			ojs_cleanup_interval;/* 1/2 expiry seconds */
 	ktime_t			ojs_cleanup_last;/* previous cleanup time */
 	cntr_init_callback	ojs_cntr_init_fn;/* lprocfs_stats initializer */
 	unsigned short		ojs_cntr_num;	/* number of stats in struct */
-	bool			ojs_cleaning;	/* currently expiring stats */
+	atomic64_t		ojs_jobs;	/* number of jobs */
 };
 
 #ifdef CONFIG_PROC_FS
@@ -499,15 +524,24 @@ extern struct lprocfs_stats *
 lprocfs_stats_alloc(unsigned int num, enum lprocfs_stats_flags flags);
 extern void lprocfs_stats_clear(struct lprocfs_stats *stats);
 extern void lprocfs_stats_free(struct lprocfs_stats **stats);
+extern struct lprocfs_stats *lprocfs_stats_dup(struct lprocfs_stats *stats);
 extern void lprocfs_init_ldlm_stats(struct lprocfs_stats *ldlm_stats);
 struct lprocfs_stats *ldebugfs_stats_alloc(int num, char *name,
 					   struct dentry *entry,
-					   struct kobject *kobj,
 					   enum lprocfs_stats_flags flags);
 extern int ldebugfs_alloc_obd_stats(struct obd_device *obd,
 				    unsigned int num_stats);
 extern int lprocfs_alloc_md_stats(struct obd_device *obd,
 				  unsigned int num_private_stats);
+#define binary_usec_to_dec(b) (((b) / 1000) * 1024 + ((b) % 1000) * 1024 / 1000)
+void obd_io_latency_stats_clear(struct obd_histogram *read_io_latency_by_size,
+				struct obd_histogram *write_io_latency_by_size,
+				int num_buckets, ktime_t *stats_init);
+extern int obd_io_latency_stats_seq_show(struct seq_file *seq,
+				 struct obd_histogram *read_io_latency_by_size,
+				 struct obd_histogram *write_io_latency_by_size,
+				 int num_buckets, ktime_t stats_init,
+				 spinlock_t *list_lock);
 extern void lprocfs_counter_init(struct lprocfs_stats *stats, int index,
 				 enum lprocfs_counter_config config,
 				 const char *name);
@@ -520,11 +554,9 @@ struct obd_export;
 struct nid_stat;
 extern int lprocfs_add_clear_entry(struct obd_device *obd,
 				   struct proc_dir_entry *entry);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 extern int lprocfs_exp_setup(struct obd_export *exp, struct lnet_nid *peer_nid);
 extern int lprocfs_exp_cleanup(struct obd_export *exp);
-struct dentry *ldebugfs_add_symlink(const char *name, const char *target,
-				    const char *format, ...);
 #else
 static inline int lprocfs_exp_cleanup(struct obd_export *exp)
 { return 0; }
@@ -535,11 +567,13 @@ lprocfs_add_simple(struct proc_dir_entry *root, char *name,
 extern struct proc_dir_entry *
 lprocfs_add_symlink(const char *name, struct proc_dir_entry *parent,
 		    const char *format, ...);
+struct dentry *ldebugfs_add_symlink(const char *name, const char *target,
+				    const char *format, ...);
 extern void lprocfs_free_per_client_stats(struct obd_device *obd);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 extern ssize_t
-lprocfs_nid_stats_clear_seq_write(struct file *file, const char __user *buffer,
-					size_t count, loff_t *off);
+ldebugfs_nid_stats_clear_seq_write(struct file *file, const char __user *buffer,
+				   size_t count, loff_t *off);
 extern int lprocfs_nid_stats_clear_seq_show(struct seq_file *file, void *data);
 #endif
 extern int lprocfs_stats_register(struct proc_dir_entry *root, const char *name,
@@ -578,13 +612,12 @@ extern void lprocfs_stats_header(struct seq_file *seq, ktime_t now,
 extern unsigned int obd_enable_stats_header;
 
 /* Generic callbacks */
-extern int lprocfs_uuid_seq_show(struct seq_file *m, void *data);
 extern int lprocfs_server_uuid_seq_show(struct seq_file *m, void *data);
 ssize_t conn_uuid_show(struct kobject *kobj, struct attribute *attr, char *buf);
 extern int lprocfs_import_seq_show(struct seq_file *m, void *data);
 extern int lprocfs_state_seq_show(struct seq_file *m, void *data);
 extern int lprocfs_connect_flags_seq_show(struct seq_file *m, void *data);
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 ssize_t num_exports_show(struct kobject *kobj, struct attribute *attr,
 			 char *buf);
 ssize_t grant_check_threshold_show(struct kobject *kobj,
@@ -602,10 +635,9 @@ extern int lprocfs_timeouts_seq_show(struct seq_file *m, void *data);
 extern ssize_t
 lprocfs_timeouts_seq_write(struct file *file, const char __user *buffer,
 			   size_t count, loff_t *off);
-#ifdef HAVE_SERVER_SUPPORT
-extern ssize_t
-lprocfs_evict_client_seq_write(struct file *file, const char __user *buffer,
-				size_t count, loff_t *off);
+#ifdef CONFIG_LUSTRE_FS_SERVER
+ssize_t evict_client_store(struct kobject *kobj, struct attribute *attr,
+			   const char *buffer, size_t count);
 #endif
 ssize_t ping_store(struct kobject *kobj, struct attribute *attr,
 		   const char *buffer, size_t count);
@@ -621,13 +653,14 @@ lprocfs_import_seq_write(struct file *file, const char __user *buffer,
 {
 	return ldebugfs_import_seq_write(file, buffer, count, off);
 }
-
-extern int lprocfs_pinger_recov_seq_show(struct seq_file *m, void *data);
-extern ssize_t
-lprocfs_pinger_recov_seq_write(struct file *file, const char __user *buffer,
-			       size_t count, loff_t *off);
+ssize_t pinger_recov_show(struct kobject *kobj, struct attribute *attr,
+			  char *buf);
+ssize_t pinger_recov_store(struct kobject *kobj, struct attribute *attr,
+			   const char *buffer, size_t count);
 
 int string_to_size(u64 *size, const char *buffer, size_t count);
+int sysfs_memparse_total(const char *buffer, size_t count, u64 *val,
+			 u64 total, const char *defunit);
 int sysfs_memparse(const char *buffer, size_t count, u64 *val,
 		    const char *defunit);
 char *lprocfs_find_named_value(const char *buffer, const char *name,
@@ -649,7 +682,25 @@ unsigned long lprocfs_oh_counter_pcpu(struct obd_hist_pcpu *oh,
 void lprocfs_stats_collect(struct lprocfs_stats *stats, int idx,
 			   struct lprocfs_counter *cnt);
 
-#ifdef HAVE_SERVER_SUPPORT
+/* lprocfs_status.c: dump pages on cksum error */
+ssize_t checksum_type_show(struct kobject *kobj, struct attribute *attr,
+			   char *buf);
+ssize_t checksum_type_store(struct kobject *kobj, struct attribute *attr,
+			    const char *buffer, size_t count);
+#ifdef CONFIG_LUSTRE_FS_SERVER
+ssize_t dt_checksum_type_show(struct kobject *kobj, struct attribute *attr,
+			      char *buf);
+ssize_t dt_checksum_dump_show(struct kobject *kobj, struct attribute *attr,
+			      char *buf);
+ssize_t dt_checksum_dump_store(struct kobject *kobj, struct attribute *attr,
+			       const char *buffer, size_t count);
+#ifdef CONFIG_PROC_FS
+int lprocfs_checksum_dump_seq_show(struct seq_file *m, void *data);
+#endif
+ssize_t
+lprocfs_checksum_dump_seq_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *off);
+
 /* lprocfs_status.c: recovery status */
 int lprocfs_recovery_status_seq_show(struct seq_file *m, void *data);
 
@@ -666,15 +717,6 @@ ssize_t ir_factor_store(struct kobject *kobj, struct attribute *attr,
 			const char *buffer, size_t count);
 #endif
 
-/* lprocfs_status.c: dump pages on cksum error */
-int lprocfs_checksum_dump_seq_show(struct seq_file *m, void *data);
-ssize_t
-lprocfs_checksum_dump_seq_write(struct file *file, const char __user *buffer,
-				size_t count, loff_t *off);
-
-extern int lprocfs_single_release(struct inode *i, struct file *f);
-extern int lprocfs_seq_release(struct inode *i, struct file *f);
-
 /* You must use these macros when you want to refer to
  * the import in a client obd_device for a lprocfs entry
  * Note that it is not safe to 'goto', 'return' or 'break'
@@ -683,6 +725,36 @@ extern int lprocfs_seq_release(struct inode *i, struct file *f);
  * to get out of the statement.
  */
 
+/*
+ * The macro uses a for loop that executes a block of code maximum once.
+ * It allows for local variable declarations.
+ *
+ * Initialization: Lock Acquisition and Import Retrieval:
+ * --------------
+ *  for (down_read_nested(&(__obd)->u.cli.cl_sem, __nest),
+ *             __imp = (__obd)->u.cli.cl_import,
+ *             __rc = __imp ? 0 : -ENODEV;
+ * It acquires a read lock,
+ * retrieves the import pointer and stores it in __imp,
+ * sets the return code __rc
+ *	to 0 (success) if __imp is not NULL, or
+ *	to _ENODEV (failure) if __imp is NULL
+ *
+ * Condition: Conditional Lock Release:
+ * ---------
+ *  __imp ? 1 : (up_read(&(__obd)->u.cli.cl_sem), 0);
+ *
+ * If __imp is not NULL, it evaluates to 1, and nothing happens.
+ * This means the lock is kept as long as a valid import was obtained.
+ * If __imp is NULL, then it releases the read lock and evaluates to 0.
+ *
+ * Update: Nulling the Import Pointer
+ * ------
+ *  __imp = NULL)
+ *
+ * sets __imp to NULL. This will break out of the for loop, releasing the
+ * semaphore in the condition.
+ */
 #define with_imp_locked_nested(__obd, __imp, __rc, __nest)		\
 	for (down_read_nested(&(__obd)->u.cli.cl_sem, __nest),		\
 	     __imp = (__obd)->u.cli.cl_import,				\
@@ -782,7 +854,7 @@ static const struct proc_ops name##_fops = {				\
 	.proc_read		= seq_read,				\
 	.proc_write		= custom_seq_write,			\
 	.proc_lseek		= seq_lseek,				\
-	.proc_release		= lprocfs_single_release,		\
+	.proc_release		= single_release,			\
 }
 
 #define LPROC_SEQ_FOPS_RO(name)		__LPROC_SEQ_FOPS(name, NULL)
@@ -826,7 +898,7 @@ static const struct proc_ops name##_fops = {				\
 	static const struct proc_ops name##_##type##_fops = {		\
 		.proc_open	= name##_##type##_open,			\
 		.proc_write	= name##_##type##_write,		\
-		.proc_release	= lprocfs_single_release,		\
+		.proc_release	= single_release,			\
 	};
 
 struct lustre_attr {
@@ -880,7 +952,7 @@ LUSTRE_RW_ATTR(name)
 struct ptlrpc_request;
 extern void target_print_req(void *seq_file, struct ptlrpc_request *req);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 /* lprocfs_jobstats.c */
 int lprocfs_job_stats_log(struct obd_device *obd, char *jobid,
 			  int event, long amount);
@@ -907,10 +979,18 @@ ssize_t instance_show(struct kobject *kobj, struct attribute *attr,
 		      char *buf);
 #endif
 /* lproc_status.c */
-int lprocfs_obd_max_pages_per_rpc_seq_show(struct seq_file *m, void *data);
-ssize_t lprocfs_obd_max_pages_per_rpc_seq_write(struct file *file,
-						const char __user *buffer,
-						size_t count, loff_t *off);
+ssize_t max_pages_per_rpc_show(struct kobject *kobj, struct attribute *attr,
+			       char *buf);
+ssize_t max_pages_per_rpc_store(struct kobject *kobj, struct attribute *attr,
+				const char *buffer, size_t count);
+ssize_t max_mb_per_rpc_read_show(struct kobject *kobj, struct attribute *attr,
+				 char *buf);
+ssize_t max_mb_per_rpc_read_store(struct kobject *kobj, struct attribute *attr,
+				  const char *buffer, size_t count);
+ssize_t max_mb_per_rpc_write_show(struct kobject *kobj, struct attribute *attr,
+				  char *buf);
+ssize_t max_mb_per_rpc_write_store(struct kobject *kobj, struct attribute *attr,
+				   const char *buffer, size_t count);
 ssize_t short_io_bytes_show(struct kobject *kobj, struct attribute *attr,
 			    char *buf);
 ssize_t short_io_bytes_store(struct kobject *kobj, struct attribute *attr,
@@ -921,6 +1001,7 @@ int lprocfs_wr_root_squash(const char __user *buffer, unsigned long count,
 			   struct root_squash_info *squash, char *name);
 int lprocfs_wr_nosquash_nids(const char __user *buffer, unsigned long count,
 			     struct root_squash_info *squash, char *name);
+ssize_t lprocfs_statfs_state(char *buf, size_t buflen, __u32 state);
 
 #else /* !CONFIG_PROC_FS */
 
@@ -1008,21 +1089,7 @@ static inline void lprocfs_free_per_client_stats(struct obd_device *obd)
 {
 }
 
-#ifdef HAVE_SERVER_SUPPORT
-static inline
-ssize_t lprocfs_nid_stats_seq_write(struct file *file,
-				    const char __user *buffer,
-				    size_t count, loff_t *off)
-{
-	return 0;
-}
-
-static inline int lprocfs_nid_stats_clear_seq_show(struct seq_file *m,
-						   void *data)
-{
-	return 0;
-}
-
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static inline int lprocfs_exp_setup(struct obd_export *exp,
 				    struct lnet_nid *peer_nid)
 {
@@ -1080,11 +1147,6 @@ static inline int lprocfs_obd_cleanup(struct obd_device *obd)
 	return 0;
 }
 
-static inline int lprocfs_uuid_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
 static inline int lprocfs_server_seq_show(struct seq_file *m, void *data)
 {
 	return 0;
@@ -1104,7 +1166,7 @@ static inline int lprocfs_connect_flags_seq_show(struct seq_file *m, void *data)
 {
 	return 0;
 }
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static inline int lprocfs_num_exports_seq_show(struct seq_file *m, void *data)
 {
 	return 0;
@@ -1128,15 +1190,6 @@ lprocfs_timeouts_seq_write(struct file *file, const char __user *buffer,
 {
 	return 0;
 }
-#ifdef HAVE_SERVER_SUPPORT
-static inline ssize_t
-lprocfs_evict_client_seq_write(struct file *file, const char __user *buffer,
-			       size_t count, loff_t *off)
-{
-	return 0;
-}
-#endif
-
 static inline ssize_t
 lprocfs_ping_seq_write(struct file *file, const char __user *buffer,
 		       size_t count, loff_t *off)
@@ -1154,56 +1207,6 @@ ldebugfs_import_seq_write(struct file *file, const char __user *buffer,
 static inline ssize_t
 lprocfs_import_seq_write(struct file *file, const char __user *buffer,
 			 size_t count, loff_t *off)
-{
-	return 0;
-}
-
-static inline int
-lprocfs_pinger_recov_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
-static inline ssize_t
-lprocfs_pinger_recov_seq_write(struct file *file, const char __user *buffer,
-			       size_t count, loff_t *off)
-{
-	return 0;
-}
-
-/* Statfs helpers */
-static inline
-int lprocfs_blksize_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
-static inline
-int lprocfs_kbytestotal_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
-static inline
-int lprocfs_kbytesfree_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
-static inline
-int lprocfs_kbytesavail_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
-static inline
-int lprocfs_filestotal_seq_show(struct seq_file *m, void *data)
-{
-	return 0;
-}
-
-static inline
-int lprocfs_filesfree_seq_show(struct seq_file *m, void *data)
 {
 	return 0;
 }

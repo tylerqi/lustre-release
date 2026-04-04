@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2015, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ptlrpc/pinger.c
  *
  * Portal-RPC reconnection and replay operations, for use in recovery.
  */
@@ -162,11 +142,6 @@ static int ptlrpc_ping(struct obd_import *imp)
 	RETURN(0);
 }
 
-void ptlrpc_ping_import_soon(struct obd_import *imp)
-{
-	imp->imp_next_ping = ktime_get_seconds();
-}
-
 static inline int imp_is_deactive(struct obd_import *imp)
 {
 	return imp->imp_deactive ||
@@ -264,7 +239,7 @@ static void ptlrpc_pinger_process_import(struct obd_import *imp,
 		} else {
 			spin_unlock(&imp->imp_lock);
 		}
-	} else if (level != LUSTRE_IMP_FULL || imp->imp_obd->obd_no_recov ||
+	} else if (level != LUSTRE_IMP_FULL || test_bit(OBDF_NO_RECOV, imp->imp_obd->obd_flags) ||
 		   imp_is_deactive(imp)) {
 		CDEBUG(level == LUSTRE_IMP_IDLE ? D_INFO : D_HA,
 		       "%s->%s: not pinging (in recovery or recovery disabled: %s)\n",
@@ -395,7 +370,7 @@ int ptlrpc_pinger_add_import(struct obd_import *imp)
 	CDEBUG(D_HA, "adding pingable import %s->%s\n",
 	       imp->imp_obd->obd_uuid.uuid, obd2cli_tgt(imp->imp_obd));
 	/* if we add to pinger we want recovery on this import */
-	imp->imp_obd->obd_no_recov = 0;
+	clear_bit(OBDF_NO_RECOV, imp->imp_obd->obd_flags);
 	ptlrpc_update_next_ping(imp, 0);
 	/* XXX sort, blah blah */
 	list_add_tail(&imp->imp_pinger_chain, &pinger_imports);
@@ -420,7 +395,7 @@ int ptlrpc_pinger_del_import(struct obd_import *imp)
 	CDEBUG(D_HA, "removing pingable import %s->%s\n",
 	       imp->imp_obd->obd_uuid.uuid, obd2cli_tgt(imp->imp_obd));
 	/* if we remove from pinger we don't want recovery on this import */
-	imp->imp_obd->obd_no_recov = 1;
+	set_bit(OBDF_NO_RECOV, imp->imp_obd->obd_flags);
 	class_import_put(imp);
 	mutex_unlock(&pinger_mutex);
 	RETURN(0);
@@ -470,9 +445,21 @@ static int ping_evictor_main(void *arg)
 {
 	struct obd_device *obd;
 	struct obd_export *exp;
-	time64_t expire_time;
+	time64_t current_time;
+	struct lu_env env;
+	int rc;
 
 	ENTRY;
+
+	rc = lu_env_init(&env, LCT_DT_THREAD | LCT_MD_THREAD);
+	if (rc) {
+		CERROR("can't init env: rc=%d\n", rc);
+		RETURN(rc);
+	}
+	rc = lu_env_add(&env);
+	if (unlikely(rc))
+		GOTO(out_fini, rc);
+
 	unshare_fs_struct();
 	CDEBUG(D_HA, "Starting Ping Evictor\n");
 	pet_state = PET_READY;
@@ -485,6 +472,13 @@ static int ping_evictor_main(void *arg)
 		if ((pet_state == PET_TERMINATE) && list_empty(&pet_list))
 			break;
 
+		rc = lu_env_refill(&env);
+		if (unlikely(rc)) {
+			CERROR("can't refill env context: rc=%d\n", rc);
+			schedule_timeout(HZ * 3);
+			continue;
+		}
+
 		/*
 		 * we only get here if pet_exp != NULL, and the end of this
 		 * loop is the only place which sets it NULL again, so lock
@@ -495,10 +489,13 @@ static int ping_evictor_main(void *arg)
 				       obd_evict_list);
 		spin_unlock(&pet_lock);
 
-		expire_time = ktime_get_real_seconds() - PING_EVICT_TIMEOUT;
+		if (!strcmp(obd->obd_type->typ_name, LUSTRE_OSP_NAME))
+			CFS_FAIL_TIMEOUT(OBD_FAIL_OBD_PAUSE_EVICTOR,
+					 PING_INTERVAL + PING_EVICT_TIMEOUT);
 
-		CDEBUG(D_HA, "evicting all exports of obd %s older than %lld\n",
-		       obd->obd_name, expire_time);
+		current_time = ktime_get_real_seconds();
+
+		CDEBUG(D_HA, "evicting all exports of obd %s\n", obd->obd_name);
 
 		/*
 		 * Exports can't be deleted out of the list while we hold
@@ -507,27 +504,29 @@ static int ping_evictor_main(void *arg)
 		 * removed from the list, we won't find them here.
 		 */
 		spin_lock(&obd->obd_dev_lock);
-		while (!list_empty(&obd->obd_exports_timed)) {
-			exp = list_first_entry(&obd->obd_exports_timed,
-					       struct obd_export,
-					       exp_obd_chain_timed);
-			if (expire_time > exp->exp_last_request_time) {
+		while((exp = obd_export_timed_get(obd, false))) {
+			if (current_time > exp->exp_deadline) {
 				struct obd_uuid *client_uuid;
 
 				class_export_get(exp);
 				client_uuid = &exp->exp_client_uuid;
 				spin_unlock(&obd->obd_dev_lock);
-				LCONSOLE_WARN("%s: haven't heard from client %s (at %s) in %lld seconds. I think it's dead, and I am evicting it. exp %p, cur %lld expire %lld last %lld\n",
+				LCONSOLE_WARN("%s: haven't heard from client %s (at %s) in %lld seconds. I think it's dead, and I am evicting it. exp %p, cur %lld deadline %lld last %lld\n",
 					      obd->obd_name,
 					      obd_uuid2str(client_uuid),
 					      obd_export_nid2str(exp),
 					      ktime_get_real_seconds() -
 					      exp->exp_last_request_time,
-					      exp, ktime_get_real_seconds(),
-					      expire_time,
+					      exp, current_time,
+					      exp->exp_deadline,
 					      exp->exp_last_request_time);
 				CDEBUG(D_HA, "Last request was at %lld\n",
 				       exp->exp_last_request_time);
+
+				if (do_dump_on_eviction(exp->exp_obd,
+							DUMP_PINGER))
+					libcfs_debug_dumplog();
+
 				class_fail_export(exp);
 				class_export_put(exp);
 				spin_lock(&obd->obd_dev_lock);
@@ -546,7 +545,11 @@ static int ping_evictor_main(void *arg)
 	}
 	CDEBUG(D_HA, "Exiting Ping Evictor\n");
 
-	RETURN(0);
+	lu_env_remove(&env);
+out_fini:
+	lu_env_fini(&env);
+
+	RETURN(rc);
 }
 
 void ping_evictor_start(void)

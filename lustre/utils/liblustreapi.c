@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: LGPL-2.1+
 /*
  * Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -27,8 +7,6 @@
  */
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/utils/liblustreapi.c
  *
  * Author: Peter J. Braam <braam@clusterfs.com>
  * Author: Phil Schwan <phil@clusterfs.com>
@@ -82,8 +60,8 @@
 #include <lustre/lustreapi.h>
 #include <linux/lustre/lustre_ostid.h>
 #include <linux/lustre/lustre_ioctl.h>
-#include "lustreapi_internal.h"
 #include "lstddef.h"
+#include "lustreapi_internal.h"
 
 #define FORMATTED_BUF_LEN	1024
 
@@ -216,7 +194,7 @@ void llapi_printf(enum llapi_message_level level, const char *fmt, ...)
 	errno = tmp_errno;
 }
 
-/**
+/*
  * Set a custom error logging function. Passing in NULL will reset the logging
  * callback to its default value.
  *
@@ -234,7 +212,7 @@ llapi_log_callback_t llapi_error_callback_set(llapi_log_callback_t cb)
 	return old;
 }
 
-/**
+/*
  * Set a custom info logging function. Passing in NULL will reset the logging
  * callback to its default value.
  *
@@ -253,18 +231,19 @@ llapi_log_callback_t llapi_info_callback_set(llapi_log_callback_t cb)
 }
 
 /**
- * Convert a size string (with optional suffix) into binary value.
+ * llapi_parse_size() - Convert a size string (with optional suffix) into binary
+ *                      value.
+ * @optarg: string containing numeric value with optional
+ *          KMGTPE suffix to specify the unit size.
+ *          The @string may be a decimal value.
+ * @size: pointer to integer numeric value to be returned [out]
+ * @size_units: units of @string if dimensionless.  Must be
+ *              initialized by caller. If zero, units = bytes.
+ * @bytes_spec: if suffix 'b' means bytes or 512-byte sectors.
  *
- * \param optarg [in]		string containing numeric value with optional
- *				KMGTPE suffix to specify the unit size.
- *				The \a string may be a decimal value.
- * \param size [out]		pointer to integer numeric value to be returned
- * \param size_units [in]	units of \a string if dimensionless.  Must be
- *				initialized by caller. If zero, units = bytes.
- * \param bytes_spec [in]	if suffix 'b' means bytes or 512-byte sectors.
- *
- * \retval 0			success
- * \retval -EINVAL		negative or too large size, or unknown suffix
+ * Return:
+ * * %0 success
+ * * %-EINVAL negative or too large size, or unknown suffix
  */
 int llapi_parse_size(const char *optarg, unsigned long long *size,
 		     unsigned long long *size_units, int bytes_spec)
@@ -348,16 +327,17 @@ int llapi_parse_size(const char *optarg, unsigned long long *size,
 }
 
 /**
- * Verify the setstripe parameters before using.
+ * llapi_stripe_param_verify() - Verify the setstripe parameters before using.
+ * @param: stripe parameters
+ * @pool_name: pool name
+ * @fsname: lustre FS name
+ *
  * This is a pair method for comp_args_to_layout()/llapi_layout_sanity_cb()
  * when just 1 component or a non-PFL layout is given.
  *
- * \param[in] param		stripe parameters
- * \param[in] pool_name		pool name
- * \param[in] fsname		lustre FS name
- *
- * \retval			0, success
- *				< 0, error code on failre
+ * Return:
+ * * %0 on success
+ * * %negative on failure
  */
 static int llapi_stripe_param_verify(const struct llapi_stripe_param *param,
 				     const char **pool_name, char *fsname)
@@ -490,37 +470,22 @@ int llapi_chomp_string(char *buf)
 }
 
 /*
- * Wrapper to grab parameter settings for lov.*-clilov-*.* values
+ * Wrapper to grab parameter settings for {lov,lmv}.*-clilov-*.* values
  */
-static int get_param_lov(const char *path, const char *param,
-			 char *buf, size_t buf_size)
+static int get_param_tgt(const char *path, enum tgt_type type,
+			 const char *param, char *buf, size_t buf_size)
 {
+	const char *typestr = type == LOV_TYPE ? "lov" : "lmv";
 	struct obd_uuid uuid;
 	int rc;
 
-	rc = llapi_file_get_lov_uuid(path, &uuid);
+	rc = llapi_file_get_type_uuid(path, type, &uuid);
 	if (rc != 0)
 		return rc;
 
-	return get_lustre_param_value("lov", uuid.uuid, FILTER_BY_EXACT, param,
-				      buf, buf_size);
-}
-
-/*
- * Wrapper to grab parameter settings for lmv.*-clilov-*.* values
- */
-static int get_param_lmv(const char *path, const char *param,
-			 char *buf, size_t buf_size)
-{
-	struct obd_uuid uuid;
-	int rc;
-
-	rc = llapi_file_get_lmv_uuid(path, &uuid);
-	if (rc != 0)
-		return rc;
-
-	return get_lustre_param_value("lmv", uuid.uuid, FILTER_BY_EXACT, param,
-			       buf, buf_size);
+	rc = get_lustre_param_value(typestr, uuid.uuid, FILTER_BY_EXACT, param,
+				    buf, buf_size);
+	return rc;
 }
 
 static int get_mds_md_size(const char *path)
@@ -544,19 +509,17 @@ static int get_mds_md_size(const char *path)
 
 int llapi_get_agent_uuid(char *path, char *buf, size_t bufsize)
 {
-	return get_param_lmv(path, "uuid", buf, bufsize);
+	return get_param_tgt(path, LMV_TYPE, "uuid", buf, bufsize);
 }
 
 /**
- * Open a Lustre file.
+ * llapi_file_open_param() - Open a Lustre file.
+ * @name: the name of the file to be opened
+ * @flags: access mode, see flags in open(2)
+ * @mode: permission of the file if it is created, see mode in open(2)
+ * @param: stripe pattern of the newly created file
  *
- * \param name     the name of the file to be opened
- * \param flags    access mode, see flags in open(2)
- * \param mode     permission of the file if it is created, see mode in open(2)
- * \param param    stripe pattern of the newly created file
- *
- * \retval         file descriptor of opened file
- * \retval         negative errno on failure
+ * Return file descriptor of opened file or %negative errno on failure
  */
 int llapi_file_open_param(const char *name, int flags, mode_t mode,
 			  const struct llapi_stripe_param *param)
@@ -704,7 +667,8 @@ int llapi_file_is_encrypted(int fd)
 
 int llapi_file_open_pool(const char *name, int flags, int mode,
 			 unsigned long long stripe_size, int stripe_offset,
-			 int stripe_count, int stripe_pattern, char *pool_name)
+			 int stripe_count, enum lov_pattern stripe_pattern,
+			 char *pool_name)
 {
 	const struct llapi_stripe_param param = {
 		.lsp_stripe_size = stripe_size,
@@ -718,7 +682,7 @@ int llapi_file_open_pool(const char *name, int flags, int mode,
 
 int llapi_file_open(const char *name, int flags, int mode,
 		    unsigned long long stripe_size, int stripe_offset,
-		    int stripe_count, int stripe_pattern)
+		    int stripe_count, enum lov_pattern stripe_pattern)
 {
 	return llapi_file_open_pool(name, flags, mode, stripe_size,
 				    stripe_offset, stripe_count,
@@ -827,7 +791,8 @@ out_err:
 }
 
 int llapi_file_create(const char *name, unsigned long long stripe_size,
-		      int stripe_offset, int stripe_count, int stripe_pattern)
+		      int stripe_offset, int stripe_count,
+		      enum lov_pattern stripe_pattern)
 {
 	int fd;
 
@@ -843,7 +808,7 @@ int llapi_file_create(const char *name, unsigned long long stripe_size,
 
 int llapi_file_create_pool(const char *name, unsigned long long stripe_size,
 			   int stripe_offset, int stripe_count,
-			   int stripe_pattern, char *pool_name)
+			   enum lov_pattern stripe_pattern, char *pool_name)
 {
 	int fd;
 
@@ -1024,14 +989,14 @@ int llapi_dir_set_default_lmv_stripe(const char *name, int stripe_offset,
 }
 
 /**
- * Create a Lustre directory.
+ * llapi_dir_create() - Create a Lustre directory.
+ * @name: the name of the directory to be created
+ * @mode: permission of the file if it is created, see mode in open(2)
+ * @param: stripe pattern of the newly created directory
  *
- * \param name     the name of the directory to be created
- * \param mode     permission of the file if it is created, see mode in open(2)
- * \param param    stripe pattern of the newly created directory
- *
- * \retval         0 on success
- * \retval         negative errno on failure
+ * Return:
+ * * %0 on success
+ * * %negative errno on failure
  */
 int llapi_dir_create(const char *name, mode_t mode,
 		     const struct llapi_stripe_param *param)
@@ -1120,16 +1085,16 @@ out:
 }
 
 /**
- * Create a foreign directory.
+ * llapi_dir_create_foreign() - Create a foreign directory.
+ * @name: the name of the directory to be created
+ * @mode: permission of the file if it is created, see mode in open(2)
+ * @type: foreign type to be set in LMV EA
+ * @flags: foreign flags to be set in LMV EA
+ * @value: foreign pattern to be set in LMV EA
  *
- * \param name     the name of the directory to be created
- * \param mode     permission of the file if it is created, see mode in open(2)
- * \param type     foreign type to be set in LMV EA
- * \param flags    foreign flags to be set in LMV EA
- * \param value    foreign pattern to be set in LMV EA
- *
- * \retval         0 on success
- * \retval         negative errno on failure
+ * Return:
+ * * %0 on success
+ * * %negative errno on failure
  */
 int llapi_dir_create_foreign(const char *name, mode_t mode, __u32 type,
 			     __u32 flags, const char *value)
@@ -1221,7 +1186,7 @@ out:
 }
 
 int llapi_dir_create_pool(const char *name, int mode, int stripe_offset,
-			  int stripe_count, int stripe_pattern,
+			  int stripe_count, enum lov_pattern stripe_pattern,
 			  const char *pool_name)
 {
 	const struct llapi_stripe_param param = {
@@ -1235,15 +1200,14 @@ int llapi_dir_create_pool(const char *name, int mode, int stripe_offset,
 }
 
 /**
- * Get the list of pool members.
- * \param poolname    string of format \<fsname\>.\<poolname\>
- * \param members     caller-allocated array of char*
- * \param list_size   size of the members array
- * \param buffer      caller-allocated buffer for storing OST names
- * \param buffer_size size of the buffer
+ * llapi_get_poolmembers() - Get the list of pool members.
+ * @poolname: string of format \<fsname\>.\<poolname\>
+ * @members: caller-allocated array of char*
+ * @list_size: size of the members array
+ * @buffer: caller-allocated buffer for storing OST names
+ * @buffer_size: size of the buffer
  *
- * \return number of members retrieved for this pool
- * \retval -error failure
+ * Return number of members retrieved for this pool or %-error on failure
  */
 int llapi_get_poolmembers(const char *poolname, char **members,
 			  int list_size, char *buffer, int buffer_size)
@@ -1317,15 +1281,14 @@ int llapi_get_poolmembers(const char *poolname, char **members,
 }
 
 /**
- * Get the list of pools in a filesystem.
- * \param name        filesystem name or path
- * \param poollist    caller-allocated array of char*
- * \param list_size   size of the poollist array
- * \param buffer      caller-allocated buffer for storing pool names
- * \param buffer_size size of the buffer
+ * llapi_get_poollist() - Get the list of pools in a filesystem.
+ * @name: filesystem name or path
+ * @poollist: caller-allocated array of char*
+ * @list_size: size of the poollist array
+ * @buffer: caller-allocated buffer for storing pool names
+ * @buffer_size: size of the buffer
  *
- * \return number of pools retrieved for this filesystem
- * \retval -error failure
+ * Return number of pools retrieved for this filesystem or %-error on failure
  */
 int llapi_get_poollist(const char *name, char **poollist, int list_size,
 		       char *buffer, int buffer_size)
@@ -1449,15 +1412,15 @@ int llapi_poollist(const char *name)
 }
 
 /**
- * Get buffer that holds uuids and the list of pools in a filesystem.
+ * llapi_get_poolbuf() - Get buffer that holds uuids plus list of pools in a FS.
+ * @name: filesystem name or path
+ * @buf: bufffer that has to be freed if function returns 0
+ * @pools: pointer to the list of pools in buffer
+ * @poolcount: number of pools
  *
- * \param name		filesystem name or path
- * \param buf		bufffer that has to be freed if function returns 0
- * \param pools		pointer to the list of pools in buffer
- * \param poolcount	number of pools
- *
- * \return 0 when found at least 1 pool, i.e. poolcount  > 0
- * \retval -error failure
+ * Return:
+ * * %0 when found at least 1 pool, i.e. poolcount  > 0
+ * * %-error failure
  */
 int llapi_get_poolbuf(const char *name, char **buf,
 		      char ***pools, int *poolcount)
@@ -1536,17 +1499,12 @@ err:
 	return rc;
 }
 
-typedef int (semantic_func_t)(char *path, int p, int *d,
-			      void *data, struct dirent64 *de);
-
-#define OBD_NOT_FOUND           (-1)
-
 static bool lmv_is_foreign(__u32 magic)
 {
 	return magic == LMV_MAGIC_FOREIGN;
 }
 
-static void find_param_fini(struct find_param *param)
+void find_param_fini(struct find_param *param)
 {
 	if (param->fp_migrate)
 		return;
@@ -1567,7 +1525,7 @@ static void find_param_fini(struct find_param *param)
 	}
 }
 
-static int common_param_init(struct find_param *param, char *path)
+int common_param_init(struct find_param *param, char *path)
 {
 	int lum_size = get_mds_md_size(path);
 
@@ -1611,8 +1569,8 @@ static int common_param_init(struct find_param *param, char *path)
 	return 0;
 }
 
-static int cb_common_fini(char *path, int p, int *dp, void *data,
-			  struct dirent64 *de)
+int cb_common_fini(char *path, int p, int *dp, void *data,
+		   struct dirent64 *de)
 {
 	struct find_param *param = data;
 
@@ -1951,19 +1909,18 @@ retry_getfileinfo:
 }
 
 /**
- * Get the mirror layout info from a file.
- *
- * \param path [in]		a string containing the file path
- * \param lmmbuf [out]		pointer to an lov_user_md_v1 buffer
- *				that will be set with the mirror layout info
- *				from the file specified by \a path.
- *
- * \retval 0			success
- * \retval -errno		on error
+ * llapi_get_lmm_from_path() - Get the mirror layout info from a file.
+ * @path: a string containing the file path
+ * @lmmbuf: pointer to an lov_user_md_v1 buffer
+ *          that will be set with the mirror layout info
+ *          from the file specified by @path.
+ * Return:
+ * * %0 success
+ * * %-errno on error
  */
 int llapi_get_lmm_from_path(const char *path, struct lov_user_md_v1 **lmmbuf)
 {
-	size_t lmmlen;
+	ssize_t lmmlen;
 	int p = -1;
 	int rc = 0;
 
@@ -1972,21 +1929,30 @@ int llapi_get_lmm_from_path(const char *path, struct lov_user_md_v1 **lmmbuf)
 		return -EINVAL;
 
 	p = open_parent(path);
-
-	*lmmbuf = calloc(1, lmmlen);
-	if (*lmmbuf == NULL)
+	if (p < 0)
 		return -errno;
 
+	*lmmbuf = calloc(1, lmmlen);
+	if (*lmmbuf == NULL) {
+		rc = -errno;
+		goto out_close;
+	}
+
 	rc = get_lmd_info_fd(path, p, 0, *lmmbuf, lmmlen, GET_LMD_STRIPE);
-	if (p != -1)
-		close(p);
+	if (rc < 0) {
+		free(*lmmbuf);
+		*lmmbuf = NULL;
+	}
+out_close:
+	close(p);
+
 	return rc;
 }
 
-static int llapi_semantic_traverse(char *path, int size, int parent,
-				   semantic_func_t sem_init,
-				   semantic_func_t sem_fini, void *data,
-				   struct dirent64 *de)
+int llapi_semantic_traverse(char *path, int size, int parent,
+			    semantic_func_t sem_init,
+			    semantic_func_t sem_fini, void *data,
+			    struct dirent64 *de)
 {
 	struct find_param *param = (struct find_param *)data;
 	struct dirent64 *dent;
@@ -2080,7 +2046,11 @@ static int llapi_semantic_traverse(char *path, int size, int parent,
 	}
 
 	while ((dent = readdir64(dir)) != NULL) {
-		int rc;
+		struct find_work_queue *queue = param->fp_queue;
+		int rc = 0;
+
+		if (param->fp_thread_count && queue->fwq_shutdown)
+			break;
 
 		if (!strcmp(dent->d_name, ".") || !strcmp(dent->d_name, ".."))
 			continue;
@@ -2117,8 +2087,14 @@ static int llapi_semantic_traverse(char *path, int size, int parent,
 			break;
 		case DT_DIR:
 			/* recursion down into a new subdirectory here */
-			rc = llapi_semantic_traverse(path, size, d, sem_init,
-						     sem_fini, data, dent);
+			if (param->fp_thread_count) {
+				rc = work_unit_create_and_add(path, param,
+							      dent);
+			} else {
+				rc = llapi_semantic_traverse(path, size, d,
+							     sem_init, sem_fini,
+							     data, dent);
+			}
 			if (rc != 0 && ret == 0)
 				ret = rc;
 			if (rc < 0 && rc != -EALREADY &&
@@ -2159,8 +2135,8 @@ err:
 	return ret;
 }
 
-static int param_callback(char *path, semantic_func_t sem_init,
-			  semantic_func_t sem_fini, struct find_param *param)
+int param_callback(char *path, semantic_func_t sem_init,
+		   semantic_func_t sem_fini, struct find_param *param)
 {
 	int ret, len = strlen(path);
 	char *buf;
@@ -2176,14 +2152,18 @@ static int param_callback(char *path, semantic_func_t sem_init,
 	if (!buf)
 		return -ENOMEM;
 
-	snprintf(buf, PATH_MAX + 1, "%s", path);
+	ret = snprintf(buf, PATH_MAX + 1, "%s", path);
+	if (ret < 0 || ret >= PATH_MAX + 1) {
+		ret = -ENAMETOOLONG;
+		goto out;
+	}
 	ret = common_param_init(param, buf);
 	if (ret)
 		goto out;
 
 	param->fp_depth = 0;
 
-	ret = llapi_semantic_traverse(buf, 2 * PATH_MAX, -1, sem_init,
+	ret = llapi_semantic_traverse(buf, 2 * PATH_MAX + 1, -1, sem_init,
 				      sem_fini, param, NULL);
 out:
 	find_param_fini(param);
@@ -2259,77 +2239,51 @@ int llapi_file_get_lmv_uuid(const char *path, struct obd_uuid *lov_uuid)
 	return rc;
 }
 
-enum tgt_type {
-	LOV_TYPE = 1,
-	LMV_TYPE
-};
-
-/*
- * If uuidp is NULL, return the number of available obd uuids.
- * If uuidp is non-NULL, then it will return the uuids of the obds. If
- * there are more OSTs than allocated to uuidp, then an error is returned with
- * the ost_count set to number of available obd uuids.
- */
-static int llapi_get_target_uuids(int fd, struct obd_uuid *uuidp, int *indices,
-				  int *ost_count, enum tgt_type type)
+int llapi_file_fget_type_uuid(int fd, enum tgt_type type, struct obd_uuid *uuid)
 {
-	char buf[PATH_MAX], format[32];
-	int i, rc = 0;
-	struct obd_uuid name;
-	glob_t param;
-	FILE *fp;
+	unsigned int cmd = 0;
+	int rc;
 
-	/* Get the lov name */
 	if (type == LOV_TYPE)
-		rc = llapi_file_fget_lov_uuid(fd, &name);
-	else
-		rc = llapi_file_fget_lmv_uuid(fd, &name);
-	if (rc != 0)
-		return rc;
+		cmd = OBD_IOC_GETDTNAME;
+	else if (type == LMV_TYPE)
+		cmd = OBD_IOC_GETMDNAME;
+	else if (type == CLI_TYPE)
+		cmd = OBD_IOC_GETUUID;
 
-	/* Now get the ost uuids */
-	rc = get_lustre_param_path(type == LOV_TYPE ? "lov" : "lmv", name.uuid,
-				   FILTER_BY_EXACT, "target_obd", &param);
-	if (rc != 0)
-		return -ENOENT;
-
-	fp = fopen(param.gl_pathv[0], "r");
-	if (fp == NULL) {
+	rc = llapi_ioctl(fd, cmd, uuid);
+	if (rc) {
 		rc = -errno;
-		llapi_error(LLAPI_MSG_ERROR, rc, "error: opening '%s'",
-			    param.gl_pathv[0]);
-		goto free_param;
+		llapi_error(LLAPI_MSG_ERROR, rc, "cannot get uuid");
 	}
 
-	snprintf(format, sizeof(format),
-		 "%%d: %%%zus", sizeof(uuidp[0].uuid) - 1);
-	for (i = 0; fgets(buf, sizeof(buf), fp); i++) {
-		int index;
-
-		if (sscanf(buf, format, &index, name.uuid) < 2)
-			break;
-
-		if (i < *ost_count) {
-			if (uuidp != NULL)
-				uuidp[i] = name;
-			if (indices != NULL)
-				indices[i] = index;
-		}
-	}
-	fclose(fp);
-
-	if (uuidp && (i > *ost_count))
-		rc = -EOVERFLOW;
-
-	*ost_count = i;
-free_param:
-	cfs_free_param_data(&param);
 	return rc;
 }
 
-int llapi_lov_get_uuids(int fd, struct obd_uuid *uuidp, int *ost_count)
+int llapi_file_get_type_uuid(const char *path, enum tgt_type type,
+			struct obd_uuid *uuid)
 {
-	return llapi_get_target_uuids(fd, uuidp, NULL, ost_count, LOV_TYPE);
+	int fd, rc;
+
+	/* do not follow faked symlinks */
+	fd = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+	if (fd < 0) {
+		/* real symlink should have failed with ELOOP so retry without
+		 * O_NOFOLLOW just in case
+		 */
+		fd = open(path, O_RDONLY | O_NONBLOCK);
+		if (fd < 0) {
+			rc = -errno;
+			llapi_error(LLAPI_MSG_ERROR, rc, "cannot open '%s'",
+				    path);
+			return rc;
+		}
+	}
+
+	rc = llapi_file_fget_type_uuid(fd, type, uuid);
+
+	close(fd);
+	return rc;
 }
 
 int llapi_get_obd_count(char *mnt, int *count, int is_mdt)
@@ -2380,94 +2334,6 @@ int llapi_uuid_match(char *real_uuid, char *search_uuid)
 }
 
 /*
- * Here, param->fp_obd_uuid points to a single obduuid, the index of which is
- * returned in param->fp_obd_index
- */
-static int setup_obd_uuid(int fd, char *dname, struct find_param *param)
-{
-	struct obd_uuid obd_uuid;
-	char buf[PATH_MAX];
-	glob_t param_data;
-	char format[32];
-	int rc = 0;
-	FILE *fp;
-
-	if (param->fp_got_uuids)
-		return rc;
-
-	/* Get the lov/lmv name */
-	if (param->fp_get_lmv)
-		rc = llapi_file_fget_lmv_uuid(fd, &obd_uuid);
-	else
-		rc = llapi_file_fget_lov_uuid(fd, &obd_uuid);
-	if (rc) {
-		if (rc != -ENOTTY) {
-			llapi_error(LLAPI_MSG_ERROR, rc,
-				    "error: can't get %s name: %s",
-				    param->fp_get_lmv ? "lmv" : "lov",
-				    dname);
-		} else {
-			rc = 0;
-		}
-		return rc;
-	}
-
-	param->fp_got_uuids = 1;
-
-	/* Now get the ost uuids */
-	rc = get_lustre_param_path(param->fp_get_lmv ? "lmv" : "lov",
-				   obd_uuid.uuid, FILTER_BY_EXACT,
-				   "target_obd", &param_data);
-	if (rc != 0)
-		return -ENOENT;
-
-	fp = fopen(param_data.gl_pathv[0], "r");
-	if (fp == NULL) {
-		rc = -errno;
-		llapi_error(LLAPI_MSG_ERROR, rc, "error: opening '%s'",
-			    param_data.gl_pathv[0]);
-		goto free_param;
-	}
-
-	if (!param->fp_obd_uuid && !param->fp_quiet && !param->fp_obds_printed)
-		llapi_printf(LLAPI_MSG_NORMAL, "%s:\n",
-			     param->fp_get_lmv ? "MDTS" : "OBDS");
-
-	snprintf(format, sizeof(format),
-		 "%%d: %%%zus", sizeof(obd_uuid.uuid) - 1);
-	while (fgets(buf, sizeof(buf), fp) != NULL) {
-		int index;
-
-		if (sscanf(buf, format, &index, obd_uuid.uuid) < 2)
-			break;
-
-		if (param->fp_obd_uuid) {
-			if (llapi_uuid_match(obd_uuid.uuid,
-					     param->fp_obd_uuid->uuid)) {
-				param->fp_obd_index = index;
-				break;
-			}
-		} else if (!param->fp_quiet && !param->fp_obds_printed) {
-			/* Print everything */
-			llapi_printf(LLAPI_MSG_NORMAL, "%s", buf);
-		}
-	}
-	param->fp_obds_printed = 1;
-
-	fclose(fp);
-
-	if (param->fp_obd_uuid && (param->fp_obd_index == OBD_NOT_FOUND)) {
-		llapi_err_noerrno(LLAPI_MSG_ERROR,
-				  "error: %s: unknown obduuid: %s",
-				  __func__, param->fp_obd_uuid->uuid);
-		rc = -EINVAL;
-	}
-free_param:
-	cfs_free_param_data(&param_data);
-	return rc;
-}
-
-/*
  * In this case, param->fp_obd_uuid will be an array of obduuids and
  * obd index for all these obduuids will be returned in
  * param->fp_obd_indexes
@@ -2476,17 +2342,14 @@ static int setup_indexes(int d, char *path, struct obd_uuid *obduuids,
 			 int num_obds, int **obdindexes, int *obdindex,
 			 enum tgt_type type)
 {
-	int ret, obdcount, maxidx, obd_valid = 0, obdnum;
+	int ret, obdcount, obd_valid = 0, obdnum;
 	int *indices = NULL;
 	struct obd_uuid *uuids = NULL;
 	int *indexes;
 	char buf[16];
 	long i;
 
-	if (type == LOV_TYPE)
-		ret = get_param_lov(path, "numobd", buf, sizeof(buf));
-	else
-		ret = get_param_lmv(path, "numobd", buf, sizeof(buf));
+	ret = get_param_tgt(path, type, "numobd", buf, sizeof(buf));
 	if (ret != 0)
 		return ret;
 
@@ -2499,10 +2362,9 @@ static int setup_indexes(int d, char *path, struct obd_uuid *obduuids,
 		ret = -ENOMEM;
 		goto out_uuids;
 	}
-	maxidx = obdcount;
 
 retry_get_uuids:
-	ret = llapi_get_target_uuids(d, uuids, indices, &obdcount, type);
+	ret = llapi_get_target_uuids(d, uuids, indices, NULL, &obdcount, type);
 	if (ret) {
 		if (ret == -EOVERFLOW) {
 			struct obd_uuid *uuids_temp;
@@ -2532,14 +2394,16 @@ retry_get_uuids:
 	}
 
 	for (obdnum = 0; obdnum < num_obds; obdnum++) {
+		int maxidx = LOV_V1_INSANE_STRIPE_COUNT;
 		char *end = NULL;
 
 		/* The user may have specified a simple index */
 		i = strtol(obduuids[obdnum].uuid, &end, 0);
-		if (end && *end == '\0' && i < maxidx) {
+		if (end && *end == '\0' && i < LOV_V1_INSANE_STRIPE_COUNT) {
 			indexes[obdnum] = i;
 			obd_valid++;
 		} else {
+			maxidx = obdcount;
 			for (i = 0; i < obdcount; i++) {
 				if (llapi_uuid_match(uuids[i].uuid,
 						     obduuids[obdnum].uuid)) {
@@ -2598,21 +2462,6 @@ static int setup_target_indexes(int d, char *path, struct find_param *param)
 	}
 
 	param->fp_got_uuids = 1;
-
-	return ret;
-}
-
-int llapi_ostlist(char *path, struct find_param *param)
-{
-	int fd;
-	int ret;
-
-	fd = open(path, O_RDONLY | O_DIRECTORY);
-	if (fd < 0)
-		return -errno;
-
-	ret = setup_obd_uuid(fd, path, param);
-	close(fd);
 
 	return ret;
 }
@@ -2712,23 +2561,6 @@ int sattr_cache_get_defaults(const char *const fsname,
 		*soffset = cache.stripeoffset;
 
 	return 0;
-}
-
-static char *layout2name(__u32 layout_pattern)
-{
-	if (layout_pattern & LOV_PATTERN_F_RELEASED)
-		return "released";
-	else if (layout_pattern & LOV_PATTERN_FOREIGN)
-		return "foreign";
-	else if (layout_pattern == LOV_PATTERN_MDT)
-		return "mdt";
-	else if (layout_pattern == LOV_PATTERN_RAID0)
-		return "raid0";
-	else if (layout_pattern ==
-			(LOV_PATTERN_RAID0 | LOV_PATTERN_OVERSTRIPING))
-		return "raid0,overstriped";
-	else
-		return "unknown";
 }
 
 enum lov_dump_flags {
@@ -2908,13 +2740,17 @@ static void lov_dump_user_lmm_header(struct lov_user_md *lum, char *path,
 	}
 
 	if ((verbose & VERBOSE_PATTERN)) {
+		char buf[128];
+
 		llapi_printf(LLAPI_MSG_NORMAL, "%s", separator);
 		if (verbose & ~VERBOSE_PATTERN)
 			llapi_printf(LLAPI_MSG_NORMAL, "%s%spattern:       ",
 				     space, prefix);
-		if (lov_pattern_supported(lum->lmm_pattern))
+		if (lov_pattern_available(lum->lmm_pattern))
 			llapi_printf(LLAPI_MSG_NORMAL, "%s",
-				     layout2name(lum->lmm_pattern));
+				     llapi_lov_pattern_string(lum->lmm_pattern,
+							buf, sizeof(buf)) ?:
+							"overflow");
 		else
 			llapi_printf(LLAPI_MSG_NORMAL, "%x", lum->lmm_pattern);
 		separator = (!yaml && is_dir) ? " " : "\n";
@@ -2932,18 +2768,21 @@ static void lov_dump_user_lmm_header(struct lov_user_md *lum, char *path,
 
 	if (verbose & VERBOSE_STRIPE_OFFSET) {
 		llapi_printf(LLAPI_MSG_NORMAL, "%s", separator);
-		if (verbose & ~VERBOSE_STRIPE_OFFSET)
-			llapi_printf(LLAPI_MSG_NORMAL, "%s%sstripe_offset: ",
-				     space, prefix);
-		if (is_dir || skip_objs)
+		bool is_dom = (lov_pattern(lum->lmm_pattern) & LOV_PATTERN_MDT);
+
+		if (verbose & ~VERBOSE_STRIPE_OFFSET) {
+			llapi_printf(LLAPI_MSG_NORMAL,
+				     is_dom ?  "%s%smdt_index:     "
+				     : "%s%sstripe_offset: ", space, prefix);
+		}
+		if (is_dir || skip_objs || is_dom)
 			if (lum->lmm_stripe_offset ==
 			    (typeof(lum->lmm_stripe_offset))(-1))
 				llapi_printf(LLAPI_MSG_NORMAL, "-1");
 			else
 				llapi_printf(LLAPI_MSG_NORMAL, fmt_idx,
 					     lum->lmm_stripe_offset);
-		else if (lov_pattern(lum->lmm_pattern) & LOV_PATTERN_MDT)
-			llapi_printf(LLAPI_MSG_NORMAL, "0");
+
 		else
 			llapi_printf(LLAPI_MSG_NORMAL, fmt_idx,
 				     objects[0].l_ost_idx);
@@ -3116,7 +2955,7 @@ void lov_dump_hsm_lmm(void *lum, char *path, int depth,
 
 		llapi_printf(LLAPI_MSG_NORMAL, "%slhm_magic:         0x%08X\n",
 			     space, lhm->lhm_magic);
-		llapi_printf(LLAPI_MSG_NORMAL, "%slhm_pattern:       hsm\n",
+		llapi_printf(LLAPI_MSG_NORMAL, "%slhm_pattern:       foreign\n",
 			     space);
 		llapi_printf(LLAPI_MSG_NORMAL, "%slhm_length:        %u\n",
 			     space, lhm->lhm_length);
@@ -3314,7 +3153,7 @@ static void lmv_dump_user_lmm(struct lmv_user_md *lum, char *pool_name,
 		if (yaml)
 			llapi_printf(LLAPI_MSG_NORMAL,
 				     "lmv_objects:\n");
-		else if (lum->lum_stripe_count >= 0)
+		else if (lum->lum_stripe_count > 0)
 			llapi_printf(LLAPI_MSG_NORMAL,
 				     "mdtidx\t\t FID[seq:oid:ver]\n");
 
@@ -3478,24 +3317,59 @@ static void lov_dump_comp_v1_entry(struct find_param *param,
 		lcme_flags2str(entry->lcme_flags);
 		separator = "\n";
 	}
-	/* print snapshot timestamp if its a nosync comp */
-	if ((verbose & VERBOSE_COMP_FLAGS) &&
-	    (entry->lcme_flags & LCME_FL_NOSYNC)) {
-		llapi_printf(LLAPI_MSG_NORMAL, "%s", separator);
-		if (verbose & ~VERBOSE_COMP_FLAGS)
-			llapi_printf(LLAPI_MSG_NORMAL,
-				     "%4slcme_timestamp:      ", " ");
-		if (yaml) {
-			llapi_printf(LLAPI_MSG_NORMAL, "%llu",
-				     (unsigned long long)entry->lcme_timestamp);
-		} else {
-			time_t stamp = entry->lcme_timestamp;
-			char *date_str = asctime(localtime(&stamp));
-
-			date_str[strlen(date_str) - 1] = '\0';
-			llapi_printf(LLAPI_MSG_NORMAL, "'%s'", date_str);
+	/* print mirror_link_id and snapshot timestamp */
+	if (verbose & VERBOSE_COMP_FLAGS) {
+		if (entry->lcme_mirror_link_id != 0) {
+			llapi_printf(LLAPI_MSG_NORMAL, "%s", separator);
+			if (verbose & ~VERBOSE_COMP_FLAGS)
+				llapi_printf(LLAPI_MSG_NORMAL,
+					     "%4slcme_mirror_link_id: ", " ");
+			llapi_printf(LLAPI_MSG_NORMAL, "%#x",
+				     entry->lcme_mirror_link_id);
+			separator = "\n";
 		}
+		if ((entry->lcme_flags & LCME_FL_NOSYNC) ||
+		    lcme_timestamp_time_unpack(entry->lcme_time_and_id)) {
+			llapi_printf(LLAPI_MSG_NORMAL, "%s", separator);
+			if (verbose & ~VERBOSE_COMP_FLAGS)
+				llapi_printf(LLAPI_MSG_NORMAL,
+					     "%4slcme_timestamp:      ", " ");
+			if (yaml) {
+				llapi_printf(LLAPI_MSG_NORMAL, "%llu",
+					     (unsigned long long)
+					     lcme_timestamp_time_unpack(entry->lcme_time_and_id));
+			} else {
+				time_t stamp = lcme_timestamp_time_unpack(entry->lcme_time_and_id);
+				struct tm tm_buf;
+				char date_str[64];
 
+				/* Use localtime_r() and strftime() for thread safety
+				 * with parallel find.
+				 */
+				if (localtime_r(&stamp, &tm_buf)) {
+					strftime(date_str, sizeof(date_str), "%c",
+						 &tm_buf);
+					llapi_printf(LLAPI_MSG_NORMAL, "'%s'",
+						     date_str);
+				}
+			}
+			separator = "\n";
+		}
+	}
+
+	/* Display EC-specific information for parity components */
+	if (verbose & VERBOSE_EC_COUNT &&
+	    (entry->lcme_flags & LCME_FL_PARITY)) {
+		llapi_printf(LLAPI_MSG_NORMAL, "%s", separator);
+		if (verbose & ~VERBOSE_EC_COUNT)
+			llapi_printf(LLAPI_MSG_NORMAL,
+				     "%4slcme_dstripe_count:  ", " ");
+		llapi_printf(LLAPI_MSG_NORMAL, "%u%s",
+				entry->lcme_dstripe_count, separator);
+		if (verbose & ~VERBOSE_EC_COUNT)
+			llapi_printf(LLAPI_MSG_NORMAL,
+				     "%4slcme_cstripe_count:  ", " ");
+		llapi_printf(LLAPI_MSG_NORMAL, "%u", entry->lcme_cstripe_count);
 		separator = "\n";
 	}
 
@@ -3650,7 +3524,7 @@ static int find_comp_end_cmp(unsigned long long end, struct find_param *param)
 	return match;
 }
 
-/**
+/*
  * An example of "getstripe -v" for a two components PFL file:
  *
  * composite_header:
@@ -4341,9 +4215,12 @@ static int find_newerxy_check(struct find_param *param, int mds, bool from_mdt)
 }
 
 /**
- * Check whether the stripes matches the indexes user provided
- *       1   : matched
- *       0   : Unmatched
+ * check_obd_match() - Check if the stripes matches the indexes user provided
+ * @param: pointer to struct find_param
+ *
+ * Return:
+ * * %1 on matched
+ * * %0 on Unmatched
  */
 static int check_obd_match(struct find_param *param)
 {
@@ -4412,11 +4289,10 @@ static int check_mdt_match(struct find_param *param)
 	return 0;
 }
 
-/**
- * Check whether the obd is active or not, if it is
- * not active, just print the object affected by this
- * failed target
- **/
+/*
+ * Check whether the obd is active or not, if it is not active, just print the
+ * object affected by this failed target
+ */
 static void print_failed_tgt(struct find_param *param, char *path, int type)
 {
 	struct obd_statfs stat_buf;
@@ -4819,13 +4695,18 @@ static int find_check_attr_options(struct find_param *param)
 }
 
 /**
- * xattr_reg_match() - return true if the supplied string matches the pattern.
+ * xattr_reg_match() - Match string with regular expression
+ * @pattern: regular expression
+ * @str: string from which @pattern to match
+ * @len: length of @str
  *
  * This requires the regex to match the entire supplied string, not just a
- *     substring.
+ * substring.
  *
  * str must be null-terminated. len should be passed in anyways to avoid an
- *     extra call to strlen(str) when the length is already known.
+ * extra call to strlen(str) when the length is already known.
+ *
+ * Return %true if @str match @pattern else %false
  */
 static bool xattr_reg_match(regex_t *pattern, const char *str, int len)
 {
@@ -4841,9 +4722,13 @@ static bool xattr_reg_match(regex_t *pattern, const char *str, int len)
 
 /**
  * xattr_done_matching() - return true if all supplied patterns have been
- *     matched, allowing to skip checking any remaining xattrs on a file.
+ *                         matched, allowing to skip checking any remaining
+ *                         xattrs on a file.
+ * @xmi: struct for xattr arguments to lfs find
  *
- *     This is only allowed if there are no "exclude" patterns.
+ * Note: This is only allowed if there are no "exclude" patterns.
+ *
+ * Returns %true if all supplied patters have been matched else %false
  */
 static int xattr_done_matching(struct xattr_match_info *xmi)
 {
@@ -4966,7 +4851,7 @@ matched:
 static bool find_skip_file(struct find_param *param)
 {
 	if (param->fp_skip_count * 100 <
-	    param->fp_skip_percent * param->fp_skip_total++) {
+	    param->fp_skip_total++ * param->fp_skip_percent) {
 		param->fp_skip_count++;
 		return true;
 	}
@@ -5040,6 +4925,7 @@ static int printf_format_timestamp(char *seq, char *buffer, size_t size,
 				   int *wrote, struct find_param *param)
 {
 	struct statx_timestamp ts = { 0, 0 };
+	struct tm tm_buf;
 	struct tm *tm;
 	time_t t;
 	int rc = 0;
@@ -5098,8 +4984,10 @@ static int printf_format_timestamp(char *seq, char *buffer, size_t size,
 	if (rc) {
 		/* Found valid format, print to buffer */
 		t = ts.tv_sec;
-		tm = localtime(&t);
-		*wrote = strftime(buffer, size, fmt, tm);
+		/* Use localtime_r() for thread safety with parallel find */
+		tm = localtime_r(&t, &tm_buf);
+		if (tm)
+			*wrote = strftime(buffer, size, fmt, tm);
 	}
 
 	return rc;
@@ -5278,6 +5166,15 @@ static int printf_format_lustre(char *seq, char *buffer, size_t size,
 	 * and dirs, so handle all of those here.
 	 */
 	switch (*seq) {
+	case 'a': /* file attributes */
+		longopt = false;
+		fallthrough;
+	case 'A':
+		lstx = &param->fp_lmd->lmd_stx;
+
+		*wrote = printf_format_file_attributes(buffer, size, lstx,
+						       longopt);
+		goto format_done;
 	case 'F':
 		err = llapi_path2fid(path, &fid);
 		if (err) {
@@ -5289,15 +5186,6 @@ static int printf_format_lustre(char *seq, char *buffer, size_t size,
 		goto format_done;
 	case 'P':
 		*wrote = snprintf(buffer, size, "%u", projid);
-		goto format_done;
-	case 'a': /* file attributes */
-		longopt = false;
-		fallthrough;
-	case 'A':
-		lstx = &param->fp_lmd->lmd_stx;
-
-		*wrote = printf_format_file_attributes(buffer, size, lstx,
-						       longopt);
 		goto format_done;
 	}
 
@@ -5498,6 +5386,56 @@ static int snprintf_access_mode(char *buffer, size_t size, __u16 mode)
 	return snprintf(buffer, size, "%s", access_string);
 }
 
+static int parse_format_width(char **seq, size_t buf_size, int *width,
+			      char *padding)
+{
+	bool negative_width = false;
+	char *end = NULL;
+	int parsed = 0;
+
+	*padding = ' ';
+	*width = 0;
+
+	/* GNU find supports formats such as "%----10s" */
+	while (**seq == '-') {
+		(*seq)++;
+		parsed++;
+		negative_width = true;
+	}
+
+	/* GNU find and printf only do 0 padding on the left (width > 0)
+	 * %-010m <=> %-10m.
+	 */
+	if (**seq == '0' && !negative_width)
+		*padding = '0';
+
+	errno = 0;
+	*width = strtol(*seq, &end, 10);
+	if (errno != 0)
+		return -errno;
+	if (*width >= buf_size)
+		*width = buf_size - 1;
+
+	/* increase the number of processed characters */
+	parsed += end - *seq;
+	*seq = end;
+	if (negative_width)
+		*width = -*width;
+
+	/* GNU find only does 0 padding for %S, %d and %m. */
+	switch (**seq) {
+	case 'S':
+	case 'd':
+	case 'm':
+		break;
+	default:
+		*padding = ' ';
+		break;
+	}
+
+	return parsed;
+}
+
 /*
  * Interpret format specifiers beginning with '%'.
  *
@@ -5518,11 +5456,18 @@ static int printf_format_directive(char *seq, char *buffer, size_t size,
 				   int *wrote, struct find_param *param,
 				   char *path, __u32 projid, int d)
 {
-	__u16 mode = param->fp_lmd->lmd_stx.stx_mode;
 	uint64_t blocks = param->fp_lmd->lmd_stx.stx_blocks;
+	__u16 mode = param->fp_lmd->lmd_stx.stx_mode;
+	char padding;
+	int width_rc;
 	int rc = 1;  /* most specifiers are single character */
+	int width;
 
 	*wrote = 0;
+
+	width_rc = parse_format_width(&seq, size, &width, &padding);
+	if (width_rc < 0)
+		return 0;
 
 	switch (*seq) {
 	case 'a': case 'A':
@@ -5535,8 +5480,11 @@ static int printf_format_directive(char *seq, char *buffer, size_t size,
 		*wrote = snprintf(buffer, size, "%"PRIu64, blocks);
 		break;
 	case 'g': { /* groupname of owner*/
-		static char save_gr_name[LOGIN_NAME_MAX + 1];
-		static gid_t save_gid = -1;
+		/* __thread makes these variables thread-local to avoid
+		 * races with parallel find worker threads.
+		 */
+		static __thread char save_gr_name[LOGIN_NAME_MAX + 1];
+		static __thread gid_t save_gid = -1;
 
 		if (save_gid != param->fp_lmd->lmd_stx.stx_gid) {
 			struct group *gr;
@@ -5556,7 +5504,7 @@ static int printf_format_directive(char *seq, char *buffer, size_t size,
 	}
 	case 'G':	/* GID of owner */
 		*wrote = snprintf(buffer, size, "%u",
-				   param->fp_lmd->lmd_stx.stx_gid);
+				  param->fp_lmd->lmd_stx.stx_gid);
 		break;
 	case 'i':	/* inode number */
 		*wrote = snprintf(buffer, size, "%llu",
@@ -5570,12 +5518,12 @@ static int printf_format_directive(char *seq, char *buffer, size_t size,
 					  path, projid, d);
 		break;
 	case 'm':	/* file mode in octal */
-		*wrote = snprintf(buffer, size, "%#o", (mode & (~S_IFMT)));
+		*wrote = snprintf(buffer, size, "%o", (mode & (~S_IFMT)));
 		break;
 	case 'M':	/* file access mode */
 		*wrote = snprintf_access_mode(buffer, size, mode);
 		break;
-	case 'n':	/* number of links */
+	case 'n':	/* number of hard links */
 		*wrote = snprintf(buffer, size, "%u",
 				  param->fp_lmd->lmd_stx.stx_nlink);
 		break;
@@ -5587,8 +5535,11 @@ static int printf_format_directive(char *seq, char *buffer, size_t size,
 				   (uint64_t) param->fp_lmd->lmd_stx.stx_size);
 		break;
 	case 'u': {/* username of owner */
-		static char save_username[LOGIN_NAME_MAX + 1];
-		static uid_t save_uid = -1;
+		/* __thread makes these variables thread-local to avoid
+		 * races with parallel find worker threads.
+		 */
+		static __thread char save_username[LOGIN_NAME_MAX + 1];
+		static __thread uid_t save_uid = -1;
 
 		if (save_uid != param->fp_lmd->lmd_stx.stx_uid) {
 			struct passwd *pw;
@@ -5638,11 +5589,31 @@ static int printf_format_directive(char *seq, char *buffer, size_t size,
 		break;
 	}
 
+	if (rc == 0)
+		/* if parsing failed, return 0 to avoid skipping width_rc */
+		return 0;
+
+	if (width > 0 && width > *wrote) {
+		/* left padding */
+		int shift = width - *wrote;
+
+		/* '\0' is added by caller if necessary */
+		memmove(buffer + shift, buffer, *wrote);
+		memset(buffer, padding, shift);
+		*wrote += shift;
+	} else if (width < 0 && -width > *wrote) {
+		/* right padding */
+		int shift = -width - *wrote;
+
+		memset(buffer + *wrote, padding, shift);
+		*wrote += shift;
+	}
+
 	if (*wrote >= size)
 		/* output of snprintf was truncated */
 		*wrote = size - 1;
 
-	return rc;
+	return width_rc + rc;
 }
 
 /*
@@ -5678,9 +5649,10 @@ static void printf_format_string(struct find_param *param, char *path,
 			rc = printf_format_directive(fmt_char + 1, buff,
 						  buff_size, &written, param,
 						  path, projid, d);
-		} else if (*fmt_char == '\\')
+		} else if (*fmt_char == '\\') {
 			rc = printf_format_escape(fmt_char + 1, buff,
 						  buff_size, &written);
+		}
 
 		if (rc > 0) {
 			/* Either a '\' escape or '%' format was processed.
@@ -5689,6 +5661,8 @@ static void printf_format_string(struct find_param *param, char *path,
 			fmt_char += (rc + 1);
 			buff += written;
 			buff_size -= written;
+		} else if (rc < 0) {
+			return;
 		} else {
 			/* Regular char or invalid escape/format.
 			 * Either way, copy current character.
@@ -5811,8 +5785,8 @@ static int check_file_permissions(const struct find_param *param,
 		return 1;
 }
 
-static int cb_find_init(char *path, int p, int *dp,
-			void *data, struct dirent64 *de)
+int cb_find_init(char *path, int p, int *dp,
+		 void *data, struct dirent64 *de)
 {
 	struct find_param *param = (struct find_param *)data;
 	struct lov_user_mds_data *lmd = param->fp_lmd;
@@ -6535,8 +6509,17 @@ static int cb_migrate_mdt_fini(char *path, int p, int *dp, void *data,
 	}
 
 	ret = setxattr(path, XATTR_NAME_LMV, lmu, lmulen, 0);
-	if (ret == -EALREADY)
-		ret = 0;
+	if (ret == -1) {
+		if (errno == EALREADY) {
+			ret = 0;
+		} else {
+			llapi_error(LLAPI_MSG_ERROR, errno,
+				    "%s: error completing migration of %s",
+				    __func__, path);
+			ret = -errno;
+		}
+	}
+
 out:
 	cb_common_fini(path, p, dp, data, de);
 	return ret;
@@ -6616,7 +6599,19 @@ static int validate_printf_fmt(char *c)
 		return 0;
 	}
 
+	/* GNU find supports formats such as "%----10s" */
+	while (curr == '-')
+		curr = *(++c);
+
+	if (isdigit(curr)) {
+		/* skip width format specifier */
+		while (isdigit(*c))
+			c++;
+	}
+
+	curr = *c;
 	next = *(c + 1);
+
 	if ((next == '\0') || (next == '%') || (next == '\\'))
 		/* Treat as single char format directive */
 		goto check_single;
@@ -6655,7 +6650,7 @@ check_single:
  * @param[in]	param	Structure containing info about invocation of lfs find
  * @return		None
  */
-static void validate_printf_str(struct find_param *param)
+void validate_printf_str(struct find_param *param)
 {
 	char *c = param->fp_format_printf_str;
 	int ret = 0;
@@ -6681,7 +6676,12 @@ int llapi_find(char *path, struct find_param *param)
 {
 	if (param->fp_format_printf_str)
 		validate_printf_str(param);
-	return param_callback(path, cb_find_init, cb_common_fini, param);
+	if (param->fp_thread_count) {
+		return parallel_find(path, param);
+	} else {
+		return param_callback(path, cb_find_init, cb_common_fini,
+				      param);
+	}
 }
 
 /*
@@ -6775,7 +6775,7 @@ static int cb_getstripe(char *path, int p, int *dp, void *data,
 
 	if (param->fp_obd_uuid) {
 		param->fp_quiet = 1;
-		ret = setup_obd_uuid(d != -1 ? d : p, path, param);
+		ret = llapi_ostlist(path, param);
 		if (ret)
 			return ret;
 	}
@@ -7129,8 +7129,9 @@ static void do_target_check(char *obd_type_name, char *obd_name,
 
 int llapi_target_check(int type_num, char **obd_type, char *dir)
 {
-	char nid[MAX_LINE_LEN], instance[MAX_INSTANCE_LEN];
+	char instance[MAX_INSTANCE_LEN];
 	struct check_target_filter filter = {NULL, NULL};
+	char *nid = NULL;
 	int rc;
 
 	if (dir == NULL || dir[0] == '\0')
@@ -7138,7 +7139,7 @@ int llapi_target_check(int type_num, char **obd_type, char *dir)
 					    do_target_check);
 
 	rc = get_root_path(WANT_NID | WANT_ERROR, NULL, NULL, dir, -1, NULL,
-			   nid);
+			   &nid);
 	if (rc) {
 		llapi_error(LLAPI_MSG_ERROR, rc,
 			    "cannot get nid of path '%s'", dir);
@@ -7148,11 +7149,16 @@ int llapi_target_check(int type_num, char **obd_type, char *dir)
 
 	rc = llapi_get_instance(dir, instance, ARRAY_SIZE(instance));
 	if (rc)
-		return rc;
+		goto out;
+
 	filter.instance = instance;
 
-	return llapi_target_iterate(type_num, obd_type, &filter,
+	rc = llapi_target_iterate(type_num, obd_type, &filter,
 				    do_target_check);
+
+out:
+	free(nid);
+	return rc;
 }
 
 #undef MAX_STRING_SIZE
@@ -7221,11 +7227,12 @@ int llapi_get_connect_flags(const char *mnt, __u64 *flags)
 }
 
 /**
- * Flush cached pages from all clients.
+ * llapi_file_flush() - Flush cached pages from all clients.
+ * @fd: File descriptor
  *
- * \param fd	File descriptor
- * \retval 0	success
- * \retval < 0	error
+ * Return:
+ * * %0 on success
+ * * %negative on error.
  */
 int llapi_file_flush(int fd)
 {
@@ -7235,14 +7242,14 @@ int llapi_file_flush(int fd)
 }
 
 /**
- * Flush dirty pages from all clients.
+ * llapi_fsync() - Flush dirty pages from all clients.
+ * @fd: File descriptor
  *
  * OSTs will take LCK_PR to flush dirty pages from clients.
  *
- * \param[in]	fd	File descriptor
- *
- * \retval 0 on success.
- * \retval -errno on error.
+ * Return
+ * * %0 on success.
+ * * %-errno on error.
  */
 int llapi_fsync(int fd)
 {

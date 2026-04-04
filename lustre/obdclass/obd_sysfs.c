@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2007, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/obdclass/obd_sysfs.c
  *
  * Object Devices Class Driver
  * These are the only exported functions, they provide some generic
@@ -61,7 +41,6 @@
 #include <linux/seq_file.h>
 #include <linux/kobject.h>
 
-#include <libcfs/libcfs.h>
 #include <lnet/lnet_crypto.h>
 #include <obd_support.h>
 #include <obd_class.h>
@@ -72,6 +51,9 @@
 
 bool obd_enable_health_write;
 EXPORT_SYMBOL(obd_enable_health_write);
+
+bool obd_enable_fname_encoding = false;
+EXPORT_SYMBOL(obd_enable_fname_encoding);
 
 struct static_lustre_uintvalue_attr {
 	struct {
@@ -117,7 +99,6 @@ static struct static_lustre_uintvalue_attr lustre_sattr_##name =	\
 
 LUSTRE_STATIC_UINT_ATTR(debug_peer_on_timeout, &obd_debug_peer_on_timeout);
 LUSTRE_STATIC_UINT_ATTR(dump_on_timeout, &obd_dump_on_timeout);
-LUSTRE_STATIC_UINT_ATTR(dump_on_eviction, &obd_dump_on_eviction);
 LUSTRE_STATIC_UINT_ATTR(at_min, &at_min);
 LUSTRE_STATIC_UINT_ATTR(at_max, &at_max);
 LUSTRE_STATIC_UINT_ATTR(at_extra, &at_extra);
@@ -125,13 +106,40 @@ LUSTRE_STATIC_UINT_ATTR(at_early_margin, &at_early_margin);
 LUSTRE_STATIC_UINT_ATTR(at_history, &at_history);
 LUSTRE_STATIC_UINT_ATTR(at_unhealthy_factor, &at_unhealthy_factor);
 LUSTRE_STATIC_UINT_ATTR(enable_stats_header, &obd_enable_stats_header);
-LUSTRE_STATIC_UINT_ATTR(lbug_on_eviction, &obd_lbug_on_eviction);
 LUSTRE_STATIC_UINT_ATTR(ping_interval, &ping_interval);
-LUSTRE_STATIC_UINT_ATTR(evict_multiplier, &ping_evict_timeout_multiplier);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 LUSTRE_STATIC_UINT_ATTR(ldlm_timeout, &ldlm_timeout);
 LUSTRE_STATIC_UINT_ATTR(bulk_timeout, &bulk_timeout);
+
+static ssize_t expected_clients_show(struct kobject *kobj,
+				     struct attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", class_expected_clients_get());
+}
+
+static ssize_t expected_clients_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer, size_t count)
+{
+	unsigned int val;
+	int rc;
+
+	rc = kstrtouint(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	if (val == 0)
+		return -EINVAL;
+
+	if (val > LR_MAX_CLIENTS)
+		return -EINVAL;
+
+	class_expected_clients_set(val);
+
+	return count;
+}
+LUSTRE_RW_ATTR(expected_clients);
 #endif
 
 static ssize_t memused_show(struct kobject *kobj, struct attribute *attr,
@@ -167,7 +175,7 @@ static ssize_t max_dirty_mb_store(struct kobject *kobj, struct attribute *attr,
 
 	val *= 1 << (20 - PAGE_SHIFT); /* convert to pages */
 
-	if (val > ((cfs_totalram_pages() / 10) * 9)) {
+	if (val > ((compat_totalram_pages() / 10) * 9)) {
 		/* Somebody wants to assign too much memory to dirty pages */
 		return -EINVAL;
 	}
@@ -183,7 +191,7 @@ static ssize_t max_dirty_mb_store(struct kobject *kobj, struct attribute *attr,
 }
 LUSTRE_RW_ATTR(max_dirty_mb);
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static ssize_t no_transno_store(struct kobject *kobj,
 				struct attribute *attr,
 				const char *buffer, size_t count)
@@ -209,7 +217,7 @@ static ssize_t no_transno_store(struct kobject *kobj,
 	return count;
 }
 LUSTRE_WO_ATTR(no_transno);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
 
 static ssize_t version_show(struct kobject *kobj, struct attribute *attr,
 			    char *buf)
@@ -248,15 +256,19 @@ health_check_show(struct kobject *kobj, struct attribute *attr, char *buf)
 		return sprintf(buf, "LBUG\n");
 
 	obd_device_lock();
-	obd_device_for_each_cond(dev_no, obd, test_bit(OBDF_ATTACHED, obd->obd_flags) &&
-				 test_bit(OBDF_SET_UP, obd->obd_flags) && !obd->obd_stopping &&
-				 !obd->obd_read_only) {
+	obd_device_for_each_cond(dev_no, obd, test_bit(OBDF_ATTACHED,
+						       obd->obd_flags) &&
+				 test_bit(OBDF_SET_UP, obd->obd_flags) &&
+				 !obd->obd_stopping && !obd->obd_read_only) {
 		LASSERT(obd->obd_magic == OBD_DEVICE_MAGIC);
 
 		class_incref(obd, __func__, current);
 		obd_device_unlock();
-		if (obd_health_check(NULL, obd))
+		if (obd_health_check(NULL, obd)) {
+			CERROR("%s: device reported unhealthy\n",
+			       obd->obd_name);
 			healthy = false;
+		}
 		obd_device_lock();
 		class_decref(obd, __func__, current);
 
@@ -273,7 +285,7 @@ health_check_show(struct kobject *kobj, struct attribute *attr, char *buf)
 	return len;
 }
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 static ssize_t enable_health_write_show(struct kobject *kobj,
 					struct attribute *attr,
 					char *buf)
@@ -295,7 +307,29 @@ static ssize_t enable_health_write_store(struct kobject *kobj,
 	return count;
 }
 LUSTRE_RW_ATTR(enable_health_write);
-#endif /* HAVE_SERVER_SUPPORT */
+#endif /* CONFIG_LUSTRE_FS_SERVER */
+
+static ssize_t enable_fname_encoding_show(struct kobject *kobj,
+					struct attribute *attr,
+					char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 obd_enable_fname_encoding);
+}
+
+static ssize_t enable_fname_encoding_store(struct kobject *kobj,
+					 struct attribute *attr,
+					 const char *buf, size_t count)
+{
+	int rc = 0;
+
+	rc = kstrtobool(buf, &obd_enable_fname_encoding);
+	if (rc)
+		return rc;
+
+	return count;
+}
+LUSTRE_RW_ATTR(enable_fname_encoding);
 
 static ssize_t jobid_var_show(struct kobject *kobj, struct attribute *attr,
 			      char *buf)
@@ -459,6 +493,80 @@ static ssize_t debug_raw_pointers_store(struct kobject *kobj,
 	return count;
 }
 
+static const char *const eviction_names[] = {
+	"1",		/* DUMP_SUBS_OLD */
+	"llite",	/* DUMP_PTLRPC_CONN */
+	"ldlm",         /* DUMP_LDLM_LOCK */
+	"stale",	/* DUMP_RECOVERY_STALE */
+	"pinger"        /* DUMP_PINGER */
+};
+
+static inline const char *eviction_type2str(int type)
+{
+	if (type >= 0 && type < ARRAY_SIZE(eviction_names))
+		return eviction_names[type];
+	return NULL;
+}
+
+static ssize_t dump_on_eviction_show(struct kobject *kobj,
+				     struct attribute *attr,
+				     char *buf)
+{
+	return cfs_mask2str(buf, PAGE_SIZE, obd_dump_on_eviction,
+			    eviction_type2str, ' ');
+}
+
+static ssize_t both_on_eviction_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer,
+				      size_t count, unsigned int *val)
+{
+	u64 fl = *val;
+	u64 max_mask = (1 << (ARRAY_SIZE(eviction_names) + 1)) - 1;
+	int rc;
+
+	rc = kstrtou64(buffer, 0, &fl);
+	/* check flags fits to str array */
+	if (!rc && !(fl & ~max_mask)) {
+		*val = fl;
+		return count;
+	}
+
+	rc = cfs_str2mask(buffer, eviction_type2str, &fl, 0, max_mask, 0);
+
+	if (!rc && fl != *val)
+		*val = fl;
+
+	return count;
+}
+
+static ssize_t dump_on_eviction_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer,
+				      size_t count)
+{
+	return both_on_eviction_store(kobj, attr, buffer, count,
+				      &obd_dump_on_eviction);
+}
+
+static ssize_t lbug_on_eviction_show(struct kobject *kobj,
+				     struct attribute *attr,
+				     char *buf)
+{
+	return cfs_mask2str(buf, PAGE_SIZE, obd_lbug_on_eviction,
+			    eviction_type2str, ' ');
+}
+
+static ssize_t lbug_on_eviction_store(struct kobject *kobj,
+				      struct attribute *attr,
+				      const char *buffer,
+				      size_t count)
+{
+	return both_on_eviction_store(kobj, attr, buffer, count,
+				      &obd_lbug_on_eviction);
+}
+
+
 /* Root for /sys/kernel/debug/lustre */
 struct dentry *debugfs_lustre_root;
 EXPORT_SYMBOL_GPL(debugfs_lustre_root);
@@ -479,6 +587,8 @@ LUSTRE_RW_ATTR(jobid_name);
 LUSTRE_RW_ATTR(jobid_this_session);
 LUSTRE_RW_ATTR(timeout);
 LUSTRE_RW_ATTR(debug_raw_pointers);
+LUSTRE_RW_ATTR(dump_on_eviction);
+LUSTRE_RW_ATTR(lbug_on_eviction);
 
 static struct attribute *lustre_attrs[] = {
 	&lustre_attr_version.attr,
@@ -493,7 +603,7 @@ static struct attribute *lustre_attrs[] = {
 	&lustre_attr_max_dirty_mb.attr,
 	&lustre_sattr_debug_peer_on_timeout.u.attr,
 	&lustre_sattr_dump_on_timeout.u.attr,
-	&lustre_sattr_dump_on_eviction.u.attr,
+	&lustre_attr_dump_on_eviction.attr,
 	&lustre_sattr_at_min.u.attr,
 	&lustre_sattr_at_max.u.attr,
 	&lustre_sattr_at_extra.u.attr,
@@ -502,15 +612,16 @@ static struct attribute *lustre_attrs[] = {
 	&lustre_sattr_at_unhealthy_factor.u.attr,
 	&lustre_attr_memused_max.attr,
 	&lustre_attr_memused.attr,
-#ifdef HAVE_SERVER_SUPPORT
-	&lustre_attr_enable_health_write.attr,
-	&lustre_sattr_ldlm_timeout.u.attr,
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	&lustre_sattr_bulk_timeout.u.attr,
+	&lustre_attr_enable_health_write.attr,
+	&lustre_attr_expected_clients.attr,
+	&lustre_sattr_ldlm_timeout.u.attr,
 	&lustre_attr_no_transno.attr,
 #endif
-	&lustre_sattr_lbug_on_eviction.u.attr,
+	&lustre_attr_enable_fname_encoding.attr,
+	&lustre_attr_lbug_on_eviction.attr,
 	&lustre_sattr_ping_interval.u.attr,
-	&lustre_sattr_evict_multiplier.u.attr,
 	NULL,
 };
 
@@ -686,33 +797,6 @@ static const struct file_operations checksum_speed_fops = {
 	.release = seq_release,
 };
 
-static int
-health_check_seq_show(struct seq_file *m, void *unused)
-{
-	struct obd_device *obd = NULL;
-	unsigned long dev_no = 0;
-
-	obd_device_lock();
-	obd_device_for_each_cond(dev_no, obd, test_bit(OBDF_ATTACHED, obd->obd_flags) &&
-				 test_bit(OBDF_SET_UP, obd->obd_flags) && !obd->obd_stopping) {
-		LASSERT(obd->obd_magic == OBD_DEVICE_MAGIC);
-
-		class_incref(obd, __func__, current);
-		obd_device_unlock();
-		if (obd_health_check(NULL, obd)) {
-			seq_printf(m, "device %s reported unhealthy\n",
-				   obd->obd_name);
-		}
-		obd_device_lock();
-		class_decref(obd, __func__, current);
-	}
-	obd_device_unlock();
-
-	return 0;
-}
-
-LDEBUGFS_SEQ_FOPS_RO(health_check);
-
 struct kset *lustre_kset;
 EXPORT_SYMBOL_GPL(lustre_kset);
 
@@ -767,9 +851,6 @@ int class_procfs_init(void)
 	debugfs_create_file("devices", 0444, debugfs_lustre_root, NULL,
 			    &obd_device_list_fops);
 
-	debugfs_create_file("health_check", 0444, debugfs_lustre_root,
-			    NULL, &health_check_fops);
-
 	debugfs_create_file("checksum_speed", 0444, debugfs_lustre_root,
 			    NULL, &checksum_speed_fops);
 
@@ -805,3 +886,40 @@ int class_procfs_clean(void)
 
 	RETURN(0);
 }
+
+/* filename encoding */
+#define ENCODE_FN_LEN	BASE64URL_CHARS(sizeof(__u64)) + 2
+#define FN_COUNT 64 /* must be power-of-two value */
+const char *encode_fn_len(const char *fname, size_t namelen)
+{
+	static char fn_array[FN_COUNT][ENCODE_FN_LEN];
+	static atomic_t fn_index;
+	char *new_fn = NULL;
+	char *tmp;
+	int encode_len = ENCODE_FN_LEN;
+	int rc;
+	__u64 hash;
+
+	CDEBUG(D_TRACE, "Process filename at %p\n", &fname);
+	if (!fname || !namelen || !obd_enable_fname_encoding)
+		return fname;
+	if (unlikely(namelen > NAME_MAX))
+		namelen = NAME_MAX;
+
+	hash = lustre_hash_fnv_1a_64(fname, namelen);
+	new_fn = fn_array[atomic_inc_return(&fn_index) & (FN_COUNT - 1)];
+	tmp = new_fn;
+	rc = gss_base64url_encode(&tmp, &encode_len, (__u8 *)&hash,
+				  sizeof(hash));
+	if (rc < 0) {
+		if (encode_len == -1)
+			CERROR("Encode buffer size(%d) is too small: rc = %d\n",
+			       (int)ENCODE_FN_LEN, rc);
+		else
+			CERROR("Failed to encode name(%zu): rc = %d\n",
+			       namelen, rc);
+	}
+
+	return new_fn;
+}
+EXPORT_SYMBOL(encode_fn_len);

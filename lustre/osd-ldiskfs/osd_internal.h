@@ -27,6 +27,7 @@
 #include <linux/dcache.h>
 /* struct dirent64 */
 #include <linux/dirent.h>
+#include <lustre_compat/linux/security.h>
 #include <linux/statfs.h>
 #include <linux/bio.h>
 #include <linux/file.h>
@@ -49,6 +50,19 @@
 
 #ifdef HAVE_LINUX_BLK_INTEGRITY_HEADER
  #include <linux/blk-integrity.h>
+#endif
+
+#ifdef HAVE_BI_BDEV
+#define bio_get_dev(bio)	((bio)->bi_bdev)
+#define bio_get_disk(bio)	(bio_get_dev(bio)->bd_disk)
+#define bio_get_queue(bio)	bdev_get_queue(bio_get_dev(bio))
+
+#ifndef HAVE_BIO_SET_DEV
+# define bio_set_dev(bio, bdev)	(bio_get_dev(bio) = (bdev))
+#endif
+#else
+#define bio_get_disk(bio)	((bio)->bi_disk)
+#define bio_get_queue(bio)	(bio_get_disk(bio)->queue)
 #endif
 
 struct inode;
@@ -79,30 +93,41 @@ extern struct kmem_cache *dynlock_cachep;
 /* Default extent bytes when declaring write commit */
 #define OSD_DEFAULT_EXTENT_BYTES	(1U << 20)
 
-/* check if ldiskfs support project quota */
-#if LDISKFS_MAXQUOTAS < 3
-#undef HAVE_PROJECT_QUOTA
-#endif
-
 #define OBD_BRW_MAPPED	OBD_BRW_LOCAL1
 
 struct osd_directory {
-        struct iam_container od_container;
-        struct iam_descr     od_descr;
+	struct iam_container	od_container;
+	struct iam_descr	od_descr;
 };
 
 /*
  * Object Index (oi) instance.
  */
 struct osd_oi {
-        /*
-         * underlying index object, where fid->id mapping in stored.
-         */
-        struct inode         *oi_inode;
-        struct osd_directory  oi_dir;
+	/* underlying index object, where fid->id mapping in stored. */
+	struct inode		*oi_inode;
+	struct osd_directory	 oi_dir;
 };
 
 extern const int osd_dto_credits_noquota[];
+
+/*
+ * the structure describes what logical blocks have been allocated
+ * and initialized in a file already. having this one we can do
+ * parallel lookup for blocks already allocated and improve concurrent
+ * writes to a file.
+ */
+struct osd_block_ready_map {
+	unsigned long start;
+	unsigned long end;
+	unsigned long time; /* last time used */
+};
+
+/* how many blocks to allocate at once */
+#define OSD_BRM_ALLOC_SIZE	4
+
+/* how many areas of allocated blocks to save */
+#define OSD_BRM_MAX		4
 
 struct osd_object {
 	struct dt_object        oo_dt;
@@ -117,9 +142,11 @@ struct osd_object {
 	/**
 	 * to protect index ops.
 	 */
+
+	/* XXX: union with directory stuff */
+	struct osd_block_ready_map *oo_brm;
 	struct htree_lock_head *oo_hl_head;
 	struct rw_semaphore	oo_ext_idx_sem;
-	struct rw_semaphore	oo_sem;
 	struct osd_directory	*oo_dir;
 	/** protects inode attributes. */
 	spinlock_t		oo_guard;
@@ -132,13 +159,13 @@ struct osd_object {
 	__u32			oo_destroyed:1,
 				oo_pfid_in_lma:1,
 				oo_compat_dot_created:1,
-				oo_compat_dotdot_created:1;
+				oo_compat_dotdot_created:1,
+				oo_prealloc_writes:1,
+				oo_on_orphan_list:1;
 
 	/* the i_flags in LMA */
 	__u32                   oo_lma_flags;
 	atomic_t		oo_dirent_count;
-
-        const struct lu_env    *oo_owner;
 
 	struct list_head	oo_xattr_list;
 	struct lu_object_header *oo_header;
@@ -246,17 +273,15 @@ enum osd_t10_type {
  * osd device.
  */
 struct osd_device {
-        /* super-class */
-        struct dt_device          od_dt_dev;
-        /* information about underlying file system */
-        struct vfsmount          *od_mnt;
-        /* object index */
-        struct osd_oi           **od_oi_table;
-        /* total number of OI containers */
-        int                       od_oi_count;
-        /*
-         * Fid Capability
-         */
+	/* super-class */
+	struct dt_device          od_dt_dev;
+	/* information about underlying file system */
+	struct vfsmount          *od_mnt;
+	/* object index */
+	struct osd_oi           **od_oi_table;
+	/* total number of OI containers */
+	int                       od_oi_count;
+	/* FID Capability */
 	unsigned int              od_fl_capa:1,
 				  od_maybe_new:1,
 				  od_igif_inoi:1,
@@ -341,6 +366,7 @@ struct osd_device {
 	atomic_t		 od_commit_cb_in_flight;
 	wait_queue_head_t	 od_commit_cb_done;
 	unsigned int __percpu	*od_extent_bytes_percpu;
+	struct workqueue_struct	*od_integrityd_wq;
 };
 
 static inline struct qsd_instance *osd_def_qsd(struct osd_device *osd)
@@ -401,16 +427,28 @@ struct osd_access_lock {
 	int			 tl_mode;
 	bool			 tl_shared;
 	bool			 tl_truncate;
-	bool			 tl_punch;
+	bool			 tl_fallocate;
 };
 
 struct osd_thandle {
-        struct thandle          ot_super;
-        handle_t               *ot_handle;
-        struct ldiskfs_journal_cb_entry ot_jcb;
-	struct list_head       ot_commit_dcb_list;
-	struct list_head       ot_stop_dcb_list;
+	struct thandle		ot_super;
+	handle_t	       *ot_handle;
+#ifdef HAVE_S_TXN_CB_MAP
+	transaction_t	       *ot_transaction;
+	struct rb_node		ot_node;
+	struct list_head	ot_cblist;
+#else
+	struct ldiskfs_journal_cb_entry ot_jcb;
+#endif
+	struct list_head	ot_commit_dcb_list;
+	struct list_head	ot_stop_dcb_list;
 	unsigned int		ot_credits;
+	/*
+	 * For iterative operation within one transaction,
+	 * for example fallocate, it is a number of credits
+	 * enough for completing at least one iteration.
+	 */
+	unsigned int		ot_credits_iter;
 	unsigned int		oh_declared_ext;
 
 	/* quota IDs related to the transaction */
@@ -421,11 +459,12 @@ struct osd_thandle {
 	struct lquota_trans    *ot_quota_trans;
 
 	unsigned int		ot_remove_agents:1;
+	unsigned int		ot_quota_credits_accounted:1;
 #if OSD_THANDLE_STATS
-        /** time when this handle was allocated */
+	/** time when this handle was allocated */
 	ktime_t oth_alloced;
 
-        /** time when this thanle was started */
+	/** time when this thanle was started */
 	ktime_t oth_started;
 #endif
 	struct list_head	ot_trunc_locks;
@@ -440,18 +479,18 @@ struct osd_thandle {
  * Basic transaction credit op
  */
 enum dt_txn_op {
-        DTO_INDEX_INSERT,
-        DTO_INDEX_DELETE,
-        DTO_INDEX_UPDATE,
-        DTO_OBJECT_CREATE,
-        DTO_OBJECT_DELETE,
-        DTO_ATTR_SET_BASE,
-        DTO_XATTR_SET,
-        DTO_WRITE_BASE,
-        DTO_WRITE_BLOCK,
-        DTO_ATTR_SET_CHOWN,
+	DTO_INDEX_INSERT,
+	DTO_INDEX_DELETE,
+	DTO_INDEX_UPDATE,
+	DTO_OBJECT_CREATE,
+	DTO_OBJECT_DELETE,
+	DTO_ATTR_SET_BASE,
+	DTO_XATTR_SET,
+	DTO_WRITE_BASE,
+	DTO_WRITE_BLOCK,
+	DTO_ATTR_SET_CHOWN,
 
-        DTO_NR
+	DTO_NR
 };
 
 struct osd_obj_declare {
@@ -491,17 +530,17 @@ enum {
  * Variable size, first byte contains the length of the whole record.
  */
 struct osd_fid_pack {
-        unsigned char fp_len;
-        char fp_area[sizeof(struct lu_fid)];
+	unsigned char	fp_len;
+	char		fp_area[sizeof(struct lu_fid)];
 };
 
 struct osd_it_ea_dirent {
-        struct lu_fid   oied_fid;
-        __u64           oied_ino;
-        __u64           oied_off;
-        unsigned short  oied_namelen;
-        unsigned int    oied_type;
-        char            oied_name[];
+	struct lu_fid	oied_fid;
+	__u64		oied_ino;
+	__u64		oied_off;
+	unsigned short	oied_namelen;
+	unsigned int	oied_type;
+	char		oied_name[];
 } __attribute__((packed));
 
 /**
@@ -520,7 +559,7 @@ struct osd_it_ea_dirent {
 struct osd_it_ea {
 	struct osd_object	*oie_obj;
 	/** used in ldiskfs iterator, to stored file pointer */
-	struct file		*oie_file;
+	struct file		oie_file;
 	/** how many entries have been read-cached from storage */
 	int			oie_rd_dirent;
 	/** current entry is being iterated by caller */
@@ -529,15 +568,16 @@ struct osd_it_ea {
 	struct osd_it_ea_dirent *oie_dirent;
 	/** buffer to hold entries, size == OSD_IT_EA_BUFSIZE */
 	void			*oie_buf;
+	struct dentry		oie_dentry;
 };
 
 /**
  * Iterator's in-memory data structure for IAM mode.
  */
 struct osd_it_iam {
-        struct osd_object     *oi_obj;
-        struct iam_path_descr *oi_ipd;
-        struct iam_iterator    oi_it;
+	struct osd_object	*oi_obj;
+	struct iam_path_descr	*oi_ipd;
+	struct iam_iterator	 oi_it;
 };
 
 struct osd_quota_leaf {
@@ -575,8 +615,7 @@ struct osd_iobuf {
 	int                dr_frags;
 	unsigned int       dr_init_at:16, /* the line iobuf was initialized */
 			   dr_elapsed_valid:1, /* we really did count time */
-			   dr_rw:1,
-			   dr_integrity:1;
+			   dr_rw:1;
 	struct niobuf_local	**dr_lnbs;
 	struct lu_buf	   dr_bl_buf;
 	struct lu_buf	   dr_lnb_buf;
@@ -592,17 +631,10 @@ struct osd_iobuf {
 #define osd_dirty_inode(inode, flag)  (inode)->i_sb->s_op->dirty_inode((inode), flag)
 #define osd_i_blocks(inode, size) ((size) >> (inode)->i_blkbits)
 
-
-#if defined HAVE_INODE_TIMESPEC64 || defined HAVE_INODE_GET_MTIME_SEC
-# define osd_timespec			timespec64
-#else
-# define osd_timespec			timespec
-#endif
-
-static inline struct osd_timespec osd_inode_time(struct inode *inode,
-						 s64 seconds)
+static inline struct timespec64 osd_inode_time(struct inode *inode,
+					       s64 seconds)
 {
-	struct osd_timespec ts = { .tv_sec = seconds };
+	struct timespec64 ts = { .tv_sec = seconds };
 
 	return ts;
 }
@@ -645,6 +677,7 @@ struct osd_thread_info {
 	 * used for index operations.
 	 */
 	struct dentry          oti_obj_dentry;
+	struct file            oti_file;
 	struct dentry          oti_child_dentry;
 
 	/** dentry for Iterator context. */
@@ -661,13 +694,13 @@ struct osd_thread_info {
 	struct osd_inode_id    oti_id;
 	struct osd_inode_id    oti_id2;
 	struct osd_inode_id    oti_id3;
-        struct ost_id          oti_ostid;
+	struct ost_id          oti_ostid;
 
-        /**
-         * following ipd and it structures are used for osd_index_iam_lookup()
-         * these are defined separately as we might do index operation
-         * in open iterator session.
-         */
+	/**
+	 * following ipd and it structures are used for osd_index_iam_lookup()
+	 * these are defined separately as we might do index operation
+	 * in open iterator session.
+	 */
 
 	/** pre-allocated buffer used by oti_it_ea, size OSD_IT_EA_BUFSIZE */
 	void			*oti_it_ea_buf;
@@ -676,17 +709,17 @@ struct osd_thread_info {
 	/* IAM iterator for index operation. */
 	struct iam_iterator    oti_idx_it;
 
-        /** union to guarantee that ->oti_ipd[] has proper alignment. */
-        union {
-		char	       oti_name[48];
-                char           oti_it_ipd[DX_IPD_MAX_SIZE];
-                long long      oti_alignment_lieutenant;
-        };
+	/** union to guarantee that ->oti_ipd[] has proper alignment. */
+	union {
+		char			oti_name[48];
+		char			oti_it_ipd[DX_IPD_MAX_SIZE];
+		long long		oti_alignment_lieutenant;
+	};
 
-        union {
-                char           oti_idx_ipd[DX_IPD_MAX_SIZE];
-                long long      oti_alignment_lieutenant_colonel;
-        };
+	union {
+		char			oti_idx_ipd[DX_IPD_MAX_SIZE];
+		long long		oti_alignment_lieutenant_colonel;
+	};
 
 	struct osd_idmap_cache oti_cache;
 
@@ -697,8 +730,6 @@ struct osd_thread_info {
 	/* inc by osd_trans_create and dec by osd_trans_stop */
 	int				oti_ins_cache_depth;
 
-	int				oti_r_locks;
-	int				oti_w_locks;
 	int				oti_txns;
 	/** used in osd_fid_set() to put xattr */
 	struct lu_buf			oti_buf;
@@ -719,11 +750,7 @@ struct osd_thread_info {
 
 	/* used by quota code */
 	union {
-#if defined(HAVE_DQUOT_QC_DQBLK)
 		struct qc_dqblk		oti_qdq;
-#else
-		struct fs_disk_quota    oti_fdq;
-#endif
 		struct if_dqinfo	oti_dqinfo;
 	};
 	struct lquota_id_info	oti_qi;
@@ -761,6 +788,96 @@ extern int ldiskfs_pdo;
 #define DECLARE_BVEC_ITER_ALL(iter) int iter
 #endif
 
+#ifndef HAVE_POSIX_ACL_TYPE
+static inline int posix_acl_type(const char *name)
+{
+	if (strcmp(name, XATTR_NAME_POSIX_ACL_ACCESS) == 0)
+		return ACL_TYPE_ACCESS;
+	if (strcmp(name, XATTR_NAME_POSIX_ACL_DEFAULT) == 0)
+		return ACL_TYPE_DEFAULT;
+
+	return -1;
+}
+#endif
+
+static inline int __osd_acl_get(struct inode *inode, const char *name,
+				void *buf, int len)
+{
+	struct posix_acl *acl;
+	int acl_type, error;
+
+	acl_type = posix_acl_type(name);
+	if (acl_type < 0)
+		return -EINVAL;
+
+#ifdef HAVE_IOP_GET_INODE_ACL
+	acl = get_inode_acl(inode, acl_type);
+#else
+	acl = get_acl(inode, acl_type);
+#endif
+	if (IS_ERR(acl))
+		return PTR_ERR(acl);
+	if (!acl)
+		return -ENODATA;
+
+	error = posix_acl_to_xattr(&init_user_ns, acl, buf, len);
+	posix_acl_release(acl);
+
+	return error;
+}
+
+static inline int __osd_acl_set(struct dentry *dentry, struct inode *inode,
+				const char *name, const void *buf,
+				int buflen)
+{
+	int acl_type;
+	int error;
+	struct posix_acl *acl = NULL;
+
+	acl_type = posix_acl_type(name);
+	if (acl_type < 0)
+		return -EINVAL;
+
+	if (buflen) {
+		acl = posix_acl_from_xattr(&init_user_ns, buf, buflen);
+		if (IS_ERR(acl))
+			return PTR_ERR(acl);
+	}
+
+#ifdef HAVE_MNT_IDMAP_ARG
+	error = set_posix_acl(&nop_mnt_idmap, dentry, acl_type, acl);
+#elif defined HAVE_ACL_WITH_DENTRY
+	error = set_posix_acl(&init_user_ns, dentry, acl_type, acl);
+#elif defined HAVE_SET_POSIX_ACL_USER_NS
+	error = set_posix_acl(&init_user_ns, inode, acl_type, acl);
+#else
+	error = set_posix_acl(inode, acl_type, acl);
+#endif
+	posix_acl_release(acl);
+
+	return error;
+}
+
+static inline int __osd_acl_del(struct dentry *dentry, struct inode *inode,
+				const char *name)
+{
+	int acl_type;
+
+	acl_type = posix_acl_type(name);
+	if (acl_type < 0)
+		return -EINVAL;
+
+#ifdef HAVE_MNT_IDMAP_ARG
+	return set_posix_acl(&nop_mnt_idmap, dentry, acl_type, NULL);
+#elif defined HAVE_ACL_WITH_DENTRY
+	return set_posix_acl(&init_user_ns, dentry, acl_type, NULL);
+#elif defined HAVE_SET_POSIX_ACL_USER_NS
+	return set_posix_acl(&init_user_ns, inode, acl_type, NULL);
+#else
+	return set_posix_acl(inode, acl_type, NULL);
+#endif
+}
+
 static inline int __osd_xattr_get(struct inode *inode, struct dentry *dentry,
 				  const char *name, void *buf, int len)
 {
@@ -769,7 +886,11 @@ static inline int __osd_xattr_get(struct inode *inode, struct dentry *dentry,
 
 	dentry->d_inode = inode;
 	dentry->d_sb = inode->i_sb;
-	return ll_vfs_getxattr(dentry, inode, name, buf, len);
+	if (strcmp(name, XATTR_NAME_ACL_ACCESS) == 0 ||
+	    strcmp(name, XATTR_NAME_ACL_DEFAULT) == 0)
+		return __osd_acl_get(inode, name, buf, len);
+	else
+		return __vfs_getxattr(dentry, inode, name, buf, len);
 }
 
 static inline int __osd_xattr_set(struct osd_thread_info *info,
@@ -781,7 +902,24 @@ static inline int __osd_xattr_set(struct osd_thread_info *info,
 	dquot_initialize(inode);
 	dentry->d_inode = inode;
 	dentry->d_sb = inode->i_sb;
-	return ll_vfs_setxattr(dentry, inode, name, buf, buflen, fl);
+	if (strcmp(name, XATTR_NAME_ACL_ACCESS) == 0 ||
+	    strcmp(name, XATTR_NAME_ACL_DEFAULT) == 0)
+		return __osd_acl_set(dentry, inode, name, buf, buflen);
+	else
+		return ll_vfs_setxattr(dentry, inode, name, buf, buflen, fl);
+}
+
+static inline int __osd_xattr_del(struct inode *inode, struct dentry *dentry,
+				  const char *name)
+{
+	dquot_initialize(inode);
+	dentry->d_inode = inode;
+	dentry->d_sb = inode->i_sb;
+	if (strcmp(name, XATTR_NAME_ACL_ACCESS) == 0 ||
+	    strcmp(name, XATTR_NAME_ACL_DEFAULT) == 0)
+		return __osd_acl_del(dentry, inode, name);
+	else
+		return ll_vfs_removexattr(dentry, inode, name);
 }
 
 static inline char *osd_oid_name(char *name, size_t name_size,
@@ -799,7 +937,7 @@ static inline char *osd_oid_name(char *name, size_t name_size,
 /* osd_lproc.c */
 extern struct lprocfs_vars lprocfs_osd_obd_vars[];
 int osd_procfs_init(struct osd_device *osd, const char *name);
-int osd_procfs_fini(struct osd_device *osd);
+void osd_procfs_fini(struct osd_device *osd);
 void osd_brw_stats_update(struct osd_device *osd, struct osd_iobuf *iobuf);
 #if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(3, 0, 52, 0)
 int osd_register_proc_index_in_idif(struct osd_device *osd);
@@ -871,11 +1009,11 @@ bool osd_scrub_oi_resurrect(struct lustre_scrub *scrub,
 			    const struct lu_fid *fid);
 void osd_scrub_dump(struct seq_file *m, struct osd_device *dev);
 
-struct dentry *osd_lookup_one_len_unlocked(struct osd_device *dev,
-					   const char *name,
-					   struct dentry *base, int len);
-struct dentry *osd_lookup_one_len(struct osd_device *dev, const char *name,
-				  struct dentry *base, int len);
+struct dentry *osd_lookup_noperm_unlocked(struct osd_device *dev,
+					  struct qstr *qstr,
+					  struct dentry *base);
+struct dentry *osd_lookup_noperm(struct osd_device *dev, struct qstr *qstr,
+				 struct dentry *base);
 
 int osd_fld_lookup(const struct lu_env *env, struct osd_device *osd,
 		   u64 seq, struct lu_seq_range *range);
@@ -899,18 +1037,20 @@ int osd_scrub_refresh_mapping(struct osd_thread_info *info,
 			      const struct osd_inode_id *id,
 			      int ops, bool force,
 			      enum oi_check_flags flags, bool *exist);
+struct file *osd_get_filp_for_inode(struct osd_thread_info *oti,
+				    struct inode *inode);
 
 /* osd_quota_fmt.c */
 int walk_tree_dqentry(const struct lu_env *env, struct osd_object *obj,
-                      int type, uint blk, int depth, uint index,
-                      struct osd_it_quota *it);
+		      int type, uint blk, int depth, uint index,
+		      struct osd_it_quota *it);
 int walk_block_dqentry(const struct lu_env *env, struct osd_object *obj,
-                       int type, uint blk, uint index,
-                       struct osd_it_quota *it);
+		       int type, uint blk, uint index,
+		       struct osd_it_quota *it);
 loff_t find_tree_dqentry(const struct lu_env *env,
-                         struct osd_object *obj, int type,
-                         qid_t dqid, uint blk, int depth,
-                         struct osd_it_quota *it);
+			 struct osd_object *obj, int type,
+			 qid_t dqid, uint blk, int depth,
+			 struct osd_it_quota *it);
 /* osd_quota.c */
 int osd_declare_qid(const struct lu_env *env, struct osd_thandle *oh,
 		    struct lquota_id_info *qi, struct osd_object *obj,
@@ -925,28 +1065,17 @@ const struct dt_rec *osd_quota_pack(struct osd_object *obj,
 				    union lquota_rec *quota_rec);
 void osd_quota_unpack(struct osd_object *obj, const struct dt_rec *rec);
 
-#ifdef HAVE_PROJECT_QUOTA
-static inline __u32 i_projid_read(struct inode *inode)
+static inline u32 i_projid_read(struct inode *inode)
 {
-	return (__u32)from_kprojid(&init_user_ns, LDISKFS_I(inode)->i_projid);
+	return (u32)from_kprojid(&init_user_ns, LDISKFS_I(inode)->i_projid);
 }
 
-static inline void i_projid_write(struct inode *inode, __u32 projid)
+static inline void i_projid_write(struct inode *inode, u32 projid)
 {
 	kprojid_t kprojid;
 	kprojid = make_kprojid(&init_user_ns, (projid_t)projid);
 	LDISKFS_I(inode)->i_projid = kprojid;
 }
-#else
-static inline uid_t i_projid_read(struct inode *inode)
-{
-	return 0;
-}
-static inline void i_projid_write(struct inode *inode, __u32 projid)
-{
-	return;
-}
-#endif
 
 #ifdef HAVE_LDISKFS_IGET_WITH_FLAGS
 # define osd_ldiskfs_iget(sb, inum, flags)				\
@@ -1026,14 +1155,13 @@ static inline struct buffer_head *osd_ldiskfs_append(handle_t *handle,
 #if OSD_INVARIANT_CHECKS
 static inline int osd_invariant(const struct osd_object *obj)
 {
-        return
-                obj != NULL &&
-                ergo(obj->oo_inode != NULL,
-                     obj->oo_inode->i_sb == osd_sb(osd_obj2dev(obj)) &&
-                     atomic_read(&obj->oo_inode->i_count) > 0) &&
-                ergo(obj->oo_dir != NULL &&
-                     obj->oo_dir->od_conationer.ic_object != NULL,
-                     obj->oo_dir->od_conationer.ic_object == obj->oo_inode);
+	return obj != NULL &&
+		ergo(obj->oo_inode != NULL,
+		     obj->oo_inode->i_sb == osd_sb(osd_obj2dev(obj)) &&
+		     atomic_read(&obj->oo_inode->i_count) > 0) &&
+		ergo(obj->oo_dir != NULL &&
+		     obj->oo_dir->od_conationer.ic_object != NULL,
+		     obj->oo_dir->od_conationer.ic_object == obj->oo_inode);
 }
 #else
 #define osd_invariant(obj) (1)
@@ -1052,7 +1180,7 @@ static inline int osd_oi_fid2idx(struct osd_device *dev,
 }
 
 static inline struct osd_oi *osd_fid2oi(struct osd_device *osd,
-                                        const struct lu_fid *fid)
+					const struct lu_fid *fid)
 {
 	LASSERTF(!fid_is_idif(fid), DFID"\n", PFID(fid));
 	LASSERTF(!fid_is_last_id(fid), DFID"\n", PFID(fid));
@@ -1067,7 +1195,7 @@ extern const struct lu_device_operations  osd_lu_ops;
 
 static inline int lu_device_is_osd(const struct lu_device *d)
 {
-        return ergo(d != NULL && d->ld_ops != NULL, d->ld_ops == &osd_lu_ops);
+	return ergo(d != NULL && d->ld_ops != NULL, d->ld_ops == &osd_lu_ops);
 }
 
 static inline struct osd_device *osd_dt_dev(const struct dt_device *d)
@@ -1084,11 +1212,14 @@ static inline struct osd_device *osd_dev(const struct lu_device *d)
 
 static inline struct osd_device *osd_obj2dev(const struct osd_object *o)
 {
-        return osd_dev(o->oo_dt.do_lu.lo_dev);
+	return osd_dev(o->oo_dt.do_lu.lo_dev);
 }
 
 static inline struct super_block *osd_sb(const struct osd_device *dev)
 {
+	if (!dev->od_mnt)
+		return NULL;
+
 	return dev->od_mnt->mnt_sb;
 }
 
@@ -1134,17 +1265,17 @@ static inline struct osd_object *osd_obj(const struct lu_object *o)
 
 static inline struct osd_object *osd_dt_obj(const struct dt_object *d)
 {
-        return osd_obj(&d->do_lu);
+	return osd_obj(&d->do_lu);
 }
 
 static inline struct lu_device *osd2lu_dev(struct osd_device *osd)
 {
-        return &osd->od_dt_dev.dd_lu_dev;
+	return &osd->od_dt_dev.dd_lu_dev;
 }
 
 static inline journal_t *osd_journal(const struct osd_device *dev)
 {
-        return LDISKFS_SB(osd_sb(dev))->s_journal;
+	return LDISKFS_SB(osd_sb(dev))->s_journal;
 }
 
 static inline struct seq_server_site *osd_seq_site(struct osd_device *osd)
@@ -1167,7 +1298,7 @@ extern struct lu_context_key osd_key;
 
 static inline struct osd_thread_info *osd_oti_get(const struct lu_env *env)
 {
-        return lu_context_key_get(&env->le_ctx, &osd_key);
+	return lu_context_key_get(&env->le_ctx, &osd_key);
 }
 
 extern const struct dt_body_operations osd_body_ops_new;
@@ -1177,25 +1308,25 @@ extern const struct dt_body_operations osd_body_ops_new;
  */
 static inline
 struct iam_path_descr *osd_it_ipd_get(const struct lu_env *env,
-                                      const struct iam_container *bag)
+				      const struct iam_container *bag)
 {
-        return bag->ic_descr->id_ops->id_ipd_alloc(bag,
-                                           osd_oti_get(env)->oti_it_ipd);
+	return bag->ic_descr->id_ops->id_ipd_alloc(bag,
+						  osd_oti_get(env)->oti_it_ipd);
 }
 
 static inline
 struct iam_path_descr *osd_idx_ipd_get(const struct lu_env *env,
-                                       const struct iam_container *bag)
+				       const struct iam_container *bag)
 {
-        return bag->ic_descr->id_ops->id_ipd_alloc(bag,
-                                           osd_oti_get(env)->oti_idx_ipd);
+	return bag->ic_descr->id_ops->id_ipd_alloc(bag,
+						 osd_oti_get(env)->oti_idx_ipd);
 }
 
 static inline void osd_ipd_put(const struct lu_env *env,
-                               const struct iam_container *bag,
-                               struct iam_path_descr *ipd)
+			       const struct iam_container *bag,
+			       struct iam_path_descr *ipd)
 {
-        bag->ic_descr->id_ops->id_ipd_free(ipd);
+	bag->ic_descr->id_ops->id_ipd_free(ipd);
 }
 
 int osd_calc_bkmap_credits(struct super_block *sb, struct inode *inode,
@@ -1209,22 +1340,23 @@ int osd_ldiskfs_write(struct osd_device *osd, struct inode *inode, void *buf,
 
 static inline
 struct dentry *osd_child_dentry_by_inode(const struct lu_env *env,
-                                         struct inode *inode,
-                                         const char *name, const int namelen)
+					 struct inode *inode,
+					 const char *name, const int namelen)
 {
-        struct osd_thread_info *info = osd_oti_get(env);
-        struct dentry *child_dentry = &info->oti_child_dentry;
-        struct dentry *obj_dentry = &info->oti_obj_dentry;
+	struct osd_thread_info *info = osd_oti_get(env);
+	struct dentry *child_dentry = &info->oti_child_dentry;
+	struct dentry *obj_dentry = &info->oti_obj_dentry;
 
-        obj_dentry->d_inode = inode;
-        obj_dentry->d_sb = inode->i_sb;
-        obj_dentry->d_name.hash = 0;
+	obj_dentry->d_inode = inode;
+	obj_dentry->d_sb = inode->i_sb;
+	obj_dentry->d_name.hash = 0;
 
-        child_dentry->d_name.hash = 0;
-        child_dentry->d_parent = obj_dentry;
-        child_dentry->d_name.name = name;
-        child_dentry->d_name.len = namelen;
-        return child_dentry;
+	child_dentry->d_name.hash = 0;
+	child_dentry->d_parent = obj_dentry;
+	child_dentry->d_name.name = name;
+	child_dentry->d_name.len = namelen;
+
+	return child_dentry;
 }
 
 extern int osd_trans_declare_op2rb[];
@@ -1380,29 +1512,30 @@ static inline void osd_trans_exec_check(const struct lu_env *env,
  */
 static inline
 void osd_fid_pack(struct osd_fid_pack *pack, const struct dt_rec *fid,
-                  struct lu_fid *befider)
+		  struct lu_fid *befider)
 {
-        fid_cpu_to_be(befider, (struct lu_fid *)fid);
-        memcpy(pack->fp_area, befider, sizeof(*befider));
-        pack->fp_len =  sizeof(*befider) + 1;
+	fid_cpu_to_be(befider, (struct lu_fid *)fid);
+	memcpy(pack->fp_area, befider, sizeof(*befider));
+	pack->fp_len =  sizeof(*befider) + 1;
 }
 
 static inline
 int osd_fid_unpack(struct lu_fid *fid, const struct osd_fid_pack *pack)
 {
-        int result;
+	int result = 0;
 
-        result = 0;
-        switch (pack->fp_len) {
-        case sizeof *fid + 1:
-                memcpy(fid, pack->fp_area, sizeof *fid);
-                fid_be_to_cpu(fid, fid);
-                break;
-        default:
-                CERROR("Unexpected packed fid size: %d\n", pack->fp_len);
-                result = -EIO;
-        }
-        return result;
+	/* More then one fid can be stored but now copy the first one */
+	switch (pack->fp_len > sizeof(*fid) && pack->fp_len % sizeof(*fid)) {
+	case 1:
+		memcpy(fid, pack->fp_area, sizeof(*fid));
+		fid_be_to_cpu(fid, fid);
+		break;
+	default:
+		CERROR("unexpected packed fid size: %d\n", pack->fp_len);
+		result = -EIO;
+	}
+
+	return result;
 }
 
 /**
@@ -1484,6 +1617,15 @@ static inline struct buffer_head *__ldiskfs_bread(handle_t *handle,
 	 ldiskfs_journal_get_write_access((handle), (bh))
 #endif /* HAVE_EXT4_JOURNAL_GET_WRITE_ACCESS_4ARGS */
 
+#ifdef HAVE_EXT4_JOURNAL_GET_CREATE_ACCESS_4ARGS
+# define osd_ldiskfs_journal_get_create_access(handle, sb, bh)  \
+	ldiskfs_journal_get_create_access((handle), (sb), (bh), \
+					  LDISKFS_JTR_NONE)
+#else
+# define osd_ldiskfs_journal_get_create_access(handle, sb, bh) \
+	ldiskfs_journal_get_create_access((handle), (bh))
+#endif /* HAVE_EXT4_JOURNAL_GET_CREATE_ACCESS_4ARGS */
+
 #ifdef HAVE_EXT4_INC_DEC_COUNT_2ARGS
 #define osd_ldiskfs_inc_count(h, inode)		ldiskfs_inc_count((h), (inode))
 #define osd_ldiskfs_dec_count(h, inode)		ldiskfs_dec_count((h), (inode))
@@ -1492,6 +1634,7 @@ static inline struct buffer_head *__ldiskfs_bread(handle_t *handle,
 #define osd_ldiskfs_dec_count(h, inode)		ldiskfs_dec_count((inode))
 #endif /* HAVE_EXT4_INC_DEC_COUNT_2ARGS */
 
+void osd_bio_fini(struct bio *bio);
 void osd_fini_iobuf(struct osd_device *d, struct osd_iobuf *iobuf);
 
 static inline int
@@ -1569,19 +1712,6 @@ void osd_trunc_unlock_all(const struct lu_env *env, struct list_head *list);
 int osd_process_truncates(const struct lu_env *env, struct list_head *list);
 void osd_execute_truncate(struct osd_object *obj);
 
-#ifndef HAVE___BI_CNT
-#define __bi_cnt bi_cnt
-#endif
-
-#ifndef HAVE_CLEAN_BDEV_ALIASES
-#define clean_bdev_aliases(bdev, block, len)	\
-	unmap_underlying_metadata((bdev), (block))
-#endif
-
-#ifndef HAVE_BI_STATUS
-#define bi_status bi_error
-#endif
-
 /*
  * Maximum size of xattr attributes for FEATURE_INCOMPAT_EA_INODE 1Mb
  * This limit is arbitrary, but is reasonable for the xattr API.
@@ -1589,28 +1719,19 @@ void osd_execute_truncate(struct osd_object *obj);
 #define LDISKFS_XATTR_MAX_LARGE_EA_SIZE    (1024 * 1024)
 
 struct osd_bio_private {
+	struct work_struct	obp_work;
+	struct bvec_iter	obp_integrity_iter;
+	struct bio		*obp_bio;
 	struct osd_iobuf	*obp_iobuf;
+	void			*obp_integrity_buf;
 	/* Start page index in the obp_iobuf for the bio */
 	int			 obp_start_page_idx;
 };
 extern struct kmem_cache *biop_cachep;
 
-#if IS_ENABLED(CONFIG_BLK_DEV_INTEGRITY) && defined(HAVE_BIO_INTEGRITY_PREP_FN)
 int osd_bio_integrity_handle(struct osd_device *osd, struct bio *bio,
 				    struct osd_iobuf *iobuf);
-#else  /* !CONFIG_BLK_DEV_INTEGRITY */
-#define osd_bio_integrity_handle(osd, bio, iobuf) (0)
-#endif
-
-#ifdef HAVE_BIO_INTEGRITY_PREP_FN
-# ifdef HAVE_BLK_INTEGRITY_ITER
-#  define integrity_gen_fn integrity_processing_fn
-#  define integrity_vrfy_fn integrity_processing_fn
-# endif
-int osd_get_integrity_profile(struct osd_device *osd,
-			      integrity_gen_fn **generate_fn,
-			      integrity_vrfy_fn **verify_fn);
-#endif /* HAVE_BIO_INTEGRITY_PREP_FN */
+void osd_bio_integrity_verify_fn(struct work_struct *work);
 
 #ifdef HAVE_BIO_BI_PHYS_SEGMENTS
 #define osd_bio_nr_segs(bio)		((bio)->bi_phys_segments)
@@ -1618,46 +1739,24 @@ int osd_get_integrity_profile(struct osd_device *osd,
 #define osd_bio_nr_segs(bio)		bio_segments((bio))
 #endif /* HAVE_BIO_BI_PHYS_SEGMENTS */
 
-#ifdef HAVE_GET_INODE_USAGE
-#define lock_dquot_transfer(inode) down_read(&LDISKFS_I(inode)->xattr_sem)
-#define unlock_dquot_transfer(inode) up_read(&LDISKFS_I(inode)->xattr_sem)
-#else
-#define lock_dquot_transfer(inode) do {} while (0)
-#define unlock_dquot_transfer(inode) do {} while (0)
-#endif
-
 #if IS_ENABLED(CONFIG_BLK_DEV_INTEGRITY)
 static inline unsigned short blk_integrity_interval(struct blk_integrity *bi)
 {
-#ifdef HAVE_INTERVAL_EXP_BLK_INTEGRITY
 	return bi->interval_exp ? 1 << bi->interval_exp : 0;
-#elif defined(HAVE_INTERVAL_BLK_INTEGRITY)
-	return bi->interval;
-#else
-	return bi->sector_size;
-#endif /* !HAVE_INTERVAL_EXP_BLK_INTEGRITY */
 }
 
 static inline const char *blk_integrity_name(struct blk_integrity *bi)
 {
 #ifdef HAVE_BLK_INTEGRITY_NOVERIFY
 	return blk_integrity_profile_name(bi);
-#elif defined HAVE_INTERVAL_EXP_BLK_INTEGRITY
-	return bi->profile->name;
 #else
-	return bi->name;
+	return bi->profile->name;
 #endif
 }
 
 static inline unsigned int bip_size(struct bio_integrity_payload *bip)
 {
-#ifdef HAVE_BLK_INTEGRITY_NOVERIFY
 	return bip->bip_iter.bi_size;
-#elif defined HAVE_BIP_ITER_BIO_INTEGRITY_PAYLOAD
-	return bip->bip_iter.bi_size;
-#else
-	return bip->bip_size;
-#endif
 }
 #else /* !CONFIG_BLK_DEV_INTEGRITY */
 static inline unsigned short blk_integrity_interval(struct blk_integrity *bi)
@@ -1669,6 +1768,12 @@ static inline const char *blk_integrity_name(struct blk_integrity *bi)
 	/* gcc8 dislikes when strcmp() is called against NULL */
 	return "";
 }
+
+static inline void bip_set_seed(struct bio_integrity_payload *bip,
+				sector_t seed)
+{
+}
+
 #endif /* !CONFIG_BLK_DEV_INTEGRITY */
 
 #ifdef HAVE_BLK_INTEGRITY_NOVERIFY
@@ -1704,7 +1809,7 @@ static inline bool bdev_integrity_enabled(struct block_device *bdev, int rw)
 	if (rw == 1 && INTEGRITY_WRITE(bi->flags))
 		return true;
 
-#elif defined HAVE_INTERVAL_EXP_BLK_INTEGRITY
+#else
 	if (rw == 0 && bi->profile->verify_fn != NULL &&
 	    INTEGRITY_READ(bi->flags))
 		return true;
@@ -1712,13 +1817,7 @@ static inline bool bdev_integrity_enabled(struct block_device *bdev, int rw)
 	if (rw == 1 && bi->profile->generate_fn != NULL &&
 	    INTEGRITY_WRITE(bi->flags))
 		return true;
-#else
-	if (rw == 0 && bi->verify_fn != NULL && INTEGRITY_READ(bi->flags))
-		return true;
-
-	if (rw == 1 && bi->generate_fn != NULL && INTEGRITY_WRITE(bi->flags))
-		return true;
-#endif /* !HAVE_INTERVAL_EXP_BLK_INTEGRITY */
+#endif /* !HAVE_BLK_INTEGRITY_NOVERIFY */
 #endif /* !CONFIG_BLK_DEV_INTEGRITY */
 
 	return false;
@@ -1736,19 +1835,28 @@ bool osd_tx_was_declared(const struct lu_env *env, struct osd_thandle *oth,
 #ifdef HAVE_FILLDIR_USE_CTX_RETURN_BOOL
 #define WRAP_FILLDIR_FN(prefix, fill_fn) \
 static bool fill_fn(struct dir_context *buf, const char *name, int namelen, \
-		    loff_t offset, __u64 ino, unsigned int d_type)	    \
+		    loff_t offset, u64 ino, unsigned int d_type)	    \
 {									    \
 	return !prefix##fill_fn(buf, name, namelen, offset, ino, d_type);   \
 }
-#elif defined(HAVE_FILLDIR_USE_CTX)
+#else
 #define WRAP_FILLDIR_FN(prefix, fill_fn) \
 static int fill_fn(struct dir_context *buf, const char *name, int namelen,  \
-		   loff_t offset, __u64 ino, unsigned int d_type)	    \
+		   loff_t offset, u64 ino, unsigned int d_type)		    \
 {									    \
 	return prefix##fill_fn(buf, name, namelen, offset, ino, d_type);    \
 }
+#endif
+
+#define LDISKFS_OSD_USER_MODIFIABLE	LUSTRE_FL_USER_MODIFIABLE
+
+
+#ifdef HAVE_INVALIDATE_FOLIO
+#define osd_jbd_invalidate_page(journal, page, offset, len) \
+	jbd2_journal_invalidate_folio(journal, page_folio(page), offset, len)
 #else
-#define WRAP_FILLDIR_FN(prefix, fill_fn)
+#define osd_jbd_invalidate_page(journal, page, offset, len) \
+	jbd2_journal_invalidatepage(journal, page_folio(page), offset, len)
 #endif
 
 #endif /* _OSD_INTERNAL_H */

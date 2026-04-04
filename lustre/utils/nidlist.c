@@ -1,24 +1,4 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
@@ -288,7 +268,7 @@ static void nl_strxcat(char *s, char **nids, int len, const int max_len)
 		int n = strtoul(&addr[o], NULL, 10);
 
 		if (i == 0)
-			snprintf(s + strlen(s), max_len, "%s[%s", base,
+			snprintf(s + strlen(s), max_len - strlen(s), "%s[%s", base,
 				 &addr[o]);
 		else if (i < len) {
 			if (n == lastn + 1) {
@@ -315,7 +295,7 @@ static void nl_strxcat(char *s, char **nids, int len, const int max_len)
 					 "-%s", savedn);
 				free(savedn);
 			}
-			strncat(s, "]", max_len - strlen(s));
+			strncat(s, "]", max_len - strlen(s) - 1);
 			if (lnet)
 				snprintf(s + strlen(s), max_len - strlen(s),
 					 "@%s", lnet);
@@ -340,7 +320,7 @@ char *nl_xstring(NIDList nl, char *sep)
 	s[0] = '\0';
 	for (i = 0; i < nl->count; i++) {
 		if (i > 0)
-			strncat(s, sep, len);
+			strncat(s, sep, len - strlen(s) - 1);
 		for (j = i + 1; j < nl->count; j++) {
 			if (nl_cmp_lnet(nl->nids[i], nl->nids[j]) != 0)
 				break;
@@ -351,7 +331,7 @@ char *nl_xstring(NIDList nl, char *sep)
 		if (j - i > 1)
 			nl_strxcat(s, &nl->nids[i], j - i, len);
 		else
-			strncat(s, nl->nids[i], len);
+			strncat(s, nl->nids[i], len - strlen(s) - 1);
 		i += j - i - 1;
 	}
 	return s;

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 # vim:expandtab:shiftwidth=4:softtabstop=4:tabstop=4:
 
@@ -398,9 +398,8 @@ check_options() {
     fi
 
     RPMBUILD=$(which rpmbuild 2>/dev/null | head -n 1)
-    RPMBUILD=${RPMBUILD:-$(which rpm 2>/dev/null | head -n 1)}
-    if [ -z "$RPMBUILD" ]; then
-        usage 1 "Could not find binary for making rpms (tried rpmbuild and rpm)."
+    if [[ -z "$RPMBUILD" ]]; then
+        usage 1 "Could not find rpmbuild for making rpms."
     fi
 
     local BINDIR="$TOPDIR/bin"
@@ -412,7 +411,7 @@ check_options() {
     export PATH=$BINDIR:$PATH
 
     cat >${BINDIR}/rpmbuild <<EOF
-#!/bin/bash
+#!/usr/bin/bash
 
 ARGS="\${FIND_REQUIRES:+--define \"__find_requires \$FIND_REQUIRES\"}
 \${FIND_KSYMS_REQUIRES:+--define \"__required_ksyms_requires \$FIND_KSYMS_REQUIRES\"}"
@@ -684,7 +683,7 @@ download_ofed() {
 			download_file "$location/$file" "$KERNELTREE" "$force"
 			;;
 		mlnx)
-			location="http://www.mellanox.com/downloads/ofed/MLNX_OFED-${ofed_version}"
+			location="https://content.mellanox.com/ofed/MLNX_OFED-${ofed_version}"
 			# this is a work around for suse distro (sles11.3). what we need is
 			# sles11sp3. We really need to redesign how we use target and distro
 			[[ $distro_name =~ sles ]] && distro_name=${DISTRO/./sp}
@@ -1092,7 +1091,7 @@ build_spl_zfs() {
     # The spl/zfs spec files expect RPM_BUILD_ROOT to point to the root of the
     # destination for the rpms
     export RPM_BUILD_ROOT=$TOPDIR
-    SPLZFSVER=${SPLZFSVER:-2.1.15}
+    SPLZFSVER=${SPLZFSVER:-2.3.4}
     SPLZFSTAG=${SPLZFSTAG:-}
     # "spl zfs" prior to 0.8.0
     # "zfs" for 0.8.0 and later
@@ -1129,7 +1128,7 @@ build_spl_zfs() {
 	    speclist="$pkg.spec $rpmpkg.spec"
 	else
 	    rpmpkg=kmod-$pkg-devel
-	    if [[ $DISTROMAJ > "rhel8" ]]; then
+	    if [[ $DISTROMAJ == "rhel9" || $DISTROMAJ == "rhel10" ]]; then
 		specdir=rpm/redhat
 	    else
 		specdir=rpm/generic

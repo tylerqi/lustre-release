@@ -19,6 +19,8 @@
 # error This include is only for kernel use.
 #endif
 
+#include <linux/bvec.h>
+#include <linux/generic-radix-tree.h>
 #include <linux/kthread.h>
 #include <linux/uio.h>
 #include <linux/semaphore.h>
@@ -36,6 +38,29 @@ int libcfs_strid(struct lnet_processid *id, const char *str);
 int cfs_match_nid_net(struct lnet_nid *nid, u32 net,
 		      struct list_head *net_num_list,
 		      struct list_head *addr);
+
+/* Structure to represent \<range_expr\> token of the syntax. */
+struct cfs_range_expr {
+	/* Link to cfs_expr_list::el_exprs. */
+	struct list_head        re_link;
+	u32                     re_lo;
+	u32                     re_hi;
+	u32                     re_stride;
+};
+
+struct cfs_expr_list {
+	struct list_head        el_link;
+	struct list_head        el_exprs;
+};
+
+int cfs_expr_list_match(u32 value, struct cfs_expr_list *expr_list);
+int cfs_expr_list_values(struct cfs_expr_list *expr_list,
+			 int max, u32 **values);
+void cfs_expr_list_free(struct cfs_expr_list *expr_list);
+int cfs_expr_list_parse(char *str, int len, unsigned int min, unsigned int max,
+			struct cfs_expr_list **elpp);
+void cfs_expr_list_free_list(struct list_head *list);
+#define cfs_expr_list_values_free(values, num)  CFS_FREE_PTR_ARRAY(values, num)
 
 /* Max payload size */
 #define LNET_MAX_PAYLOAD	LNET_MTU
@@ -217,7 +242,7 @@ struct lnet_libmd {
 
 static inline bool lnet_md_is_gpu(struct lnet_libmd *md)
 {
-    return (md != NULL) && !!(md->md_flags & LNET_MD_FLAG_GPU);
+	return (md != NULL) && !!(md->md_flags & LNET_MD_FLAG_GPU);
 }
 
 struct lnet_test_peer {
@@ -310,9 +335,21 @@ struct lnet_lnd {
 	unsigned int (*lnd_get_dev_prio)(struct lnet_ni *ni,
 					 unsigned int dev_idx);
 
+	/* get LND timeout */
+	int (*lnd_get_timeout)(void);
+
+	/* Grab LND tunable from latest module settings */
+	int (*lnd_tun_defaults)(struct lnet_lnd_tunables *tunables,
+				struct lnet_ioctl_config_lnd_cmn_tunables *cmn);
+
 	/* Handle LND specific Netlink handling */
-	int (*lnd_nl_get)(int cmd, struct sk_buff *msg, int type, void *data);
+	int (*lnd_nl_get)(int cmd, struct sk_buff *msg, int type, void *data,
+			  bool export_backup);
 	int (*lnd_nl_set)(int cmd, struct nlattr *attr, int type, void *data);
+
+		/* find cached metadata associated with nid */
+	int (*lnd_get_nid_metadata)(struct lnet_ni *ni,
+				    struct lnet_nid_md_entry *md_entry);
 
 	const struct ln_key_list *lnd_keys;
 };
@@ -1263,7 +1300,7 @@ struct lnet_ni {
  */
 struct lnet_ping_buffer {
 	int			pb_nbytes;	/* sizeof pb_info */
-	atomic_t		pb_refcnt;
+	struct kref		pb_refcnt;
 	bool			pb_needs_post;
 	struct lnet_ping_info	pb_info;
 };
@@ -1448,12 +1485,6 @@ struct lnet_peer {
 
 	/* # refs from lnet_route::lr_gateway */
 	int			lp_rtr_refcount;
-
-	/*
-	 * peer specific health sensitivity value to decrement peer nis in
-	 * this peer with if set to something other than 0
-	 */
-	__u32			lp_health_sensitivity;
 
 	/* messages blocking for router credits */
 	struct list_head	lp_rtrq;
@@ -1656,9 +1687,10 @@ struct lnet_peer_table {
 /* peer aliveness is enabled only on routers for peers in a network where the
  * struct lnet_ni::ni_peertimeout has been set to a positive value
  */
-#define lnet_peer_aliveness_enabled(lp) (the_lnet.ln_routing != 0 && \
-					((lp)->lpni_net) && \
-					(lp)->lpni_net->net_tunables.lct_peer_timeout > 0)
+#define lnet_peer_aliveness_enabled(lp)				\
+	(lnet_routing_enabled() &&				\
+	((lp)->lpni_net) &&					\
+	(lp)->lpni_net->net_tunables.lct_peer_timeout > 0)
 
 struct lnet_route {
 	struct list_head	lr_list;	/* chain on net */
@@ -1890,6 +1922,27 @@ struct lnet_udsp {
 #define LNET_STATE_RUNNING		1	/* started up OK */
 #define LNET_STATE_STOPPING		2	/* telling thread to stop */
 
+/* LNet routing states */
+#define LNET_ROUTING_DISABLED		0	/* LNet routing disabled */
+#define LNET_ROUTING_ENABLED		1	/* LNet routing enabled */
+#define LNET_ROUTING_STOPPING		2	/* LNet routing stopping */
+#define LNET_ROUTING_STARTING		3	/* LNet routing starting */
+
+#define lnet_routing_disabled() (the_lnet.ln_routing == LNET_ROUTING_DISABLED)
+#define lnet_routing_enabled() (the_lnet.ln_routing != LNET_ROUTING_DISABLED)
+
+struct nid_update_info {
+	GENRADIX(struct lnet_nid) nui_rdx;
+	unsigned int		  nui_count;
+	__u32			  nui_net;
+};
+
+struct nid_update_callback_reg {
+	struct list_head nur_list;
+	int (*nur_cb)(void *private, struct nid_update_info *nui);
+	void *nur_data;
+};
+
 struct lnet {
 	/* CPU partition table of LNet */
 	struct cfs_cpt_table		*ln_cpt_table;
@@ -1928,6 +1981,12 @@ struct lnet {
 	struct list_head		ln_nets;
 	/* Sequence number used to round robin sends across all nets */
 	__u32				ln_net_seq;
+	/*
+	 * Count of NIs/nets with restricted CPT configurations.
+	 * When 0, lnet_nid2cpt() can use fast hash-only path even
+	 * when ni==NULL, since all networks use all CPTs.
+	 */
+	atomic_t			ln_cpt_restricted_count;
 	/* the loopback NI */
 	struct lnet_ni			*ln_loni;
 	/* network zombie list */
@@ -2059,6 +2118,8 @@ struct lnet {
 	/* UDSP list */
 	struct list_head		ln_udsp_list;
 
+	struct list_head		ln_nid_update_callbacks;
+
 	/* Number of messages that have exceeded their message deadline */
 	atomic_t			ln_late_msg_count;
 	/* Total amount of time past their deadline for all late ^ messages */
@@ -2072,6 +2133,9 @@ struct lnet {
 	struct work_struct		ln_pb_update_work;
 
 	atomic_t                        ln_pb_update_ready;
+
+	/* Global count of published NIs/NIDs */
+	atomic_t			ln_ni_total;
 };
 
 static const struct nla_policy scalar_attr_policy[LN_SCALAR_MAX + 1] = {
@@ -2086,32 +2150,5 @@ static const struct nla_policy scalar_attr_policy[LN_SCALAR_MAX + 1] = {
 int lnet_genl_send_scalar_list(struct sk_buff *msg, u32 portid, u32 seq,
 			       const struct genl_family *family, int flags,
 			       u8 cmd, const struct ln_key_list *data[]);
-
-/* Special workaround for pre-4.19 kernels to send error messages
- * from dumpit routines. Newer kernels will send message with
- * NL_SET_ERR_MSG information by default if NETLINK_EXT_ACK is set.
- */
-static inline int lnet_nl_send_error(struct sk_buff *msg, int portid, int seq,
-				     int error)
-{
-#ifndef HAVE_NL_DUMP_WITH_EXT_ACK
-	struct nlmsghdr *nlh;
-
-	if (!error)
-		return 0;
-
-	nlh = nlmsg_put(msg, portid, seq, NLMSG_ERROR, sizeof(error), 0);
-	if (!nlh)
-		return -ENOMEM;
-#ifdef HAVE_NL_PARSE_WITH_EXT_ACK
-	netlink_ack(msg, nlh, error, NULL);
-#else
-	netlink_ack(msg, nlh, error);
-#endif
-	return nlmsg_len(nlh);
-#else
-	return error;
-#endif
-}
 
 #endif

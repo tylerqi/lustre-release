@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * libcfs/libcfs/tracefile.c
  *
  * Author: Zach Brown <zab@clusterfs.com>
  * Author: Phil Schwan <phil@clusterfs.com>
@@ -43,9 +23,7 @@
 #include <linux/pagemap.h>
 #include <linux/poll.h>
 #include <linux/uaccess.h>
-#include <libcfs/linux/linux-fs.h>
-#include <libcfs/libcfs.h>
-
+#include <linux/libcfs/libcfs.h>
 
 enum cfs_trace_buf_type {
 	CFS_TCD_TYPE_PROC = 0,
@@ -54,7 +32,7 @@ enum cfs_trace_buf_type {
 	CFS_TCD_TYPE_CNT
 };
 
-union cfs_trace_data_union (*cfs_trace_data[CFS_TCD_TYPE_CNT])[NR_CPUS] __cacheline_aligned;
+static union cfs_trace_data_union (*cfs_trace_data[CFS_TCD_TYPE_CNT])[NR_CPUS] __cacheline_aligned;
 
 /* Pages containing records already processed by daemon.
  * Link via ->lru, use size in ->private
@@ -66,7 +44,7 @@ static long daemon_pages_max;
 char cfs_tracefile[TRACEFILE_NAME_SIZE];
 long long cfs_tracefile_size = CFS_TRACEFILE_SIZE;
 
-struct task_struct *tctl_task;
+static struct task_struct *tctl_task;
 
 static atomic_t cfs_tage_allocated = ATOMIC_INIT(0);
 static DECLARE_RWSEM(cfs_tracefile_sem);
@@ -329,10 +307,11 @@ static void cfs_vprint_to_console(struct ptldebug_header *hdr,
 				  struct va_format *vaf, const char *file,
 				  const char *fn)
 {
-	char *prefix = "Lustre";
+	int subsys = hdr->ph_subsys;
 	int mask = hdr->ph_mask;
+	char *prefix = "Lustre";
 
-	if (hdr->ph_subsys == S_LND || hdr->ph_subsys == S_LNET)
+	if (subsys == S_LND || subsys == S_LNET)
 		prefix = "LNet";
 
 	if (mask & D_CONSOLE) {
@@ -342,7 +321,8 @@ static void cfs_vprint_to_console(struct ptldebug_header *hdr,
 			pr_err("%sError: %pV", prefix, vaf);
 		else if (mask & D_WARNING)
 			pr_warn("%s: %pV", prefix, vaf);
-		else if (mask & libcfs_printk)
+		else if (mask & libcfs_printk ||
+			 subsys & libcfs_subsystem_printk)
 			pr_info("%s: %pV", prefix, vaf);
 	} else {
 		if (mask & D_EMERG)
@@ -357,8 +337,11 @@ static void cfs_vprint_to_console(struct ptldebug_header *hdr,
 			pr_warn("%s: %d:%d:(%s:%d:%s()) %pV", prefix,
 				hdr->ph_pid, hdr->ph_extern_pid, file,
 				hdr->ph_line_num, fn, vaf);
-		else if (mask & (D_CONSOLE | libcfs_printk))
-			pr_info("%s: %pV", prefix, vaf);
+		else if (mask & libcfs_printk ||
+			 subsys & libcfs_subsystem_printk)
+			pr_info("%s: %d:%d:(%s:%d:%s()) %pV", prefix,
+				hdr->ph_pid, hdr->ph_extern_pid, file,
+				hdr->ph_line_num, fn, vaf);
 	}
 }
 
@@ -676,7 +659,8 @@ void libcfs_debug_msg(struct libcfs_debug_msg_data *msgdata,
 	__LASSERT(tage->used <= PAGE_SIZE);
 
 console:
-	if ((header.ph_mask & libcfs_printk) == 0) {
+	if ((header.ph_mask & libcfs_printk) == 0 &&
+	    (header.ph_subsys & libcfs_subsystem_printk) == 0) {
 		/* no console output requested */
 		if (tcd != NULL)
 			cfs_trace_put_tcd(tcd);
@@ -867,8 +851,7 @@ void cfs_trace_debug_print(void)
 			p += strlen(fn) + 1;
 			len = hdr->ph_len - (int)(p - (char *)hdr);
 
-			cfs_print_to_console(hdr, D_EMERG, file, fn,
-					     "%.*s", len, p);
+			cfs_print_to_console(hdr, file, fn, "%.*s", len, p);
 
 			p += len;
 		}
@@ -894,8 +877,7 @@ void cfs_trace_debug_print(void)
 			p += strlen(fn) + 1;
 			len = hdr->ph_len - (int)(p - (char *)hdr);
 
-			cfs_print_to_console(hdr, D_EMERG, file, fn,
-					     "%.*s", len, p);
+			cfs_print_to_console(hdr, file, fn, "%.*s", len, p);
 
 			p += len;
 		}
@@ -941,7 +923,7 @@ int cfs_tracefile_dump_all_pages(char *filename)
 		__LASSERT_TAGE_INVARIANT(tage);
 
 		buf = kmap(tage->page);
-		rc = cfs_kernel_write(filp, buf, tage->used, &filp->f_pos);
+		rc = kernel_write(filp, buf, tage->used, &filp->f_pos);
 		kunmap(tage->page);
 		if (rc != (int)tage->used) {
 			pr_warn("Lustre: wanted to write %u but wrote %d\n",
@@ -956,7 +938,7 @@ int cfs_tracefile_dump_all_pages(char *filename)
 	while ((page = list_first_entry_or_null(&daemon_pages,
 						struct page, lru)) != NULL) {
 		buf = page_address(page);
-		rc = cfs_kernel_write(filp, buf, page->private, &filp->f_pos);
+		rc = kernel_write(filp, buf, page->private, &filp->f_pos);
 		if (rc != (int)page->private) {
 			pr_warn("Lustre: wanted to write %u but wrote %d\n",
 				(int)page->private, rc);
@@ -1033,6 +1015,8 @@ int cfs_trace_dump_debug_buffer_usrstr(void __user *usr_str, int usr_str_nob)
 	char *path;
 	int rc;
 
+	if (usr_str_nob > PATH_MAX)
+		return -E2BIG;
 	str = memdup_user_nul(usr_str, usr_str_nob);
 	if (IS_ERR(str))
 		return PTR_ERR(str);
@@ -1091,6 +1075,8 @@ int cfs_trace_daemon_command_usrstr(void __user *usr_str, int usr_str_nob)
 	char *str;
 	int   rc;
 
+	if (usr_str_nob > USHRT_MAX)
+		return -E2BIG;
 	str = memdup_user_nul(usr_str, usr_str_nob);
 	if (IS_ERR(str))
 		return PTR_ERR(str);
@@ -1106,7 +1092,7 @@ int cfs_trace_set_debug_mb(int mb)
 	int i;
 	int j;
 	unsigned long pages;
-	unsigned long total_mb = (cfs_totalram_pages() >> (20 - PAGE_SHIFT));
+	unsigned long total_mb = (compat_totalram_pages() >> (20 - PAGE_SHIFT));
 	unsigned long limit = max_t(unsigned long, 512, (total_mb * 4) / 5);
 	struct cfs_trace_cpu_data *tcd;
 
@@ -1204,7 +1190,7 @@ static int tracefiled(void *arg)
 					f_pos = i_size_read(de->d_inode);
 
 				buf = kmap(tage->page);
-				rc = cfs_kernel_write(filp, buf, tage->used,
+				rc = kernel_write(filp, buf, tage->used,
 						      &f_pos);
 				kunmap(tage->page);
 				if (rc != (int)tage->used) {

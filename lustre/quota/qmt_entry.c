@@ -30,9 +30,9 @@ static void qmt_work_lvbo_free(struct work_struct *work)
 		struct qmt_pool_info *pool;
 
 		pool = (struct qmt_pool_info *)lqe->lqe_site->lqs_parent;
-		CWARN("%s: lvbo for (id=%llx) not fully inited\n",
-		      pool->qpi_qmt->qmt_svname,
-		      lqe->lqe_id.qid_uid);
+		CDEBUG(D_QUOTA, "%s: lvbo for (id=%llx) not fully inited\n",
+		       pool->qpi_qmt->qmt_svname,
+		       lqe->lqe_id.qid_uid);
 	}
 
 	/* release lqe reference */
@@ -1311,6 +1311,8 @@ void qmt_setup_lqe_gd(const struct lu_env *env, struct qmt_device *qmt,
 	bool edquot;
 	int i;
 
+	LASSERT(mutex_is_locked(&lqe->lqe_glbl_data_lock));
+
 	qunit = lqe->lqe_qunit;
 	edquot = lqe->lqe_edquot;
 
@@ -1331,17 +1333,5 @@ void qmt_setup_lqe_gd(const struct lu_env *env, struct qmt_device *qmt,
 	qmt_pool_lqes_lookup_spec(env, qmt, pool_type,
 				  lqe_qtype(lqe), &lqe->lqe_id);
 	qmt_seed_glbe(env, lgd, false);
-
-	mutex_lock(&lqe->lqe_glbl_data_lock);
-	if (lqe->lqe_glbl_data == NULL) {
-		lqe->lqe_glbl_data = lgd;
-		lgd = NULL;
-	}
-	mutex_unlock(&lqe->lqe_glbl_data_lock);
-	if (lgd)
-		qmt_free_lqe_gd(lgd);
-
-	qmt_id_lock_notify(qmt, lqe);
-
 	qti_lqes_fini(env);
 }

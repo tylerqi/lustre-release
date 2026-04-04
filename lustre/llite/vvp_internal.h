@@ -1,36 +1,18 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+/* SPDX-License-Identifier: GPL-2.0 */
+
 /*
  * Copyright (c) 2002, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2013, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * Internal definitions for VVP layer.
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
  */
 
 #ifndef VVP_INTERNAL_H
@@ -133,7 +115,7 @@ static inline struct vvp_thread_info *vvp_env_info(const struct lu_env *env)
 	return vti;
 }
 
-static inline struct cl_lock *vvp_env_lock(const struct lu_env *env)
+static inline struct cl_lock *vvp_env_new_lock(const struct lu_env *env)
 {
 	struct cl_lock *lock = &vvp_env_info(env)->vti_lock;
 
@@ -142,7 +124,7 @@ static inline struct cl_lock *vvp_env_lock(const struct lu_env *env)
 	return lock;
 }
 
-static inline struct cl_attr *vvp_env_thread_attr(const struct lu_env *env)
+static inline struct cl_attr *vvp_env_new_attr(const struct lu_env *env)
 {
 	struct cl_attr *attr = &vvp_env_info(env)->vti_attr;
 
@@ -151,7 +133,7 @@ static inline struct cl_attr *vvp_env_thread_attr(const struct lu_env *env)
 	return attr;
 }
 
-static inline struct cl_io *vvp_env_thread_io(const struct lu_env *env)
+static inline struct cl_io *vvp_env_new_io(const struct lu_env *env)
 {
 	struct cl_io *io = &vvp_env_info(env)->vti_io;
 
@@ -265,7 +247,8 @@ struct vvp_object *cl_inode2vvp(struct inode *inode);
 
 int vvp_io_init(const struct lu_env *env, struct cl_object *obj,
 		struct cl_io *io);
-int vvp_io_write_commit(const struct lu_env *env, struct cl_io *io);
+int vvp_io_write_commit(const struct lu_env *env, struct cl_io *io,
+			enum cl_io_priority prio);
 int vvp_page_init(const struct lu_env *env, struct cl_object *obj,
 		  struct cl_page *page, pgoff_t index);
 struct lu_object *vvp_object_alloc(const struct lu_env *env,
@@ -275,31 +258,12 @@ struct lu_object *vvp_object_alloc(const struct lu_env *env,
 int vvp_global_init(void);
 void vvp_global_fini(void);
 
-#if !defined(HAVE_ACCOUNT_PAGE_DIRTIED_EXPORT) || \
-defined(HAVE_KALLSYMS_LOOKUP_NAME)
-extern unsigned int (*vvp_account_page_dirtied)(struct page *page,
-						struct address_space *mapping);
-#endif
-
 #ifdef HAVE_FOLIO_MEMCG_LOCK
-#ifdef FOLIO_MEMCG_LOCK_EXPORTED
 #define folio_memcg_lock_page(page)	folio_memcg_lock(page_folio((page)))
 #define folio_memcg_unlock_page(page)	folio_memcg_unlock(page_folio((page)))
-#elif defined(HAVE_KALLSYMS_LOOKUP_NAME)
-/* Use kallsyms_lookup_name to acquire folio_memcg_[un]lock */
-extern void (*vvp_folio_memcg_lock)(struct folio *folio);
-extern void (*vvp_folio_memcg_unlock)(struct folio *folio);
-#define folio_memcg_lock_page(page) \
-	vvp_folio_memcg_lock(page_folio((page)))
-#define folio_memcg_unlock_page(page) \
-	vvp_folio_memcg_unlock(page_folio((page)))
-#endif
-#elif defined HAVE_LOCK_PAGE_MEMCG
+#else
 #define folio_memcg_lock_page(page)	lock_page_memcg((page))
 #define folio_memcg_unlock_page(page)	unlock_page_memcg((page))
-#else
-#define folio_memcg_lock_page(page)
-#define folio_memcg_unlock_page(page)
 #endif
 
 extern const struct file_operations vvp_dump_pgcache_file_ops;

@@ -48,7 +48,7 @@ int lmv_fid_alloc(const struct lu_env *env, struct obd_export *exp,
 int lmv_revalidate_slaves(struct obd_export *exp,
 			  const struct lmv_stripe_md *lsm,
 			  ldlm_blocking_callback cb_blocking,
-			  int extra_lock_flags);
+			  int extra_lock_flags, __u32 *suppgids);
 
 int lmv_getattr_name(struct obd_export *exp, struct md_op_data *op_data,
 		     struct ptlrpc_request **preq);
@@ -197,9 +197,6 @@ struct lmv_tgt_desc *lmv_locate_tgt_create(struct obd_device *obd,
 struct lmv_tgt_desc *lmv_locate_tgt(struct lmv_obd *lmv,
 				    struct md_op_data *op_data);
 int lmv_old_layout_lookup(struct lmv_obd *lmv, struct md_op_data *op_data);
-
-extern const struct rhashtable_params qos_exclude_hash_params;
-void qos_exclude_prefix_free(void *vprefix, void *data);
 
 /* lproc_lmv.c */
 int lmv_tunables_init(struct obd_device *obd);

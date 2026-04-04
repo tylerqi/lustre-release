@@ -1,40 +1,21 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * glimpse code used by vvp (and other Lustre clients in the future).
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
- *   Author: Oleg Drokin <oleg.drokin@sun.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Oleg Drokin <oleg.drokin@sun.com>
  */
 
-#include <libcfs/libcfs.h>
 #include <obd_class.h>
 #include <obd_support.h>
 #include <obd.h>
@@ -54,11 +35,13 @@ static const struct cl_lock_descr whole_file = {
 	.cld_mode  = CLM_READ
 };
 
-/*
- * Check whether file has possible unwritten pages.
+/**
+ * dirty_cnt() - Check whether file has possible unwritten pages.
+ * @inode: inode being checked for dirtyness
  *
- * \retval 1    file is mmap-ed or has dirty pages
- *         0    otherwise
+ * Return:
+ * * %1 file is mmap-ed or has dirty pages
+ * * %0 otherwise
  */
 blkcnt_t dirty_cnt(struct inode *inode)
 {
@@ -67,7 +50,7 @@ blkcnt_t dirty_cnt(struct inode *inode)
 	void *results[1];
 
 	if (inode->i_mapping != NULL)
-		cnt += radix_tree_gang_lookup_tag(&inode->i_mapping->page_tree,
+		cnt += radix_tree_gang_lookup_tag(&inode->i_mapping->i_pages,
 						  results, 0, 1,
 						  PAGECACHE_TAG_DIRTY);
 	if (cnt == 0 && atomic_read(&vob->vob_mmap_cnt) > 0)
@@ -80,7 +63,7 @@ int cl_glimpse_lock(const struct lu_env *env, struct cl_io *io,
 		    struct inode *inode, struct cl_object *clob, int agl)
 {
 	const struct lu_fid *fid = lu_object_fid(&clob->co_lu);
-	struct cl_lock *lock = vvp_env_lock(env);
+	struct cl_lock *lock = vvp_env_new_lock(env);
 	struct cl_lock_descr *descr = &lock->cll_descr;
 	int result;
 
@@ -136,17 +119,17 @@ int cl_glimpse_lock(const struct lu_env *env, struct cl_io *io,
 }
 
 /**
- * Get an IO environment for special operations such as glimpse locks and
- * manually requested locks (ladvise lockahead)
+ * cl_io_get() - Get an IO environment for special operations such as glimpse
+ * locks and manually requested locks (ladvise lockahead)
+ * @inode: inode the operation is being performed on
+ * @envout: thread specific execution environment
+ * @ioout: client io description
+ * @refcheck: reference check
  *
- * \param[in]  inode	inode the operation is being performed on
- * \param[out] envout	thread specific execution environment
- * \param[out] ioout	client io description
- * \param[out] refcheck	reference check
- *
- * \retval 1		on success
- * \retval 0		not a regular file, cannot get environment
- * \retval negative	negative errno on error
+ * Return:
+ * * %1 on success
+ * * %0 not a regular file, cannot get environment
+ * * %negative negative errno on error
  */
 int cl_io_get(struct inode *inode, struct lu_env **envout,
 	      struct cl_io **ioout, u16 *refcheck)
@@ -160,7 +143,7 @@ int cl_io_get(struct inode *inode, struct lu_env **envout,
 	if (S_ISREG(inode->i_mode)) {
 		env = cl_env_get(refcheck);
 		if (!IS_ERR(env)) {
-			io = vvp_env_thread_io(env);
+			io = vvp_env_new_io(env);
 			io->ci_obj = clob;
 			*envout = env;
 			*ioout  = io;
@@ -174,7 +157,7 @@ int cl_io_get(struct inode *inode, struct lu_env **envout,
 	return result;
 }
 
-int cl_glimpse_size0(struct inode *inode, int agl)
+int __cl_glimpse_size(struct inode *inode, int agl)
 {
 	/*
 	 * We don't need ast_flags argument to cl_glimpse_size(), because

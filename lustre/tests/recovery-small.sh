@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 
 set -e
 
@@ -480,9 +480,10 @@ test_17b() {
 	# get one of the clients from client list
 	local rcli=$(echo $RCLIENTS | cut -d ' ' -f 1)
 	local p="$TMP/$TESTSUITE-$TESTNAME.parameters"
-	local ldlm_enqueue_min=$(do_facet ost1 find /sys -name ldlm_enqueue_min)
+	local ldlm_enqueue_min=$(do_facet ost1 "find /sys/module \
+				 -name ldlm_enqueue_min")
 	[ -z "$ldlm_enqueue_min" ] &&
-		skip "missing /sys/.../ldlm_enqueue_min" && return 0
+		skip "missing /sys/module/.../ldlm_enqueue_min" && return 0
 
 	$LFS setstripe -i 0 -c 1 -S 1048576 $DIR/$tfile ||
 		error "setstripe failed"
@@ -582,7 +583,8 @@ test_18a() {
 
 	do_facet client cp $TMP/$tfile $f
 	sync
-	local osc2dev=`lctl get_param -n devices | grep ${ost2_svc}-osc- | egrep -v 'MDT' | awk '{print $1}'`
+	local osc2dev=$($LCTL get_param -n devices | grep ${ost2_svc}-osc- |
+			grep -E -v 'MDT' | awk '{print $1}')
 	$LCTL --device $osc2dev deactivate || return 3
 	# my understanding is that there should be nothing in the page
 	# cache after the client reconnects?
@@ -667,8 +669,8 @@ test_18c() {
 run_test 18c "Dropped connect reply after eviction handing (14755)"
 
 test_19a() {
-	local BEFORE=`date +%s`
-	local EVICT
+	local before=$(date +%s)
+	local evict
 
 	mount_client $DIR2 || error "failed to mount $DIR2"
 
@@ -684,19 +686,19 @@ test_19a() {
 
 	# let the client reconnect
 	client_reconnect
-	EVICT=$(do_facet client $LCTL get_param mdc.$FSNAME-MDT*.state |
+	evict=$(do_facet client $LCTL get_param mdc.$FSNAME-MDT*.state |
 		awk -F"[ [,]" '/EVICTED ]$/ \
 			{ if (mx<$5) {mx=$5;} } END { print mx }')
 
-	[ ! -z "$EVICT" ] && [[ $EVICT -gt $BEFORE ]] ||
+	[[ -n "$evict" ]] && (( $evict >= $before )) ||
 		(do_facet client $LCTL get_param mdc.$FSNAME-MDT*.state;
-		    error "no eviction: $EVICT before:$BEFORE")
+		    error "no eviction: $evict < before: $before")
 }
 run_test 19a "test expired_lock_main on mds (2867)"
 
 test_19b() {
-	local BEFORE=`date +%s`
-	local EVICT
+	local before=$(date +%s)
+	local evict
 
 	mount_client $DIR2 || error "failed to mount $DIR2: $?"
 
@@ -714,13 +716,13 @@ test_19b() {
 
 	# let the client reconnect
 	client_reconnect
-	EVICT=$(do_facet client $LCTL get_param osc.$FSNAME-OST*.state |
+	evict=$(do_facet client $LCTL get_param osc.$FSNAME-OST*.state |
 		awk -F"[ [,]" '/EVICTED ]$/ \
 			{ if (mx < $5) {mx = $5;} } END { print mx }')
 
-	[ ! -z "$EVICT" ] && [[ $EVICT -gt $BEFORE ]] ||
+	[[ -n "$evict" ]] && (( $evict >= $before )) ||
 		(do_facet client $LCTL get_param osc.$FSNAME-OST*.state;
-		    error "no eviction: $EVICT before:$BEFORE")
+		    error "no eviction: $evict < before: $before")
 }
 run_test 19b "test expired_lock_main on ost (2867)"
 
@@ -1081,6 +1083,12 @@ test_26a() {      # was test_26 bug 5921 - evict dead exports by pinger
 
 	# make sure all imports are connected and not IDLE
 	do_facet client lfs df > /dev/null
+	# make sure client will not be discarded by server due to LU-14708
+	$LFS setstripe -c -1 -S 64K $MOUNT/$tfile
+	dd if=/dev/zero of=$MOUNT/$tfile bs=64K count=$OSTCOUNT oflag=sync ||
+		error "dd failed"
+	sync; sleep 5; sync
+
 # OBD_FAIL_PTLRPC_DROP_RPC 0x505
 	do_facet client lctl set_param fail_loc=0x505
 	local before=$(date +%s)
@@ -1118,33 +1126,50 @@ test_26b() {      # bug 10140 - evict dead exports by pinger
 
 	check_timeout || return 1
 	clients_up
+
+	# must be equal on all the nodes
+	local INTERVAL=$(do_facet $SINGLEMDS lctl get_param -n ping_interval)
+	local AT_MAX_SAVED=$(at_max_get mds1)
+	local ENQUEUE_MIN=$(do_facet $SINGLEMDS \
+		lctl get_param -n ldlm.ldlm_enqueue_min)
+
+	# set it before the new export got its first exp_deadline,
+	# in case it is large, small at_max has no effect on it.
+	at_max_set $TIMEOUT mds1
+	at_max_set $TIMEOUT ost1
+	stack_trap "at_max_set $AT_MAX_SAVED mds1" EXIT
+	stack_trap "at_max_set $AT_MAX_SAVED ost1" EXIT
+
 	zconf_mount $HOSTNAME $MOUNT2 ||
                 { error "Failed to mount $MOUNT2"; return 2; }
 	# make sure all imports are connected and not IDLE
-	do_facet client $LFS df > /dev/null
-	$LFS setstripe -c -1 $MOUNT/$tfile
+	wait_clients_import_state $HOSTNAME mds1 FULL
+	wait_clients_import_state $HOSTNAME ost1 FULL
 
 	local mds_nexp=$(do_facet mds1 \
 		lctl get_param -n mdt.${mds1_svc}.num_exports)
 	local ost_nexp=$(do_facet ost1 \
 		lctl get_param -n obdfilter.${ost1_svc}.num_exports)
 
+	mkdir_on_mdt0 $DIR/$tdir
+	$LFS setstripe -c -1 $MOUNT2/$tdir/$tfile
+
 	echo "starting with '$ost_nexp' OST and '$mds_nexp' MDS exports"
 
 	zconf_umount $HOSTNAME $MOUNT2 -f
 
-	# PING_INTERVAL max(obd_timeout / 4, 1U)
-	# PING_EVICT_TIMEOUT (PING_INTERVAL * 6)
+	# see ptlrpc_export_timeout() for the pinger case
+	local TOUT=$(((INTERVAL * 2) + TIMEOUT))
+	TOUT=$((TOUT + TIMEOUT + (TIMEOUT >> 2) + 5))
+	TOUT=$((TOUT + (TIMEOUT/20) + TIMEOUT))
+	TOUT=$((TOUT + (TOUT >> 4)))
+	# take a bit more the test sake
+	TOUT=$(((TOUT > ENQUEUE_MIN ? TOUT : ENQUEUE_MIN) + 5))
+	echo i $INTERVAL m $AT_MAX_SAVED t $TIMEOUT e $ENQUEUE_MIN wait $TOUT
 
-	# evictor takes PING_EVICT_TIMEOUT to evict.
-	# But if there's a race to start the evictor from various obds,
-	# the loser might have to wait for the next ping.
-	# = 6 * PING_INTERVAL + PING_INTERVAL
-	# = 7 PING_INTERVAL = 7 obd_timeout / 4 =  (1+3/4)obd_timeout
-	# let's wait $((TIMEOUT * 2)) # bug 19887
-	wait_client_evicted ost1 $ost_nexp $((TIMEOUT * 2)) ||
+	wait_client_evicted ost1 $ost_nexp $TOUT ||
 		error "Client was not evicted by OSS"
-	wait_client_evicted mds1 $mds_nexp $((TIMEOUT * 2)) ||
+	wait_client_evicted mds1 $mds_nexp $TOUT ||
 		error "Client was not evicted by MDS"
 }
 run_test 26b "evict dead exports"
@@ -1333,7 +1358,7 @@ test_54() {
 	cat $DIR2/$tfile.missing # save transno = 0, rc != 0 into last_rcvd
 	fail $SINGLEMDS
 	umount $MOUNT2
-	ERROR=$(dmesg | egrep "(test 54|went back in time)" | tail -n1 |
+	ERROR=$(dmesg | grep -E "(test 54|went back in time)" | tail -n1 |
 		grep "went back in time")
 	[ x"$ERROR" == x ] || error "back in time occured"
 }
@@ -1598,8 +1623,6 @@ test_66()
 	[[ "$MDS1_VERSION" -ge $(version_code 2.7.51) ]] ||
 		skip "Need MDS version at least 2.7.51"
 
-	local list=$(comma_list $(osts_nodes))
-
 	# modify dir so that next revalidate would not obtain UPDATE lock
 	touch $DIR
 
@@ -1610,7 +1633,7 @@ test_66()
 
 	# make the re-sent lock to sleep
 #define OBD_FAIL_MDS_RESEND              0x136
-	do_nodes $list $LCTL set_param fail_loc=0x80000136
+	do_nodes $(osts_nodes) $LCTL set_param fail_loc=0x80000136
 
 	#initiate the re-connect & re-send
 	local mdtname="MDT0000"
@@ -2635,6 +2658,7 @@ run_test 113 "ldlm enqueue dropped reply should not cause deadlocks"
 T130_PID=0
 test_130_base() {
 	test_mkdir -p -c1 $DIR/$tdir
+	local mdts=$(mdts_nodes)
 
 	# Prevent interference from layout intent RPCs due to
 	# asynchronous writeback. These will be tested in 130c below.
@@ -2651,7 +2675,7 @@ test_130_base() {
 	# complete; but later than getattr starts so that getattr found
 	# the object
 #define OBD_FAIL_MDS_INTENT_DELAY		0x160
-	set_nodes_failloc "$(mdts_nodes)" 0x80000160
+	set_nodes_failloc $mdts 0x80000160
 	stat $DIR/$tdir &
 	T130_PID=$!
 	sleep 2
@@ -2660,7 +2684,7 @@ test_130_base() {
 
 	# drop the reply so that resend happens on an unlinked file.
 #define OBD_FAIL_MDS_LDLM_REPLY_NET	 0x157
-	set_nodes_failloc "$(mdts_nodes)" 0x80000157
+	set_nodes_failloc $mdts 0x80000157
 }
 
 test_130a() {
@@ -2694,6 +2718,7 @@ run_test 130b "enqueue resend on a stale inode"
 
 test_130c() {
 	remote_mds_nodsh && skip "remote MDS with nodsh" && return
+	local mdts=$(mdts_nodes)
 
 	do_nodes ${CLIENTS:-$HOSTNAME} sync
 	echo XXX > $DIR/$tfile
@@ -2707,7 +2732,7 @@ test_130c() {
 	# complete; but later than intent starts so that intent found
 	# the object
 #define OBD_FAIL_MDS_INTENT_DELAY		0x160
-	set_nodes_failloc "$(mdts_nodes)" 0x80000160
+	set_nodes_failloc $mdts 0x80000160
 	sync &
 	T130_PID=$!
 	sleep 2
@@ -2716,13 +2741,13 @@ test_130c() {
 
 	# drop the reply so that resend happens on an unlinked file.
 #define OBD_FAIL_MDS_LDLM_REPLY_NET	 0x157
-	set_nodes_failloc "$(mdts_nodes)" 0x80000157
+	set_nodes_failloc $mdts 0x80000157
 
 	# let the reply to be dropped
 	sleep 10
 
 #define OBD_FAIL_SRV_ENOENT              0x217
-	set_nodes_failloc "$(mdts_nodes)" 0x80000217
+	set_nodes_failloc $mdts 0x80000217
 
 	wait $T130_PID
 
@@ -2775,16 +2800,16 @@ test_131() {
 
 	# another IO under the same lock
 	#define OBD_FAIL_OSC_DELAY_IO            0x414
-	$LCTL set_param fail_loc=0x80000414
-	$LCTL set_param fail_val=4 fail_loc=0x80000414
+	$LCTL set_param fail_loc=0x80000414 fail_val=10
 	dd if=/dev/zero of=$DIR/$tfile count=1 conv=notrunc oflag=dsync &
 	local pid=$!
-	sleep 1
+	sleep 0.2
 
 	#define OBD_FAIL_LDLM_BL_EVICT           0x31e
 	set_nodes_failloc "$(osts_nodes)" 0x8000031e
 	ost_evict_client
 	client_reconnect
+	$LCTL set_param fail_loc=0
 
 	wait $pid && error "dd succeeded"
 	return 0
@@ -2792,8 +2817,6 @@ test_131() {
 run_test 131 "IO vs evict results to IO under staled lock"
 
 test_133() {
-	local list=$(comma_list $(mdts_nodes))
-
 	local t=$((TIMEOUT * 2))
 	touch $DIR/$tfile
 
@@ -2803,7 +2826,7 @@ test_133() {
 	PID=$!
 
 	#define OBD_FAIL_MDS_LDLM_REPLY_NET 0x157
-	do_nodes $list $LCTL set_param fail_loc=0x80000157
+	do_nodes $(mdts_nodes) $LCTL set_param fail_loc=0x80000157
 	kill -USR1 $PID
 	echo "waiting for multiop $PID"
 	wait $PID || return 2
@@ -2852,7 +2875,7 @@ test_135() {
 	# to have parent dir write lock before open/resend
 	touch $DIR/$tdir/$tfile
 	#define OBD_FAIL_MDS_LDLM_REPLY_NET 0x157
-	do_nodes $(comma_list $(mdts_nodes)) $LCTL set_param fail_loc=0x80000157
+	do_nodes $(mdts_nodes) "$LCTL set_param fail_loc=0x80000157"
 	openfile -f O_RDWR:O_CREAT -m 0755 $DIR/$tdir/$tfile ||
 		error "Failed to open DOM file"
 }
@@ -3127,14 +3150,15 @@ test_144a() {
 	local before
 	local after
 	local diff
+	local mdts=$(mdts_nodes)
 
 	large_xattr_enabled || skip_env "ea_inode feature disabled"
 	test_mkdir -i 0 -c 1 -p $DIR/$tdir
 	stack_trap "rm -rf $DIR/$tdir" EXIT
 
 	mds_timeout=$(do_facet mds1 $LCTL get_param -n timeout)
-	do_nodes $(comma_list $(mdts_nodes)) $LCTL set_param timeout=300
-	stack_trap "do_nodes $(comma_list $(mdts_nodes)) $LCTL set_param timeout=$mds_timeout" EXIT
+	do_nodes $mdts "$LCTL set_param timeout=300"
+	stack_trap "do_nodes $mdts $LCTL set_param timeout=$mds_timeout"
 
 	$LFS setstripe -i 0 -C $setcount $DIR/$tdir || error "setstripe failed"
 
@@ -3175,14 +3199,15 @@ test_144b() {
 	local rc=0
 	local setcount=1000
 	local mds_timeout
+	local mdts=$(mdts_nodes)
 
 	large_xattr_enabled || skip_env "ea_inode feature disabled"
 	test_mkdir -i 0 -c 1 -p $DIR/$tdir
 	stack_trap "rm -rf $DIR/$tdir" EXIT
 
 	mds_timeout=$(do_facet mds1 $LCTL get_param -n timeout)
-	do_nodes $(comma_list $(mdts_nodes)) $LCTL set_param timeout=300
-	stack_trap "do_nodes $(comma_list $(mdts_nodes)) $LCTL set_param timeout=$mds_timeout" EXIT
+	do_nodes $mdts "$LCTL set_param timeout=300"
+	stack_trap "do_nodes $mdts $LCTL set_param timeout=$mds_timeout"
 
 	$LFS setstripe -i 0 -C $setcount $DIR/$tdir || error "setstripe failed"
 
@@ -3589,14 +3614,17 @@ test_154b() {
 run_test 154b "restore update llog after failed recovery"
 
 test_155() {
-	(( MDS1_VERSION >= $(version_code 2.15.58.110) )) ||
-		skip "need MDS >= v2_15_58-110-g71f8e5d6506f for ptlrpc fix"
+	(( MDS1_VERSION >= $(version_code v2_15_58-110-g71f8e5d6506f) )) ||
+		skip "need MDS >= 2.15.58.110 for ptlrpc fix"
 
-	local lsoutput1
+	sync; cancel_lru_locks
+	local lsoutput1=$(mktemp -p ${TMP:-/tmp} $TESTNAME.1.XXXXXX})
+	local lsoutput2=$(mktemp -p ${TMP:-/tmp} $TESTNAME.2.XXXXXX})
 	local lsoutput2
 
-	touch $DIR/$tfile
-	lsoutput1=$(ls -l $DIR)
+	touch $DIR/$tfile || error "creating $tfile"
+	ls -l $DIR > $lsoutput1 || error "ls1 failed"
+	stack_trap "rm -f $lsoutput1 $lsoutput2"
 
 	zconf_umount $HOSTNAME $MOUNT || error "umount failed"
 	# make sure that last_rcvd update is committed
@@ -3607,8 +3635,8 @@ test_155() {
 
 	fail_nodf mds1
 
-	lsoutput2=$(ls -l $DIR) || error "ls failed"
-	[[ $lsoutput1 == $lsoutput2 ]] || error "$lsoutput1 != $lsoutput2"
+	ls -l $DIR > $lsoutput2 || error "ls2 failed"
+	diff -wu0 $lsoutput1 $lsoutput2 || error "ls1 != ls2"
 }
 run_test 155 "failover after client remount"
 
@@ -3746,19 +3774,16 @@ test_160() {
 	mds_evict_client
 	client_reconnect
 
-	local step=3
-	for ((i = 1; i <= $((timeout / step + 1)); i++)); do
-		do_facet mds1 $LCTL get_param osp.$FSNAME-OST0000-osc-MDT0000.destroys_in_flight
-		sleep $step
-	done
-	local rc=$(do_facet mds1 $LCTL get_param -n osp.$FSNAME-OST0000-osc-MDT0000.destroys_in_flight)
+	wait_update_facet_cond --verbose mds1 \
+		"$LCTL get_param -n osp.$FSNAME-OST0000-osc-MDT0000.destroys_in_flight" \
+		"-le" "2" $((timeout * 3))
+	local rc=$?
 	do_facet mds1 $LCTL get_param osp.$FSNAME-OST0000-osc-MDT0000.error_list
-	echo inflight $rc
 	for ((i = 1; i <= threads; i++)); do
 		kill -USR1 ${pids[$i]} && wait ${pids[$i]}
 	done
 
-	(( $rc <= 2 )) || error "destroying OST objects are blocked $rc"
+	(( rc == 0 )) || error "destroying OST objects are blocked"
 
 	#without group lock, wait and check if all objects are destroyed
 	sleep $((timeout * 3))
@@ -3770,6 +3795,98 @@ test_160() {
 	(( $rc == 0 )) || error "$rc destroys in flight"
 }
 run_test 160 "MDT destroys are blocked by grouplocks"
+
+test_161() {
+	[[ $MDSCOUNT -lt 2 ]] && skip_env "needs >= 2 MDTs"
+	local ping_interval=$($LCTL get_param -n ping_interval)
+	local evict_multiplier=$($LCTL get_param -n evict_multiplier)
+	local pause=$((ping_interval * (evict_multiplier + 2)))
+
+	#define OBD_FAIL_OBD_PAUSE_EVICTOR	    0x60f
+	do_facet mds1 $LCTL set_param fail_loc=0x8000060f
+
+	$LFS mkdir -i 1 $DIR/$tdir || error "mkdir $tdir"
+	$LFS mkdir -i 0 $DIR/$tdir/remote || error "mkdir $tdir/remote"
+
+	echo sleep $pause seconds
+	sleep $pause
+	rmdir $DIR/$tdir/remote || error "rmdir $tdir/remote"
+}
+run_test 161 "evict osp by ping evictor"
+
+test_162() {
+	(( $MDS1_VERSION >= $(version_code 2.16.55) )) ||
+		skip "Need MDS version at least 2.16.55 for file attribute fix"
+
+	local mntpt=$(facet_mntpt $SINGLEMDS)
+
+	test_mkdir -i 0 -c 1 $DIR/$tdir
+	$LFS setstripe -c 1 -i 0 $DIR/$tdir
+
+	local wfile=$DIR/$tdir/$tfile
+	local rstr="aAdDiPST"
+
+	stack_trap "chattr -$rstr $wfile; rm -rf $DIR/$tdir" EXIT
+
+	touch $wfile
+	for ((i = 0; i < ${#rstr[0]}; i++)); do
+		local c=${rstr:i:1}
+
+		chattr +$c $wfile || error "Flag [$c] should succeed"
+	done
+
+	local attr1=($(lsattr $wfile))
+	echo $attr1
+
+	[[ -n ${attr1//-/} ]] || error "lsattr failed: $(lsattr $wfile)"
+
+	stop mds1
+	start mds1 $(mdsdevname 1) $MDS_MOUNT_OPTS || error "mds1 start fail"
+
+	wait_recovery_complete $SINGLEMDS || error "MDS recovery not done"
+
+	local attr2=($(lsattr $wfile))
+	echo $attr2
+	[[ "$attr1" == "$attr2" ]] ||
+		error "'$attr1' different with '$attr2'"
+
+}
+run_test 162 "File attributes should be persisted after MDS failover"
+
+test_163() {
+	remote_mds_nodsh && skip "remote MDS with nodsh"
+	(( "$MDS1_VERSION" >= $(version_code 2.16.54) )) ||
+		skip "Need MDS version at least 2.16.54 to skip llog holes"
+
+	local mdtidx
+	local mdtsvc
+
+	changelog_register || error "changelog_register failed"
+	stack_trap changelog_deregister EXIT
+	test_mkdir -c 0 $DIR/$tdir || error "mkdir $tdir failed"
+	mdtidx=$(($($LFS getdirstripe -i $DIR/$tdir) + 1))
+	mdtsvc=$(facet_svc mds$mdtidx)
+	echo mds$mdtidx $mdtsvc
+
+	cl_mask=$(do_facet mds$mdtidx $LCTL get_param mdd.$mdtsvc.changelog_mask -n)
+	changelog_chmask "ALL"
+	stack_trap "do_facet mds$mdtidx \
+		$LCTL set_param mdd.$mdtsvc.changelog_mask=\'$cl_mask\' -n" EXIT
+
+	#define OBD_FAIL_MDS_CHANGELOG_FAIL_WRITE			0x18f
+	do_facet mds$mdtidx $LCTL set_param fail_loc=0x18f fail_val=30
+
+	# generate some changelog records to create a gap every 31 index
+	for (( i = 0; i < 10; i++)); do
+		createmany -m $DIR/$tdir/$tfile_$i 40 &
+	done
+
+	# Check changelog gap processing without a jump to a next chunk
+	changelog_dump | awk -F'[ .]' '{if(prev != "" && $2 - prev > 2) \
+			{print"Errot between "prev" and "$2; exit 1}prev=$2}' ||
+			error "Found a gap"
+}
+run_test 163 "changelog check for fail write and processing records"
 
 complete_test $SECONDS
 check_and_cleanup_lustre

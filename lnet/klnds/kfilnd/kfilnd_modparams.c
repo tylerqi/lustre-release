@@ -16,6 +16,10 @@ unsigned int cksum;
 module_param(cksum, uint, 0444);
 MODULE_PARM_DESC(cksum, "Enable checksums for non-zero messages (not RDMA)");
 
+int kfi_timeout = KFILND_TIMEOUT_DEFAULT;
+module_param(kfi_timeout, int, 0644);
+MODULE_PARM_DESC(kfi_timeout, "KFI LND timeout (seconds)");
+
 /* Scale factor for TX context queue depth. The factor is applied to the number
  * of credits to determine queue depth.
  */
@@ -75,6 +79,16 @@ static int peer_credits = 16;
 module_param(peer_credits, int, 0444);
 MODULE_PARM_DESC(peer_credits, "Number of concurrent sends to 1 peer");
 
+static int tn_reserve_min = -1;
+module_param(tn_reserve_min, int, 0644);
+MODULE_PARM_DESC(tn_reserve_min,
+		 "Transaction mempool reserve size (-1 for auto: peer_credits * num_cpts * 2)");
+
+static int msg_reserve_min = -1;
+module_param(msg_reserve_min, int, 0644);
+MODULE_PARM_DESC(msg_reserve_min,
+		 "Message buffer mempool reserve size (-1 for auto: peer_credits * num_cpts * 2)");
+
 static int peer_buffer_credits = -1;
 module_param(peer_buffer_credits, int, 0444);
 MODULE_PARM_DESC(peer_buffer_credits,
@@ -103,6 +117,8 @@ static char *traffic_class = "best_effort";
 module_param(traffic_class, charp, 0444);
 MODULE_PARM_DESC(traffic_class, "Traffic class - default is \"best_effort\"");
 
+struct lnet_ioctl_config_kfilnd_tunables kfi_default_tunables;
+
 static int
 kfilnd_tcstr2num(char *tcstr)
 {
@@ -121,13 +137,10 @@ kfilnd_tcstr2num(char *tcstr)
 	return -1;
 }
 
-int kfilnd_tunables_setup(struct lnet_ni *ni)
+int kfilnd_tunables_setup(struct lnet_lnd_tunables *lnd_tunables, bool set,
+			  struct lnet_ioctl_config_lnd_cmn_tunables *net_tunables)
 {
-	struct lnet_ioctl_config_lnd_cmn_tunables *net_tunables;
 	struct lnet_ioctl_config_kfilnd_tunables *kfilnd_tunables;
-
-	net_tunables = &ni->ni_net->net_tunables;
-	kfilnd_tunables = &ni->ni_lnd_tunables.lnd_tun_u.lnd_kfi;
 
 	if (net_tunables->lct_peer_timeout == -1)
 		net_tunables->lct_peer_timeout = peer_timeout;
@@ -146,8 +159,9 @@ int kfilnd_tunables_setup(struct lnet_ni *ni)
 		net_tunables->lct_peer_tx_credits =
 			net_tunables->lct_max_tx_credits;
 
+	kfilnd_tunables = &lnd_tunables->lnd_tun_u.lnd_kfi;
 	kfilnd_tunables->lnd_version = KFILND_MSG_VERSION;
-	if (!ni->ni_lnd_tunables_set) {
+	if (!set) {
 		kfilnd_tunables->lnd_prov_major_version = prov_major_version;
 		kfilnd_tunables->lnd_prov_minor_version = prov_minor_version;
 		kfilnd_tunables->lnd_auth_key = auth_key;
@@ -196,6 +210,8 @@ int kfilnd_tunables_setup(struct lnet_ni *ni)
 		return -EINVAL;
 	}
 
+	kfilnd_tunables->lnd_timeout = kfilnd_timeout();
+
 	return 0;
 }
 
@@ -239,11 +255,41 @@ int kfilnd_tunables_init(void)
 		return -EINVAL;
 	}
 
+	if (strlen(traffic_class) >= LNET_MAX_STR_LEN ||
+	    strlen(traffic_class) == 0) {
+		CERROR("Traffic class length is invalid\n");
+		return -EINVAL;
+	}
+
 	if (kfilnd_tcstr2num(traffic_class) == -1) {
 		CERROR("Invalid traffic_class \"%s\" - Valid values are: best_effort, low_latency, dedicated_access, bulk_data, scavenger, and network_ctrl\n",
 		       traffic_class);
 		return -EINVAL;
 	}
 
+	kfi_default_tunables.lnd_version = KFILND_MSG_VERSION;
+	kfi_default_tunables.lnd_prov_major_version = prov_major_version;
+	kfi_default_tunables.lnd_prov_minor_version = prov_minor_version;
+	kfi_default_tunables.lnd_auth_key = auth_key;
+	strscpy(&kfi_default_tunables.lnd_traffic_class_str[0], traffic_class,
+		sizeof(kfi_default_tunables.lnd_traffic_class_str));
+	kfi_default_tunables.lnd_traffic_class = kfilnd_tcstr2num(traffic_class);
+	kfi_default_tunables.lnd_timeout = kfilnd_timeout();
+
 	return 0;
+}
+
+int kfilnd_get_tn_reserve_min(void)
+{
+	return tn_reserve_min;
+}
+
+int kfilnd_get_msg_reserve_min(void)
+{
+	return msg_reserve_min;
+}
+
+int kfilnd_get_peer_credits(void)
+{
+	return peer_credits;
 }

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/bash
 #
 # Run select tests by setting ONLY, or as arguments to the script.
 # Skip specific tests by setting EXCEPT.
@@ -56,7 +56,9 @@ fi
 
 if [[ -r /etc/redhat-release ]]; then
 	rhel_version=$(sed -e 's/[^0-9.]*//g' /etc/redhat-release)
-	if (( $(version_code $rhel_version) >= $(version_code 9.3.0) )); then
+	if (( $(version_code $rhel_version) >= $(version_code 9.7.0) )); then
+		always_except LU-19430 6 7b 35 102
+	elif (( $(version_code $rhel_version) >= $(version_code 9.3.0) )); then
 		always_except LU-17289 102          # fio io_uring
 		always_except LU-17781 33	    # inconsistent LSOM
 	elif (( $(version_code $rhel_version) >= $(version_code 8.9.0) )); then
@@ -131,7 +133,7 @@ lpcc_fid2path()
 {
 	local hsm_root="$1"
 	local lustre_path="$2"
-	local fid=$(path2fid $lustre_path)
+	local fid=${3:-$(path2fid $lustre_path)}
 
 	local seq=$(echo $fid | awk -F ':' '{print $1}')
 	local oid=$(echo $fid | awk -F ':' '{print $2}')
@@ -273,6 +275,45 @@ setup_loopdev_project() {
 		error "mount -o loop,prjquota $file $mntpt failed"
 	stack_trap "umount_loopdev $facet $mntpt" EXIT
 	do_facet $facet mount | grep $mntpt
+}
+
+setup_dummy_key() {
+	local mode='\x00\x00\x00\x00'
+	local raw="$(printf ""\\\\x%02x"" {0..63})"
+	local size
+	local key
+
+	[[ $(lscpu) =~ Byte\ Order.*Little ]] && size='\x40\x00\x00\x00' ||
+		size='\x00\x00\x00\x40'
+	key="${mode}${raw}${size}"
+	do_facet $SINGLEAGT "echo -en '${key}' |
+		keyctl padd logon fscrypt:4242424242424242 @u"
+}
+
+setup_for_enc_tests() {
+	local agthost=${SINGLEAGT}_HOST
+
+	# remount client with test_dummy_encryption option
+	zconf_umount ${!agthost} $MOUNT ||
+		error "umount $SINGLEAGT $MOUNT failed"
+	zconf_mount ${!agthost} $MOUNT ${MOUNT_OPTS},test_dummy_encryption ||
+		error "mount $SINGLEAGT with '-o test_dummy_encryption' failed"
+
+	setup_dummy_key
+
+	# this directory will be encrypted, because of dummy mode
+	do_facet $SINGLEAGT mkdir $DIR/$tdir || error "mkdir $DIR/$tdir failed"
+}
+
+cleanup_for_enc_tests() {
+	local agthost=${SINGLEAGT}_HOST
+
+	do_facet $SINGLEAGT rm -rf $DIR/$tdir
+	# remount client normally
+	zconf_umount ${!agthost} $MOUNT ||
+		error "umount $SINGLEAGT $MOUNT failed"
+	zconf_mount ${!agthost} $MOUNT ||
+		error "remount $SINGLEAGT failed"
 }
 
 lpcc_rw_test() {
@@ -2110,6 +2151,93 @@ test_21i() {
 }
 run_test 21i "HSM release increase layout gen, should invalidate PCC-RO cache"
 
+test_21j() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local tmpfile=$TMP/abc
+	local file=$DIR/$tdir/$tfile
+	local scrambledfile
+	local lpcc_path
+	local size
+	local fid
+	local key
+
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
+	$LCTL get_param mdc.*.import | grep -q client_encryption ||
+		skip "client encryption not supported"
+
+	mount.lustre --help |& grep -q "test_dummy_encryption:" ||
+		skip "need dummy encryption support"
+
+	setup_loopdev $SINGLEAGT $loopfile $mntpt 50
+	stack_trap cleanup_for_enc_tests EXIT
+	setup_for_enc_tests
+	copytool setup -m "$MOUNT" -a "$HSM_ARCHIVE_NUMBER"
+	setup_pcc_mapping
+
+	do_facet $SINGLEAGT "yes 1 | dd of=$tmpfile bs=1 count=5000 conv=fsync"
+	do_facet $SINGLEAGT cp $tmpfile $file
+	do_facet $SINGLEAGT $LFS getstripe $file
+	do_facet $SINGLEAGT $LFS pcc attach -r -i $HSM_ARCHIVE_NUMBER $file ||
+		error "failed to PCC-RO attach file $file"
+	check_lpcc_state $file "readonly"
+	echo "PCC-RO attach '$file':"
+	do_facet $SINGLEAGT $LFS getstripe -v $file
+
+	do_facet $SINGLEAGT cmp -bl $tmpfile $file ||
+		error "file $file is corrupted (1)"
+	fid=$(do_facet $SINGLEAGT lfs path2fid $file | tr -d '[]')
+	lpcc_path=$(lpcc_fid2path $hsm_root $file $fid)
+	do_facet $SINGLEAGT cmp -bl -n 4096 $tmpfile $lpcc_path ||
+		error "file $lpcc_path is corrupted (2)"
+
+	do_facet $SINGLEAGT $LFS pcc detach -k $file ||
+		error "failed to PCC-RO detach file $file"
+	do_facet $SINGLEAGT cmp -s -n 4096 $tmpfile $lpcc_path &&
+		error "file $lpcc_path is corrupted (3)"
+
+	size=$(do_facet $SINGLEAGT stat "--printf=%s" $lpcc_path)
+	[ $size == 8192 ] || error "PCC file $lpcc_path incorrect size $size"
+
+	do_facet $SINGLEAGT cmp -bl $tmpfile $file ||
+		error "file $file is corrupted (4)"
+	do_facet $SINGLEAGT cmp -bl -n 4096 $tmpfile $lpcc_path ||
+		error "file $lpcc_path is corrupted (5)"
+
+	do_facet $SINGLEAGT cp $tmpfile ${file}_2
+	do_facet $SINGLEAGT $LFS getstripe ${file}_2
+	do_facet $SINGLEAGT $LFS pcc attach -r -i $HSM_ARCHIVE_NUMBER ${file}_2 ||
+		error "failed to PCC-RO attach file ${file}_2"
+	check_lpcc_state ${file}_2 "readonly"
+	echo "PCC-RO attach '${file}_2':"
+	do_facet $SINGLEAGT $LFS getstripe -v ${file}_2
+
+	do_facet $SINGLEAGT $LFS pcc detach ${file}_2 ||
+		error "failed to PCC-RO detach file ${file}_2"
+	do_facet $SINGLEAGT cmp -bl $tmpfile ${file}_2 ||
+		error "file ${file}_2 is corrupted (6)"
+	rm -f ${file}_2
+
+	# remove fscrypt key from keyring
+	key=$(do_facet $SINGLEAGT keyctl show |
+				  awk '$7 ~ "^fscrypt:" {print $1}')
+	[ -n "$key" ] || error "fscrypt key empty on $SINGLEAGT"
+	do_facet $SINGLEAGT keyctl revoke $key
+	do_facet $SINGLEAGT keyctl reap
+	do_facet $SINGLEAGT $LCTL set_param -n ldlm.namespaces.*.lru_size=clear
+
+	scrambledfile=$(do_facet $SINGLEAGT find $DIR/$tdir/ \
+					    -maxdepth 1 -mindepth 1 -type f)
+	do_facet $SINGLEAGT $LFS pcc detach -k $scrambledfile ||
+		error "failed to PCC-RO detach file $scrambledfile (2)"
+
+	do_facet $SINGLEAGT rm -f $tmpfile
+}
+run_test 21j "PCC-RO for encrypted file"
+
 test_22() {
 	local loopfile="$TMP/$tfile"
 	local mntpt="/mnt/pcc.$tdir"
@@ -2779,7 +2907,7 @@ test_31() {
 
 	file=$DIR/$tdir/roattach
 	echo -n backend_del_roattach_rm > $file
-	lpcc_path3=$(lpcc_fid2path $hsm_root $file "readonly")
+	lpcc_path3=$(lpcc_fid2path $hsm_root $file)
 	do_facet $SINGLEAGT $LFS pcc attach -r -i $HSM_ARCHIVE_NUMBER $file ||
 		error "RO-PCC attach $file failed"
 	check_lpcc_state $file "readonly"
@@ -2817,7 +2945,7 @@ test_32() {
 		"projid={100}\ rwid=$HSM_ARCHIVE_NUMBER\ auto_attach=0"
 
 	do_facet $SINGLEAGT echo -n roattach_removed > $file
-	lpcc_path=$(lpcc_fid2path $hsm_root $file "readonly")
+	lpcc_path=$(lpcc_fid2path $hsm_root $file)
 	do_facet $SINGLEAGT $LFS pcc attach -r -i $HSM_ARCHIVE_NUMBER $file ||
 		error "RO-PCC attach $file failed"
 	rmultiop_start $agt_host $file o_rc || error "multiop $file failed"
@@ -3681,6 +3809,9 @@ test_48() {
 	local file=$DIR/$tfile
 	local -a lpcc_path
 
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
 	setup_loopdev client $loopfile $mntpt 60
 	mkdir $hsm_root || error "mkdir $hsm_root failed"
 	setup_pcc_mapping client \
@@ -3994,6 +4125,7 @@ test_99() {
 	local mntpt="/mnt/pcc.$tdir"
 	local hsm_root="$mntpt/$tdir"
 	local file=$DIR/$tfile
+	local cnt=50
 
 	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
 		skip "Server does not support PCC-RO"
@@ -4004,7 +4136,7 @@ test_99() {
 		"projid={0}\ roid=$HSM_ARCHIVE_NUMBER\ pccro=1"
 	do_facet $SINGLEAGT $LCTL pcc list $MOUNT
 
-	do_facet $SINGLEAGT dd if=/dev/zero of=$file bs=1M count=50 ||
+	do_facet $SINGLEAGT dd if=/dev/zero of=$file bs=1M count=$cnt ||
 		error "Write $file failed"
 
 	local rpid
@@ -4014,27 +4146,33 @@ test_99() {
 	local dpid
 	local lpcc_path
 
+	local lckf=$DIR/$tfile.lck
+
+	rm -f $lckf
 	lpcc_path=$(lpcc_fid2path $hsm_root $file)
 	(
-		while [ ! -e $DIR/sanity-pcc.99.lck ]; do
-			do_facet $SINGLEAGT dd if=/dev/zero of=$file bs=1M count=50 conv=notrunc ||
+		while [ ! -e $lckf ]; do
+			do_facet $SINGLEAGT dd if=/dev/zero of=$file bs=1M count=$cnt conv=notrunc || {
+				touch $lckf
 				error "failed to write $file"
+			}
 			sleep 0.$((RANDOM % 4 + 1))
 		done
 	)&
 	wpid=$!
 
 	(
-		while [ ! -e $DIR/sanity-pcc.99.lck ]; do
-			do_facet $SINGLEAGT dd if=$file of=/dev/null bs=1M count=50 ||
-				error "failed to write $file"
+		while [ ! -e $lckf ]; do
+			echo "Read $file ..."
+			do_facet $SINGLEAGT dd if=$file of=/dev/null bs=1M count=$cnt ||
+				error "failed to read $file"
 			sleep 0.$((RANDOM % 4 + 1))
 		done
 	)&
 	rpid=$!
 
 	(
-		while [ ! -e $DIR/sanity-pcc.99.lck ]; do
+		while [ ! -e $lckf ]; do
 			do_facet $SINGLEAGT $MMAP_CAT $file > /dev/null ||
 				error "failed to mmap_cat $file"
 			sleep 0.$((RANDOM % 4 + 1))
@@ -4043,7 +4181,7 @@ test_99() {
 	rpid2=$!
 
 	(
-		while [ ! -e $DIR/sanity-pcc.99.lck ]; do
+		while [ ! -e $lckf ]; do
 			echo "Unlink $lpcc_path"
 			do_facet $SINGLEAGT unlink $lpcc_path
 			sleep 1
@@ -4053,7 +4191,7 @@ test_99() {
 	upid=$!
 
 	(
-		while [ ! -e $DIR/sanity-pcc.99.lck ]; do
+		while [ ! -e $lckf ]; do
 			echo "Detach $file ..."
 			do_facet $SINGLEAGT $LFS pcc detach $file
 			sleep 0.$((RANDOM % 8 + 1))
@@ -4062,18 +4200,116 @@ test_99() {
 	dpid=$!
 
 	sleep 60
-	stack_trap "rm -f $DIR/sanity-pcc.99.lck"
-	touch $DIR/sanity-pcc.99.lck
+	echo "==== DONE ===="
+	stack_trap "rm -f $lckf"
+	touch $lckf
+	wait $wpid || error "$?: write failed"
+	wait $rpid || error "$?: read failed"
+	wait $rpid2 || error "$?: mmap read2 failed"
+	wait $upid || error "$?: unlink failed"
+	wait $dpid || error "$?: detach failed"
+
+	echo "==== DONE WIAT ===="
+	lctl get_param osc.*.rpc_stats
+	do_facet $SINGLEAGT $LFS pcc detach $file
+	rm -f $lckf
+}
+run_test 99 "race among unlink | mmap read | write | detach for PCC-RO file"
+
+test_99b() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local file=$DIR/$tfile
+	local cnt=50
+
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
+	setup_loopdev $SINGLEAGT $loopfile $mntpt 200
+	do_facet $SINGLEAGT mkdir $hsm_root || error "mkdir $hsm_root failed"
+	setup_pcc_mapping $SINGLEAGT \
+		"projid={0}\ roid=$HSM_ARCHIVE_NUMBER\ pccro=1"
+	do_facet $SINGLEAGT $LCTL pcc list $MOUNT
+
+	do_facet $SINGLEAGT dd if=/dev/zero of=$file bs=1M count=$cnt ||
+		error "Write $file failed"
+
+	local rpid
+	local rpid2
+	local wpid
+	local upid
+	local dpid
+	local lpcc_path
+
+	local lckf=$DIR/$tfile.lck
+
+	rm -f $lckf
+	lpcc_path=$(lpcc_fid2path $hsm_root $file)
+	(
+		while [ ! -e $lckf ]; do
+			do_facet $SINGLEAGT dd if=/dev/zero of=$file bs=1M count=$cnt conv=notrunc || {
+				touch $lckf
+				error "failed to write $file"
+			}
+			sleep 0.$((RANDOM % 4 + 1))
+		done
+	)&
+	wpid=$!
+
+	(
+		while [ ! -e $lckf ]; do
+			echo "Read $file ..."
+			do_facet $SINGLEAGT dd if=$file of=/dev/null bs=1M count=$cnt ||
+				error "failed to read $file (1)"
+			sleep 0.$((RANDOM % 4 + 1))
+		done
+	)&
+	rpid=$!
+
+	(
+		while [ ! -e $lckf ]; do
+			do_facet $SINGLEAGT dd if=$file of=/dev/null bs=1M count=$cnt ||
+				error "failed to read $file (2)"
+			sleep 0.$((RANDOM % 4 + 1))
+		done
+	)&
+	rpid2=$!
+
+	(
+		while [ ! -e $lckf ]; do
+			echo "Unlink $lpcc_path"
+			do_facet $SINGLEAGT unlink $lpcc_path
+			sleep 1
+		done
+		true
+	)&
+	upid=$!
+
+	(
+		while [ ! -e $lckf ]; do
+			echo "Detach $file ..."
+			do_facet $SINGLEAGT $LFS pcc detach $file
+			sleep 0.$((RANDOM % 8 + 1))
+		done
+	)&
+	dpid=$!
+
+	sleep 60
+	echo "==== DONE ===="
+	touch $lckf
 	wait $wpid || error "$?: write failed"
 	wait $rpid || error "$?: read failed"
 	wait $rpid2 || error "$?: read2 failed"
 	wait $upid || error "$?: unlink failed"
 	wait $dpid || error "$?: detach failed"
 
+	echo "==== DONE WIAT ===="
+	lctl get_param osc.*.rpc_stats
 	do_facet $SINGLEAGT $LFS pcc detach $file
-	rm -f $DIR/sanity-pcc.99.lck
+	rm -f $lckf
 }
-run_test 99 "race among unlink | mmap read | write | detach for PCC-RO file"
+run_test 99b "race among unlink | two readers | write | detach for PCC-RO file"
 
 test_100() {
 	local loopfile="$TMP/$tfile"
@@ -4359,6 +4595,9 @@ test_203() {
 	local file=$DIR/$tfile
 	local bs="1024"
 
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
 	setup_loopdev client $loopfile $mntpt 10
 	mkdir $hsm_root || error "mkdir $hsm_root failed"
 	setup_pcc_mapping client \
@@ -4387,6 +4626,164 @@ test_203() {
 	(( $hit_bytes == $((2 * bs)) )) || error "wrong hit bytes: $hit_bytes"
 }
 run_test 203 "Verify attach/hit bytes statistics data"
+
+test_204a() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local file=$DIR/$tfile.dat
+	local xattrname=trusted.pin
+	local xattrvalue
+
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
+	(( $MDS1_VERSION >= $(version_code 2.15.61) )) ||
+		skip "Need server version at least 2.15.61"
+
+	setup_loopdev $SINGLEAGT $loopfile $mntpt 50
+	do_facet $SINGLEAGT mkdir $hsm_root || error "mkdir $hsm_root failed"
+	setup_pcc_mapping $SINGLEAGT \
+		"fname={*.dat}\ roid=$HSM_ARCHIVE_NUMBER\ pccro=1"
+
+	do_facet $SINGLEAGT touch $file
+
+	# pin with id=2
+	do_facet $SINGLEAGT $LFS pcc pin -i $HSM_ARCHIVE_NUMBER $file ||
+		error "failed to pcc pin $file"
+	do_facet $SINGLEAGT getfattr $file -d -m $xattrname
+	xattrvalue=$(do_facet $SINGLEAGT getfattr $file -d -m $xattrname \
+		     --only-values)
+	[[ "$xattrvalue" =~ "hsm: $HSM_ARCHIVE_NUMBER" ]] ||
+		error "incorrect xattr $xattrname=$xattrvalue"
+
+	# pin with id=100
+	do_facet $SINGLEAGT $LFS pcc pin -i 100 $file ||
+		error "failed to pcc pin $file"
+	do_facet $SINGLEAGT getfattr $file -d -m $xattrname
+	xattrvalue=$(do_facet $SINGLEAGT getfattr $file -d -m $xattrname \
+		     --only-values)
+	[[ "$xattrvalue" =~ "hsm: $HSM_ARCHIVE_NUMBER" &&
+	   "$xattrvalue" =~ "hsm: 100" ]] ||
+		error "incorrect xattr $xattrname=$xattrvalue"
+
+	# pin with id=2 again
+	do_facet $SINGLEAGT $LFS pcc pin -i $HSM_ARCHIVE_NUMBER $file ||
+		error "failed to pcc pin $file"
+	do_facet $SINGLEAGT getfattr $file -d -m $xattrname
+
+	# unpin id=100
+	do_facet $SINGLEAGT $LFS pcc unpin -i 100 $file ||
+		error "failed to pcc unpin $file"
+	do_facet $SINGLEAGT getfattr $file -d -m $xattrname
+	xattrvalue=$(do_facet $SINGLEAGT getfattr $file -d -m $xattrname \
+		     --only-values)
+	[[ "$xattrvalue" =~ "hsm: $HSM_ARCHIVE_NUMBER" ]] ||
+		error "incorrect xattr $xattrname=$xattrvalue"
+
+	# unpin id=2
+	do_facet $SINGLEAGT $LFS pcc unpin -i $HSM_ARCHIVE_NUMBER $file ||
+		error "failed to pcc unpin $file"
+	do_facet $SINGLEAGT getfattr $file -d -m $xattrname
+	xattrvalue=$(do_facet $SINGLEAGT getfattr $file -d -m $xattrname \
+		     --only-values)
+	[[ -z "$xattrvalue" ]] ||
+		error "incorrect xattr $xattrname=$xattrvalue"
+
+	# pin/unpin operation should NOT trigger autocache
+	check_lpcc_state $file "none"
+
+	# pin/unpin operation should NOT block autocache triggered by read
+	do_facet $SINGLEAGT cat $file
+	check_lpcc_state $file "readonly"
+}
+run_test 204a "pin/unpin pcc flag"
+
+test_204b() {
+	local id="100"
+	local dir=$DIR/$tdir
+	local file=$dir/$tfile
+	local old
+
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
+	(( $MDS1_VERSION >= $(version_code 2.15.61) )) ||
+		skip "Need server version at least 2.15.61"
+
+	old=$(do_facet mds1 $LCTL get_param -n mdt.*.enable_pin_gid | head -1)
+	do_facet mds1 $LCTL set_param mdt.*.enable_pin_gid=0
+	stack_trap "do_facet mds1 $LCTL set_param mdt.*.enable_pin_gid=$old"
+
+	mkdir_on_mdt0 -p $dir || error "mkdir $dir failed"
+	chmod 777 $dir || error "chown $dir failed"
+	$RUNAS touch $file || error "touch $file failed"
+	$RUNAS $LFS pcc pin -i $id $file &&
+		error "normal user should not able to pin any file"
+	$LFS pcc pin -i $id $file || error "root should be able to pin any file"
+	getfattr -d -n trusted.pin $file
+	$RUNAS $LFS pcc unpin -i $id $file &&
+		error "nonroot user should fail to unpin file"
+	$LFS pcc unpin -i $id $file ||
+		error "root should be able to unpin any file"
+	$RUNAS $LFS pcc pin -i $id $file &&
+		error "nonroot user should fail to pin file"
+
+	do_facet mds1 $LCTL set_param mdt.*.enable_pin_gid=-1
+	$RUNAS $LFS pcc pin -i $id $file ||
+		error "failed to pin $file when enable_pin_gid=-1"
+	$RUNAS $LFS pcc unpin -i $id $file ||
+		error "failed to unpin $file when enable_pin_gid=-1"
+
+	do_facet mds1 $LCTL set_param mdt.*.enable_pin_gid=$RUNAS_GID
+	$RUNAS $LFS pcc pin -i $id $file ||
+		error "failed to pin $file when enable_pin_gid=$RUNAS_GID"
+	$RUNAS $LFS pcc unpin -i $id $file ||
+		error "failed to unpin $file when enable_pin_gid=$RUNAS_GID"
+	$LFS pcc pin -i $id $file ||
+		error "failed to pin $file when enable_pin_gid=$RUNAS_GID"
+	$LFS pcc unpin -i $id $file ||
+		error "failed to unpin $file when enable_pin_gid=$RUNAS_GID"
+}
+run_test 204b "Permission check for the pin/unpin operation"
+
+test_204c() {
+	local loopfile="$TMP/$tfile"
+	local mntpt="/mnt/pcc.$tdir"
+	local hsm_root="$mntpt/$tdir"
+	local file=$DIR/$tfile
+	local xattrname="trusted.pin"
+	local xattrvalue
+	local fid
+
+	$LCTL get_param -n mdc.*.connect_flags | grep -q pcc_ro ||
+		skip "Server does not support PCC-RO"
+
+	(( $MDS1_VERSION >= $(version_code 2.15.61) )) ||
+		skip "Need server version at least 2.15.61"
+
+	do_facet $SINGLEAGT echo -n attach_id_not_specified > $file ||
+		error "dd write $file failed"
+	do_facet $SINGLEAGT $LFS pcc pin $file &&
+		error "Pin should fail for a client without any PCC backend"
+
+	setup_loopdev $SINGLEAGT $loopfile $mntpt 60
+	do_facet $SINGLEAGT mkdir $hsm_root || error "mkdir $hsm_root failed"
+	setup_pcc_mapping $SINGLEAGT \
+		"projid={100}\ roid=$HSM_ARCHIVE_NUMBER\ ropcc=1"
+
+	do_facet $SINGLEAGT $LFS pcc pin $file || error "failed to pin $file"
+	do_facet $SINGLEAGT getfattr $file -n $xattrname
+	xattrvalue=$(do_facet $SINGLEAGT getfattr $file -n $xattrname --only-values)
+	[[ "$xattrvalue" =~ "hsm: $HSM_ARCHIVE_NUMBER" ]] ||
+		error "incorrect xattr $xattrname=$xattrvalue"
+
+	do_facet $SINGLEAGT $LFS pcc unpin $file || error "failed to PCC unpin $file"
+	do_facet $SINGLEAGT getfattr $file -n $xattrname
+	xattrvalue=$(do_facet $SINGLEAGT getfattr $file -n $xattrname --only-values)
+	[[ -z "$xattrvalue" ]] || error "incorrect xattr $xattrname=$xattrvalue"
+}
+run_test 204c "PCC pin/unpin without attach ID specified"
 
 complete_test $SECONDS
 check_and_cleanup_lustre

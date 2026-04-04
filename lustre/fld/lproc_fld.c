@@ -18,15 +18,15 @@
 
 #define DEBUG_SUBSYSTEM S_FLD
 
-#include <libcfs/libcfs.h>
 #include <linux/module.h>
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 #include <dt_object.h>
 #endif
 #include <obd_support.h>
 #include <lustre_fld.h>
 #include <lustre_fid.h>
+
 #include "fld_internal.h"
 
 static int
@@ -124,7 +124,7 @@ struct ldebugfs_vars fld_client_debugfs_list[] = {
 	{ NULL }
 };
 
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 struct fld_seq_param {
 	struct lu_env		fsp_env;
 	struct dt_it		*fsp_it;
@@ -307,7 +307,7 @@ static int fldb_seq_release(struct inode *inode, struct file *file)
 
 	param = seq->private;
 	if (param == NULL) {
-		lprocfs_seq_release(inode, file);
+		seq_release(inode, file);
 		return 0;
 	}
 
@@ -321,7 +321,7 @@ static int fldb_seq_release(struct inode *inode, struct file *file)
 	iops->fini(&param->fsp_env, param->fsp_it);
 	lu_env_fini(&param->fsp_env);
 	OBD_FREE_PTR(param);
-	lprocfs_seq_release(inode, file);
+	seq_release(inode, file);
 
 	return 0;
 }
@@ -333,4 +333,4 @@ const struct file_operations fld_debugfs_seq_fops = {
 	.release = fldb_seq_release,
 };
 
-# endif /* HAVE_SERVER_SUPPORT */
+# endif /* CONFIG_LUSTRE_FS_SERVER */

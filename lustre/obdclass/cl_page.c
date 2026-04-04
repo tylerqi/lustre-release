@@ -1,46 +1,27 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2011, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  *
  * Client Lustre Page.
  *
- *   Author: Nikita Danilov <nikita.danilov@sun.com>
- *   Author: Jinshan Xiong <jinshan.xiong@intel.com>
+ * Author: Nikita Danilov <nikita.danilov@sun.com>
+ * Author: Jinshan Xiong <jinshan.xiong@intel.com>
  */
 
 #define DEBUG_SUBSYSTEM S_CLASS
 
 #include <linux/list.h>
-#include <libcfs/libcfs.h>
+
 #include <obd_class.h>
 #include <obd_support.h>
-
 #include <cl_object.h>
 #include "cl_internal.h"
 
@@ -106,7 +87,7 @@ static void cs_pagestate_dec(const struct cl_object *obj,
 #endif
 }
 
-/**
+/*
  * Internal version of cl_page_get().
  *
  * This function can be used to obtain initial reference to previously
@@ -145,11 +126,96 @@ cl_page_slice_get(const struct cl_page *cl_page, int index)
 	     slice = cl_page_slice_get(cl_page, i); i >= 0;	\
 	     slice = cl_page_slice_get(cl_page, --i))
 
+/* does the work required to access the pages in the iov, be they userspace
+ * or kernel
+ *
+ * returns number of bytes
+ */
+static ssize_t ll_get_iov_memory(int rw, struct iov_iter *iter,
+				struct cl_dio_pages *cdp,
+				size_t maxsize)
+{
+	ssize_t bytes;
+	size_t start;
+
+	bytes = iov_iter_get_pages_alloc2(iter, &cdp->cdp_pages, maxsize,
+					  &start);
+	if (bytes > 0) {
+		cdp->cdp_page_count = DIV_ROUND_UP(bytes + start, PAGE_SIZE);
+		if (user_backed_iter(iter))
+			iov_iter_revert(iter, bytes);
+	}
+	return bytes;
+}
+
+ssize_t cl_dio_pages_init(const struct lu_env *env, struct cl_object *obj,
+			  struct cl_dio_pages *cdp, struct iov_iter *iter,
+			  int rw, size_t bytes, loff_t offset, bool unaligned)
+{
+	struct cl_object *head = obj;
+	pgoff_t index = offset >> PAGE_SHIFT;
+	ssize_t result = 0;
+
+	ENTRY;
+
+	cdp->cdp_file_offset = offset;
+	cdp->cdp_from = offset & ~PAGE_MASK;
+	cdp->cdp_to = ((offset + bytes - 1) & ~PAGE_MASK);
+
+	/* these set cdp->page_count, which is used in coo_dio_pages_init */
+	if (!unaligned) {
+		result = ll_get_iov_memory(rw, iter, cdp, bytes);
+		/* ll_get_iov_memory returns bytes in the IO or error*/
+		bytes = result;
+	} else {
+		/* explictly handle the ubuf() case for el9.4 */
+		size_t len = iter_is_ubuf(iter) ? iov_iter_count(iter)
+			   : iter_iov(iter)->iov_len;
+
+		/* same calculation used in ll_get_user_pages */
+		bytes = min_t(size_t, bytes, len);
+		result = ll_allocate_dio_buffer(cdp, bytes);
+		/* allocate_dio_buffer returns number of pages or
+		 * error, so do not set bytes = result
+		 */
+		if (result > 0)
+			result = 0;
+	}
+	if (result < 0)
+		GOTO(out, result);
+	LASSERT(cdp->cdp_page_count);
+	/* this is special temporary allocation which lets us track the
+	 * cl_pages and convert them to a list
+	 *
+	 * this is used in 'pushing down' the conversion to a page queue
+	 */
+	OBD_ALLOC_PTR_ARRAY_LARGE(cdp->cdp_cl_pages, cdp->cdp_page_count);
+	if (!cdp->cdp_cl_pages)
+		GOTO(out, result = -ENOMEM);
+
+	cl_object_for_each(obj, head) {
+		if (obj->co_ops->coo_dio_pages_init != NULL) {
+			result = obj->co_ops->coo_dio_pages_init(env, obj,
+								 cdp, index);
+			if (result != 0) {
+				LASSERT(result < 0);
+				GOTO(out, result);
+			}
+		}
+	}
+
+out:
+	if (result >= 0)
+		result = bytes;
+	RETURN(result);
+}
+EXPORT_SYMBOL(cl_dio_pages_init);
+
 static void __cl_page_free(struct cl_page *cl_page, unsigned short bufsize)
 {
-	int index = cl_page->cp_kmem_index;
+	if (cl_page->cp_in_kmem_array) {
+		int index = cl_page->cp_kmem_index;
 
-	if (index >= 0) {
 		LASSERT(index < ARRAY_SIZE(cl_page_kmem_array));
 		LASSERT(cl_page_kmem_size_array[index] == bufsize);
 		OBD_SLAB_FREE(cl_page, cl_page_kmem_array[index], bufsize);
@@ -162,7 +228,7 @@ static void cl_page_free(const struct lu_env *env, struct cl_page *cp,
 			 struct folio_batch *fbatch)
 {
 	struct cl_object *obj  = cp->cp_obj;
-	unsigned short bufsize = cl_object_header(obj)->coh_page_bufsize;
+	unsigned short bufsize;
 	struct page *vmpage;
 
 	ENTRY;
@@ -192,6 +258,16 @@ static void cl_page_free(const struct lu_env *env, struct cl_page *cp,
 		cs_pagestate_dec(obj, cp->cp_state);
 	if (cp->cp_type != CPT_TRANSIENT)
 		cl_object_put(env, obj);
+
+	if (cp->cp_in_kmem_array)
+		bufsize = cl_page_kmem_size_array[cp->cp_kmem_index];
+	else
+		bufsize = cp->cp_kmem_size;
+	if (unlikely(bufsize != cl_object_header(obj)->coh_page_bufsize))
+		CWARN("%s:"DFID" page bufsize %d, object bufsize now %d\n",
+		      obj->co_lu.lo_dev->ld_obd->obd_name,
+		      PFID(&cl_object_header(obj)->coh_lu.loh_fid),
+		      bufsize, cl_object_header(obj)->coh_page_bufsize);
 	__cl_page_free(cp, bufsize);
 	EXIT;
 }
@@ -213,8 +289,10 @@ check:
 		if (smp_load_acquire(&cl_page_kmem_size_array[i]) == bufsize) {
 			OBD_SLAB_ALLOC_GFP(cl_page, cl_page_kmem_array[i],
 					   bufsize, GFP_NOFS);
-			if (cl_page)
+			if (cl_page) {
+				cl_page->cp_in_kmem_array = 1;
 				cl_page->cp_kmem_index = i;
+			}
 			return cl_page;
 		}
 		if (cl_page_kmem_size_array[i] == 0)
@@ -243,8 +321,10 @@ check:
 		goto check;
 	} else {
 		OBD_ALLOC_GFP(cl_page, bufsize, GFP_NOFS);
-		if (cl_page)
-			cl_page->cp_kmem_index = -1;
+		if (cl_page) {
+			cl_page->cp_in_kmem_array = 0;
+			cl_page->cp_kmem_size = bufsize;
+		}
 	}
 
 	return cl_page;
@@ -308,15 +388,22 @@ struct cl_page *cl_page_alloc(const struct lu_env *env, struct cl_object *o,
 }
 
 /**
- * Returns a cl_page with index \a idx at the object \a o, and associated with
- * the VM page \a vmpage.
+ * cl_page_find() - Returns a cl_page with index @idx at the object @o, and
+ * associated with the VM page @vmpage.
+ * @env: current lustre environment
+ * @o: layer which is finding the page
+ * @idx: offset
+ * @vmpage: pointer to kernel struct page
+ * @type: IO type (READ/WRITE)
  *
  * This is the main entry point into the cl_page caching interface. First, a
  * cache (implemented as a per-object radix tree) is consulted. If page is
  * found there, it is returned immediately. Otherwise new page is allocated
  * and returned. In any case, additional reference to page is acquired.
  *
- * \see cl_object_find(), cl_lock_find()
+ * see cl_object_find(), cl_lock_find()
+ *
+ * Returns struct cl_page derived from @vmpage on success or NULL on failure
  */
 struct cl_page *cl_page_find(const struct lu_env *env,
 			     struct cl_object *o,
@@ -434,12 +521,11 @@ static void cl_page_state_set(const struct lu_env *env,
 }
 
 /**
- * Acquires an additional reference to a page.
+ * cl_page_get() - Acquires an additional reference to a page.
+ * @page: pointer to lustre page which reference is being added
  *
- * This can be called only by caller already possessing a reference to \a
- * page.
- *
- * \see cl_object_get(), cl_lock_get().
+ * This can be called only by caller already possessing a reference to @page.
+ * see cl_object_get(), cl_lock_get().
  */
 void cl_page_get(struct cl_page *page)
 {
@@ -450,10 +536,15 @@ void cl_page_get(struct cl_page *page)
 EXPORT_SYMBOL(cl_page_get);
 
 /**
- * Releases a reference to a page, use the folio_batch to release the pages
- * in batch if provided.
+ * cl_batch_put() - Releases a reference to a page
+ * @env: current lustre environment
+ * @page: cl_page instance to release referance
+ * @fbatch: pointer to folio_batch
  *
- * Users need to do a final folio_batch_release() to release any trailing pages.
+ * Releases a reference to a page, use the @fbatch to release the pages
+ * in batch if provided. Users need to do a final folio_batch_release() to
+ * release any trailing pages. If NULL call put_page() to release @page
+ * immediately
  */
 void cl_batch_put(const struct lu_env *env, struct cl_page *page,
 		  struct folio_batch *fbatch)
@@ -478,13 +569,16 @@ void cl_batch_put(const struct lu_env *env, struct cl_page *page,
 EXPORT_SYMBOL(cl_batch_put);
 
 /**
- * Releases a reference to a page, wrapper to cl_batch_put
+ * cl_page_put() - Releases a reference to a page, wrapper to cl_batch_put
+ * @env: current lustre environment
+ * @page: cl_page instance to release referance
  *
  * When last reference is released, page is returned to the cache, unless it
  * is in cl_page_state::CPS_FREEING state, in which case it is immediately
- * destroyed.
+ * destroyed. Last argument passed to cl_batch_put() if NULL means to call
+ * put_page() to release @page immediately
  *
- * \see cl_object_put(), cl_lock_put().
+ * see cl_object_put(), cl_lock_put().
  */
 void cl_page_put(const struct lu_env *env, struct cl_page *page)
 {
@@ -492,7 +586,14 @@ void cl_page_put(const struct lu_env *env, struct cl_page *page)
 }
 EXPORT_SYMBOL(cl_page_put);
 
-/* Returns a cl_page associated with a VM page, and given cl_object. */
+/**
+ * cl_vmpage_page() - Returns a cl_page associated with a VM page, for the
+ * given @obj
+ * @vmpage: pointer to kernel struct page
+ * @obj: cl_object (client side object) to which cl_page is to be returned
+ *
+ * Returns pointer to associated cl_page on success
+ */
 struct cl_page *cl_vmpage_page(struct page *vmpage, struct cl_object *obj)
 {
 	struct cl_page *page;
@@ -569,24 +670,24 @@ int cl_page_is_owned(const struct cl_page *pg, const struct cl_io *io)
 }
 EXPORT_SYMBOL(cl_page_is_owned);
 
-/**
+/*
  * Try to own a page by IO.
  *
  * Waits until page is in cl_page_state::CPS_CACHED state, and then switch it
  * into cl_page_state::CPS_OWNED state.
  *
- * \pre  !cl_page_is_owned(cl_page, io)
- * \post result == 0 iff cl_page_is_owned(cl_page, io)
+ * pre  !cl_page_is_owned(cl_page, io)
+ * post result == 0 iff cl_page_is_owned(cl_page, io)
  *
- * \retval 0   success
+ * retval 0   success
  *
- * \retval -ve failure, e.g., cl_page was destroyed (and landed in
+ * retval -ve failure, e.g., cl_page was destroyed (and landed in
  *             cl_page_state::CPS_FREEING instead of cl_page_state::CPS_CACHED).
  *             or, page was owned by another thread, or in IO.
  *
- * \see cl_page_disown()
- * \see cl_page_own_try()
- * \see cl_page_own
+ * see cl_page_disown()
+ * see cl_page_own_try()
+ * see cl_page_own
  */
 static int __cl_page_own(const struct lu_env *env, struct cl_io *io,
 			 struct cl_page *cl_page, int nonblock)
@@ -644,14 +745,32 @@ out:
 	RETURN(result);
 }
 
-/* Own a page, might be blocked. (see __cl_page_own()) */
+/**
+ * cl_page_own() - Own a page, might be blocked. (see __cl_page_own())
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to own @pg
+ * @pg: pointer to cl_page(page) which @io wants to own
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
 int cl_page_own(const struct lu_env *env, struct cl_io *io, struct cl_page *pg)
 {
 	return __cl_page_own(env, io, pg, 0);
 }
 EXPORT_SYMBOL(cl_page_own);
 
-/* Nonblock version of cl_page_own(). (see __cl_page_own()) */
+/**
+ * cl_page_own_try() - Nonblock version of cl_page_own(). (see __cl_page_own())
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to own @pg
+ * @pg: pointer to cl_page(page) which @io wants to own
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
 int cl_page_own_try(const struct lu_env *env, struct cl_io *io,
 		    struct cl_page *pg)
 {
@@ -661,12 +780,15 @@ EXPORT_SYMBOL(cl_page_own_try);
 
 
 /**
- * Assume page ownership.
+ * cl_page_assume() - Assume page ownership.
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to assume @cp
+ * @cp: pointer to cl_page(page) which @io wants to assume
  *
  * Called when page is already locked by the hosting VM.
  *
- * \pre !cl_page_is_owned(cp, io)
- * \post cl_page_is_owned(cp, io)
+ * pre !cl_page_is_owned(cp, io)
+ * post cl_page_is_owned(cp, io)
  */
 void cl_page_assume(const struct lu_env *env,
 		    struct cl_io *io, struct cl_page *cp)
@@ -692,13 +814,16 @@ void cl_page_assume(const struct lu_env *env,
 EXPORT_SYMBOL(cl_page_assume);
 
 /**
- * Releases page ownership without unlocking the page.
+ * cl_page_unassume() - Releases page ownership without unlocking the page.
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to unassume @cp
+ * @cp: pointer to cl_page(page) which @io wants to unassume
  *
  * Moves cl_page into cl_page_state::CPS_CACHED without releasing a lock
  * on the underlying VM page (as VM is supposed to do this itself).
  *
- * \pre   cl_page_is_owned(cp, io)
- * \post !cl_page_is_owned(cp, io)
+ * pre   cl_page_is_owned(cp, io)
+ * post !cl_page_is_owned(cp, io)
  */
 void cl_page_unassume(const struct lu_env *env,
 		      struct cl_io *io, struct cl_page *cp)
@@ -722,14 +847,17 @@ void cl_page_unassume(const struct lu_env *env,
 EXPORT_SYMBOL(cl_page_unassume);
 
 /**
- * Releases page ownership.
+ * cl_page_disown() - Releases page ownership.
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to release @pg
+ * @pg: pointer to cl_page(page) which @io wants to release
  *
  * Moves page into cl_page_state::CPS_CACHED.
  *
- * \pre   cl_page_is_owned(pg, io)
- * \post !cl_page_is_owned(pg, io)
+ * pre   cl_page_is_owned(pg, io)
+ * post !cl_page_is_owned(pg, io)
  *
- * \see cl_page_own()
+ * see cl_page_own()
  */
 void cl_page_disown(const struct lu_env *env,
 		    struct cl_io *io, struct cl_page *pg)
@@ -742,14 +870,19 @@ void cl_page_disown(const struct lu_env *env,
 EXPORT_SYMBOL(cl_page_disown);
 
 /**
+ * cl_page_discard() - Called when cl_page is to be removed from the object
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to discard @pg
+ * @cp: pointer to cl_page(page) which @io wants to discard
+ *
  * Called when cl_page is to be removed from the object, e.g.,
  * as a result of truncate.
  *
  * Calls cl_page_operations::cpo_discard() top-to-bottom.
  *
- * \pre cl_page_is_owned(cl_page, io)
+ * pre cl_page_is_owned(cl_page, io)
  *
- * \see cl_page_operations::cpo_discard()
+ * see cl_page_operations::cpo_discard()
  */
 void cl_page_discard(const struct lu_env *env,
 		     struct cl_io *io, struct cl_page *cp)
@@ -767,6 +900,12 @@ void cl_page_discard(const struct lu_env *env,
 
 	PINVRNT(env, cp, cl_page_is_owned(cp, io));
 	PINVRNT(env, cp, cl_page_invariant(cp));
+
+	/* remove from radix tree if possible, lest generic_error_remove_page()
+	 * failed to reach folio_invalidate()
+	 */
+	cl_page_delete(env, cp);
+
 	vmpage = cp->cp_vmpage;
 	LASSERT(vmpage != NULL);
 	LASSERT(PageLocked(vmpage));
@@ -774,7 +913,7 @@ void cl_page_discard(const struct lu_env *env,
 }
 EXPORT_SYMBOL(cl_page_discard);
 
-/**
+/*
  * Version of cl_page_delete() that can be called for not fully constructed
  * cl_pages, e.g. in an error handling cl_page_find()->__cl_page_delete()
  * path. Doesn't check cl_page invariant.
@@ -805,7 +944,7 @@ static void __cl_page_delete(const struct lu_env *env, struct cl_page *cp)
 	EXIT;
 }
 
-/**
+/*
  * Called when a decision is made to throw page out of memory.
  *
  * Notifies all layers about page destruction by calling
@@ -872,8 +1011,15 @@ static void cl_page_io_start(const struct lu_env *env,
 }
 
 /**
- * Prepares page for immediate transfer. Return -EALREADY if this page
- * should be omitted from transfer.
+ * cl_page_prep() - Prepares page for immediate transfer
+ * @env: current lustre environment
+ * @io: pointer to IO operation which wants to prep @cp
+ * @cp: pointer to cl_page(page) which @io wants to prep
+ * @crt: IO type (READ/WRITE)
+ *
+ * Return:
+ * * %0 on success (Prepares page for immediate transfer)
+ * * %-EALREADY if page should be omitted from transfer (alreay up-to-date)
  */
 int cl_page_prep(const struct lu_env *env, struct cl_io *io,
 		 struct cl_page *cp, enum cl_req_type crt)
@@ -909,8 +1055,28 @@ out:
 }
 EXPORT_SYMBOL(cl_page_prep);
 
+/* this is the equivalent of cl_page_complete for a dio pages struct, but is
+ * much simpler - in fact, it only needs to note the completion in the sync io
+ */
+void cl_dio_pages_complete(const struct lu_env *env, struct cl_dio_pages *cdp,
+			   int count, int ioret)
+{
+	struct cl_sub_dio *sdio = container_of(cdp, struct cl_sub_dio,
+					       csd_dio_pages);
+	ENTRY;
+
+	__cl_sync_io_note(env, &sdio->csd_sync, count, ioret);
+
+	EXIT;
+}
+EXPORT_SYMBOL(cl_dio_pages_complete);
+
 /**
- * Notify layers about transfer completion.
+ * cl_page_complete() - Notify layers about transfer complete.
+ * @env: current lustre environment
+ * @cl_page: pointer to cl_page(page) of just completed IO
+ * @crt: IO type (READ/WRITE)
+ * @ioret: Returned IO status. %0 on success. %negative on failure
  *
  * Invoked by transfer sub-system (which is a part of osc) to notify layers
  * that a transfer, of which this page is a part of has completed.
@@ -919,14 +1085,13 @@ EXPORT_SYMBOL(cl_page_prep);
  * uppermost layer (llite), responsible for the VFS/VM interaction runs last
  * and can release locks safely.
  *
- * \pre  cl_page->cp_state == CPS_PAGEIN || cl_page->cp_state == CPS_PAGEOUT
- * \post cl_page->cl_page_state == CPS_CACHED
+ * pre  cl_page->cp_state == CPS_PAGEIN || cl_page->cp_state == CPS_PAGEOUT
+ * post cl_page->cl_page_state == CPS_CACHED
  *
- * \see cl_page_operations::cpo_completion()
+ * see cl_page_operations::cpo_complete()
  */
-void cl_page_completion(const struct lu_env *env,
-			struct cl_page *cl_page, enum cl_req_type crt,
-			int ioret)
+void cl_page_complete(const struct lu_env *env, struct cl_page *cl_page,
+		      enum cl_req_type crt, int ioret)
 {
 	const struct cl_page_slice *slice;
 	struct cl_sync_io *anchor = cl_page->cp_sync_io;
@@ -943,10 +1108,10 @@ void cl_page_completion(const struct lu_env *env,
 		cl_page_state_set(env, cl_page, CPS_CACHED);
 
 		cl_page_slice_for_each_reverse(cl_page, slice, i) {
-			if (slice->cpl_ops->io[crt].cpo_completion != NULL)
-				(*slice->cpl_ops->io[crt].cpo_completion)(env,
-									  slice,
-									 ioret);
+			if (slice->cpl_ops->io[crt].cpo_complete != NULL)
+				(*slice->cpl_ops->io[crt].cpo_complete)(env,
+									slice,
+									ioret);
 		}
 	}
 
@@ -957,9 +1122,14 @@ void cl_page_completion(const struct lu_env *env,
 	}
 	EXIT;
 }
-EXPORT_SYMBOL(cl_page_completion);
+EXPORT_SYMBOL(cl_page_complete);
 
 /**
+ * cl_page_make_ready() - Make page ready for IO
+ * @env: current lustre environment
+ * @cp: pointer to cl_page(page) which is marked to be ready
+ * @crt: IO type (READ/WRITE)
+ *
  * Notify layers that transfer formation engine decided to yank this page from
  * the cache and to make it a part of a transfer.
  *
@@ -971,7 +1141,7 @@ int cl_page_make_ready(const struct lu_env *env, struct cl_page *cp,
 {
 	struct page *vmpage = cp->cp_vmpage;
 	bool unlock = false;
-	int rc;
+	int rc = 0;
 
 	ENTRY;
 	PASSERT(env, cp, crt == CRT_WRITE);
@@ -1014,43 +1184,15 @@ int cl_page_make_ready(const struct lu_env *env, struct cl_page *cp,
 EXPORT_SYMBOL(cl_page_make_ready);
 
 /**
- * Called if a page is being written back by kernel's intention.
+ * cl_page_clip() - Mark only part(clip) of page for transmission
+ * @env: current lustre environment
+ * @cl_page: pointer to cl_page(page) which @io wants clip
+ * @from: Start of clip
+ * @to: length to clip
  *
- * \pre  cl_page_is_owned(cl_page, io)
- * \post ergo(result == 0, cl_page->cp_state == CPS_PAGEOUT)
- *
- * \see cl_page_operations::cpo_flush()
- */
-int cl_page_flush(const struct lu_env *env, struct cl_io *io,
-		  struct cl_page *cl_page)
-{
-	const struct cl_page_slice *slice;
-	int result = 0;
-	int i;
-
-	ENTRY;
-	LASSERT(cl_page->cp_type != CPT_TRANSIENT);
-	PINVRNT(env, cl_page, cl_page_is_owned(cl_page, io));
-	PINVRNT(env, cl_page, cl_page_invariant(cl_page));
-
-	cl_page_slice_for_each(cl_page, slice, i) {
-		if (slice->cpl_ops->cpo_flush != NULL)
-			result = (*slice->cpl_ops->cpo_flush)(env, slice, io);
-		if (result != 0)
-			break;
-	}
-	if (result > 0)
-		result = 0;
-
-	CL_PAGE_HEADER(D_TRACE, env, cl_page, "%d\n", result);
-	RETURN(result);
-}
-EXPORT_SYMBOL(cl_page_flush);
-
-/**
  * Tells transfer engine that only part of a page is to be transmitted.
  *
- * \see cl_page_operations::cpo_clip()
+ * see cl_page_operations::cpo_clip()
  */
 void cl_page_clip(const struct lu_env *env, struct cl_page *cl_page,
 		  int from, int to)
@@ -1116,13 +1258,17 @@ void cl_page_print(const struct lu_env *env, void *cookie,
 EXPORT_SYMBOL(cl_page_print);
 
 /**
- * Adds page slice to the compound page.
+ * cl_page_slice_add() - Adds page slice to the compound page.
+ * @cl_page: pointer to cl_page(page) which @slice is being added
+ * @slice: slice(each layer specific data) which is getting added to @cl_page
+ * @obj: layer which is adding the slice
+ * @ops: pointer to cl_page_operations
  *
  * This is called by cl_object_operations::coo_page_init() methods to add a
  * per-layer state to the page. New state is added at the end of
  * cl_page::cp_layers list, that is, it is at the bottom of the stack.
  *
- * \see cl_lock_slice_add(), cl_req_slice_add(), cl_io_slice_add()
+ * see cl_lock_slice_add(), cl_req_slice_add(), cl_io_slice_add()
  */
 void cl_page_slice_add(struct cl_page *cl_page, struct cl_page_slice *slice,
 		       struct cl_object *obj,
@@ -1175,7 +1321,7 @@ void cl_cache_incref(struct cl_client_cache *cache)
 }
 EXPORT_SYMBOL(cl_cache_incref);
 
-/**
+/*
  * Decrease cl_cache refcount and free the cache if refcount=0.
  * Since llite, lov and osc all hold cl_cache refcount,
  * the free will not cause race. (LU-6173)

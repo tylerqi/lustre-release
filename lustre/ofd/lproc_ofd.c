@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ofd/lproc_ofd.c
  *
  * This file provides functions of procfs interface for OBD Filter Device (OFD).
  *
@@ -52,13 +32,14 @@
 #ifdef CONFIG_PROC_FS
 
 /**
- * Show number of FID allocation sequences.
+ * seqs_allocated_show() - Show number of FID allocation sequences.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t seqs_allocated_show(struct kobject *kobj, struct attribute *attr,
 				   char *buf)
@@ -72,13 +53,14 @@ static ssize_t seqs_allocated_show(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RO_ATTR(seqs_allocated);
 
 /**
- * Show total number of grants for precreate.
+ * grant_precreate_show() - Show total number of grants for precreate.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t grant_precreate_show(struct kobject *kobj,
 				    struct attribute *attr,
@@ -93,13 +75,15 @@ static ssize_t grant_precreate_show(struct kobject *kobj,
 LUSTRE_RO_ATTR(grant_precreate);
 
 /**
- * Show number of precreates allowed in a single transaction.
+ * precreate_batch_show() - Show number of precreates allowed in a single
+ *                          transaction.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t precreate_batch_show(struct kobject *kobj,
 				    struct attribute *attr,
@@ -113,15 +97,16 @@ static ssize_t precreate_batch_show(struct kobject *kobj,
 }
 
 /**
- * Change number of precreates allowed in a single transaction.
+ * precreate_batch_store() - Change number of precreates allowed in a single
+ *                           transaction.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents precreate
+ * @count: @buffer length
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents maximum number
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %count on success
+ * * %negative number on error
  */
 static ssize_t precreate_batch_store(struct kobject *kobj,
 				     struct attribute *attr,
@@ -148,13 +133,14 @@ static ssize_t precreate_batch_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(precreate_batch);
 
 /**
- * Show number of seconds to delay atime
+ * atime_diff_show() - Show number of seconds to delay atime
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t atime_diff_show(struct kobject *kobj, struct attribute *attr,
 			       char *buf)
@@ -167,15 +153,15 @@ static ssize_t atime_diff_show(struct kobject *kobj, struct attribute *attr,
 }
 
 /**
- * Change number of seconds to delay atime
+ * atime_diff_store() - Change number of seconds to delay atime
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents dealy in seconds
+ * @count: @buffer length
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents maximum number
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t atime_diff_store(struct kobject *kobj, struct attribute *attr,
 				const char *buffer, size_t count)
@@ -199,15 +185,15 @@ static ssize_t atime_diff_store(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RW_ATTR(atime_diff);
 
 /**
- * Show the last used ID for each FID sequence used by OFD.
+ * last_id_seq_show() - Show the last used ID for each FID sequence used by OFD.
+ * @m: seq_file handle
+ * @data: unused for single entry
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
-static int ofd_last_id_seq_show(struct seq_file *m, void *data)
+static int last_id_seq_show(struct seq_file *m, void *data)
 {
 	struct obd_device	*obd = m->private;
 	struct ofd_device	*ofd;
@@ -217,6 +203,8 @@ static int ofd_last_id_seq_show(struct seq_file *m, void *data)
 		return 0;
 
 	ofd = ofd_dev(obd->obd_lu_dev);
+	if (IS_ERR_OR_NULL(ofd))
+		return -ENODEV;
 
 	read_lock(&ofd->ofd_seq_list_lock);
 	list_for_each_entry(oseq, &ofd->ofd_seq_list, os_list) {
@@ -232,10 +220,13 @@ static int ofd_last_id_seq_show(struct seq_file *m, void *data)
 	return 0;
 }
 
-LPROC_SEQ_FOPS_RO(ofd_last_id);
+LDEBUGFS_SEQ_FOPS_RO(last_id);
 
 /**
- * Show if the OFD is in degraded mode.
+ * degraded_show() - Show if the OFD is in degraded mode.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
  * Degraded means OFD has a failed drive or is undergoing RAID rebuild.
  * The MDS will try to avoid using this OST for new object allocations
@@ -243,7 +234,7 @@ LPROC_SEQ_FOPS_RO(ofd_last_id);
  * this OST are slowed down.  It also reduces the contention on the OST
  * RAID device, allowing it to rebuild more quickly.
  *
- * \retval		count of bytes written
+ * Returns count of bytes written
  */
 static ssize_t degraded_show(struct kobject *kobj, struct attribute *attr,
 			     char *buf)
@@ -256,17 +247,19 @@ static ssize_t degraded_show(struct kobject *kobj, struct attribute *attr,
 }
 
 /**
- * Set OFD to degraded mode.
+ * degraded_store() - Set OFD to degraded mode.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents degraded
+ * @count: @buffer length
  *
  * This is used to interface to userspace administrative tools for
  * the underlying RAID storage, so that they can mark an OST
  * as having degraded performance.
  *
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t degraded_store(struct kobject *kobj, struct attribute *attr,
 			      const char *buffer, size_t count)
@@ -289,13 +282,207 @@ static ssize_t degraded_store(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RW_ATTR(degraded);
 
 /**
- * Show if the OFD is in no precreate mode.
+ * enable_resource_id_check_show() - Show if resource ID checking is enabled
+ * on the OST.
+ *
+ * @kobj: kobject for the OFD device
+ * @attr: attribute for the OFD device
+ * @buf: buffer to write the value to
+ *
+ * When enabled, an OST object's UID and GID are checked against
+ * the nodemap mapping rules.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t enable_resource_id_check_show(struct kobject *kobj,
+					     struct attribute *attr, char *buf)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 ofd->ofd_lut.lut_enable_resource_id_check);
+}
+
+/**
+ * enable_resource_id_check_store() - Enable or disable resource ID checking
+ * on the OST.
+ * @kobj: kobject for the OFD device
+ * @attr: attribute for the OFD device
+ * @buffer: buffer containing the value to set
+ * @count: length of the buffer
+ *
+ * This is used to interface to userspace administrative tools to enable
+ * or disable resource ID checking on the OST.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t enable_resource_id_check_store(struct kobject *kobj,
+					      struct attribute *attr,
+					      const char *buffer, size_t count)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buffer, &val);
+	if (rc)
+		return rc;
+
+	spin_lock(&ofd->ofd_flags_lock);
+	ofd->ofd_lut.lut_enable_resource_id_check = val;
+	spin_unlock(&ofd->ofd_flags_lock);
+
+	return count;
+}
+LUSTRE_RW_ATTR(enable_resource_id_check);
+
+/**
+ * enable_resource_id_repair_show() - Show if resource ID repair is enabled
+ * on the OST.
+ *
+ * @kobj: kobject for the OFD device
+ * @attr: attribute for the OFD device
+ * @buf: buffer to write the value to
+ *
+ * When enabled, an OST object's UID/GID/PROJID are repaired if they are unset.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t enable_resource_id_repair_show(struct kobject *kobj,
+					      struct attribute *attr, char *buf)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 ofd->ofd_enable_resource_id_repair);
+}
+
+/**
+ * enable_resource_id_repair_store() - Enable or disable resource ID repair
+ * on the OST.
+ *
+ * @kobj: kobject for the OFD device
+ * @attr: attribute for the OFD device
+ * @buffer: buffer containing the value to set
+ * @count: length of the buffer
+ *
+ * This is used to interface to userspace administrative tools to enable
+ * or disable resource ID repair on the OST.
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t enable_resource_id_repair_store(struct kobject *kobj,
+					       struct attribute *attr,
+					       const char *buffer, size_t count)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+	bool val;
+	int rc;
+
+	rc = kstrtobool(buffer, &val);
+	if (rc)
+		return rc;
+
+	spin_lock(&ofd->ofd_flags_lock);
+	ofd->ofd_enable_resource_id_repair = val;
+	spin_unlock(&ofd->ofd_flags_lock);
+
+	return count;
+}
+LUSTRE_RW_ATTR(enable_resource_id_repair);
+
+/**
+ * resource_id_repair_queue_count_show() - Show the resource ID repair queue size
+ *
+ * @kobj: kobject for the OFD device
+ * @attr: attribute for the OFD device
+ * @buf: buffer to write the value to
+ *
+ * Return:
+ * * %0 on success
+ * * %negative on failure
+ */
+static ssize_t resource_id_repair_queue_count_show(struct kobject *kobj,
+						   struct attribute *attr,
+						   char *buf)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 ofd->ofd_id_repair_queue_count);
+}
+
+/**
+ * resource_id_repair_queue_count_store() - Set resource ID repair queue size
+ * @kobj: kobject for the OFD device
+ * @attr: attribute for the OFD device
+ * @buffer: buffer containing the value to set
+ * @count: length of the buffer
+ *
+ * This is used to interface to userspace administrative tools to set the number
+ * of queued repair requests.
+ *
+ * Return:
+ * * %0 on success
+ * * %-ERANGE if the value is out of range must be in
+ *   [1, OFD_ID_REPAIR_QUEUE_COUNT_LIMIT]
+ * * %negative on failure
+ */
+static ssize_t resource_id_repair_queue_count_store(struct kobject *kobj,
+						    struct attribute *attr,
+						    const char *buffer,
+						    size_t count)
+{
+	struct obd_device *obd =
+		container_of(kobj, struct obd_device, obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+	unsigned int val;
+	int rc;
+
+	rc = kstrtouint(buffer, 10, &val);
+	if (rc)
+		return rc;
+
+	if (val < 1 || val > OFD_ID_REPAIR_QUEUE_COUNT_LIMIT)
+		return -ERANGE;
+
+	spin_lock(&ofd->ofd_flags_lock);
+	ofd->ofd_id_repair_queue_count = val;
+	spin_unlock(&ofd->ofd_flags_lock);
+
+	return count;
+}
+LUSTRE_RW_ATTR(resource_id_repair_queue_count);
+
+/**
+ * no_create_show() - Show if the OFD is in no precreate mode.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
  * This means OFD has been adminstratively disabled at the OST to prevent
  * the MDS from creating any new files on the OST, though existing files
  * can still be read, written, and unlinked.
  *
- * \retval		number of bytes written
+ * Returns number of bytes written
  */
 static ssize_t no_create_show(struct kobject *kobj, struct attribute *attr,
 				 char *buf)
@@ -308,15 +495,18 @@ static ssize_t no_create_show(struct kobject *kobj, struct attribute *attr,
 }
 
 /**
- * Set OFD to no create mode.
+ * no_create_store() - Set OFD to no create mode.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents dealy in seconds
+ * @count: @buffer length
  *
  * This is used to interface to userspace administrative tools to
  * disable new object creation on the OST.
  *
- * \param[in] count	\a buffer length
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t no_create_store(struct kobject *kobj, struct attribute *attr,
 				  const char *buffer, size_t count)
@@ -347,12 +537,15 @@ LUSTRE_RW_ATTR(no_precreate);
 #endif
 
 /**
- * Show if the OFD is in read-only mode.
+ * readonly_show() - Show if the OFD is in read-only mode.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
  * This means OFD has been adminstratively disabled at the OST to prevent
  * writing to the OFD.
  *
- * \retval		number of bytes written
+ * Returns number of bytes written
  */
 static ssize_t readonly_show(struct kobject *kobj, struct attribute *attr,
 			     char *buf)
@@ -365,15 +558,18 @@ static ssize_t readonly_show(struct kobject *kobj, struct attribute *attr,
 }
 
 /**
- * Set OFD to readonly mode.
+ * readonly_store() - Set OFD to readonly mode.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents OST read-only
+ * @count: @buffer length
  *
  * This is used to interface to userspace administrative tools to
  * set the OST read-only.
  *
- * \param[in] count	\a buffer length
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t readonly_store(struct kobject *kobj, struct attribute *attr,
 			      const char *buffer, size_t count)
@@ -397,13 +593,14 @@ static ssize_t readonly_store(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RW_ATTR(readonly);
 
 /**
- * Show OFD filesystem type.
+ * fstype_show() - Show OFD filesystem type.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t fstype_show(struct kobject *kobj, struct attribute *attr,
 			   char *buf)
@@ -421,7 +618,10 @@ static ssize_t fstype_show(struct kobject *kobj, struct attribute *attr,
 LUSTRE_RO_ATTR(fstype);
 
 /**
- * Show journal handling mode: synchronous or asynchronous.
+ * sync_journal_show() - Show journal handling mode: synchronous or asynchronous
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
  * When running in asynchronous mode the journal transactions are not
  * committed to disk before the RPC is replied back to the client.
@@ -431,11 +631,9 @@ LUSTRE_RO_ATTR(fstype);
  * on bulk RPCs, and will have to keep more dirty pages in cache before they
  * are committed on the OST.
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t sync_journal_show(struct kobject *kobj, struct attribute *attr,
 				char *buf)
@@ -448,17 +646,17 @@ static ssize_t sync_journal_show(struct kobject *kobj, struct attribute *attr,
 }
 
 /**
- * Set journal mode to synchronous or asynchronous.
+ * sync_journal_store() - Set journal mode to synchronous or asynchronous.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents modes
+ *          1: synchronous mode
+ *          0: asynchronous mode
+ * @count: @buffer length
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents mode
- *			1: synchronous mode
- *			0: asynchronous mode
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t sync_journal_store(struct kobject *kobj, struct attribute *attr,
 				 const char *buffer, size_t count)
@@ -482,34 +680,33 @@ static ssize_t sync_journal_store(struct kobject *kobj, struct attribute *attr,
 }
 LUSTRE_RW_ATTR(sync_journal);
 
-static int ofd_brw_size_seq_show(struct seq_file *m, void *data)
+static ssize_t brw_size_show(struct kobject *kobj, struct attribute *attr,
+			     char *buf)
 {
-	struct obd_device	*obd = m->private;
-	struct ofd_device	*ofd = ofd_dev(obd->obd_lu_dev);
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
+	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
 
-	seq_printf(m, "%u\n", ofd->ofd_brw_size / ONE_MB_BRW_SIZE);
-	return 0;
+	if (IS_ERR_OR_NULL(ofd))
+		return -ENODEV;
+
+	return  scnprintf(buf, PAGE_SIZE, "%u\n",
+			  ofd->ofd_brw_size / ONE_MB_BRW_SIZE);
 }
 
-static ssize_t
-ofd_brw_size_seq_write(struct file *file, const char __user *buffer,
-		       size_t count, loff_t *off)
+static ssize_t brw_size_store(struct kobject *kobj, struct attribute *attr,
+			      const char *buffer, size_t count)
 {
-	struct seq_file	*m = file->private_data;
-	struct obd_device *obd = m->private;
+	struct obd_device *obd = container_of(kobj, struct obd_device,
+					      obd_kset.kobj);
 	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
-	char kernbuf[22] = "";
 	u64 val;
 	int rc;
 
-	if (count >= sizeof(kernbuf))
-		return -EINVAL;
+	if (IS_ERR_OR_NULL(ofd))
+		return -ENODEV;
 
-	if (copy_from_user(kernbuf, buffer, count))
-		return -EFAULT;
-	kernbuf[count] = 0;
-
-	rc = sysfs_memparse(kernbuf, count, &val, "MiB");
+	rc = sysfs_memparse(buffer, count, &val, "MiB");
 	if (rc < 0)
 		return rc;
 
@@ -526,79 +723,20 @@ ofd_brw_size_seq_write(struct file *file, const char __user *buffer,
 
 	return count;
 }
-LPROC_SEQ_FOPS(ofd_brw_size);
-
-/*
- * ofd_checksum_type(server) proc handling
- */
-DECLARE_CKSUM_NAME;
-
-static int ofd_checksum_type_seq_show(struct seq_file *m, void *data)
-{
-	struct obd_device *obd = m->private;
-	struct lu_target *lut;
-	enum cksum_types pref;
-	int i;
-
-	if (!obd)
-		return 0;
-
-	lut = obd2obt(obd)->obt_lut;
-	/* select fastest checksum type on the server */
-	pref = obd_cksum_type_select(obd->obd_name,
-				     lut->lut_cksum_types_supported,
-				     lut->lut_dt_conf.ddp_t10_cksum_type);
-
-	for (i = 0; i < ARRAY_SIZE(cksum_name); i++) {
-		if ((BIT(i) & lut->lut_cksum_types_supported) == 0)
-			continue;
-
-		if (pref == BIT(i))
-			seq_printf(m, "[%s] ", cksum_name[i]);
-		else
-			seq_printf(m, "%s ", cksum_name[i]);
-	}
-	seq_puts(m, "\n");
-
-	return 0;
-}
-
-LPROC_SEQ_FOPS_RO(ofd_checksum_type);
-
-
-#if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 16, 53, 0)
-static ssize_t sync_on_lock_cancel_show(struct kobject *kobj,
-					struct attribute *attr, char *buf)
-{
-	return sync_lock_cancel_show(kobj, attr, buf);
-}
-
-static ssize_t sync_on_lock_cancel_store(struct kobject *kobj,
-					 struct attribute *attr,
-					 const char *buffer, size_t count)
-{
-	static bool sync_on_lock_cancel_warned;
-
-	if (!sync_on_lock_cancel_warned) {
-		sync_on_lock_cancel_warned = true;
-		pr_info("ofd: 'obdfilter.*.sync_on_lock_cancel' is deprecated, use 'obdfilter.*.sync_lock_cancel' instead\n");
-	}
-	return sync_lock_cancel_store(kobj, attr, buffer, count);
-}
-LUSTRE_RW_ATTR(sync_on_lock_cancel);
-#endif
+LUSTRE_RW_ATTR(brw_size);
 
 /**
- * Show the limit of soft sync RPCs.
+ * soft_sync_limit_show() - Show the limit of soft sync RPCs.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
  * This value defines how many IO RPCs with OBD_BRW_SOFT_SYNC flag
  * are allowed before sync update will be triggered.
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t soft_sync_limit_show(struct kobject *kobj,
 				    struct attribute *attr, char *buf)
@@ -611,20 +749,20 @@ static ssize_t soft_sync_limit_show(struct kobject *kobj,
 }
 
 /**
- * Change the limit of soft sync RPCs.
+ * soft_sync_limit_store() - Change the limit of soft sync RPCs.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents dealy in seconds
+ * @count: @buffer length
  *
  * Define how many IO RPCs with OBD_BRW_SOFT_SYNC flag
  * allowed before sync update will be done.
  *
  * This limit is global across all exports.
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents limit
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t soft_sync_limit_store(struct kobject *kobj,
 				     struct attribute *attr,
@@ -646,15 +784,14 @@ static ssize_t soft_sync_limit_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(soft_sync_limit);
 
 /**
- * Show the LFSCK speed limit.
+ * lfsck_speed_limit_show() - Show the LFSCK speed limit.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * The maximum number of items scanned per second.
- *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t lfsck_speed_limit_show(struct kobject *kobj,
 				      struct attribute *attr, char *buf)
@@ -667,17 +804,17 @@ static ssize_t lfsck_speed_limit_show(struct kobject *kobj,
 }
 
 /**
- * Change the LFSCK speed limit.
+ * lfsck_speed_limit_store() - Change the LFSCK speed limit.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents speed (e.g., "1000").
+ * @count: @buffer length
  *
  * Limit number of items that may be scanned per second.
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents limit
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t lfsck_speed_limit_store(struct kobject *kobj,
 				       struct attribute *attr,
@@ -700,37 +837,45 @@ static ssize_t lfsck_speed_limit_store(struct kobject *kobj,
 LUSTRE_RW_ATTR(lfsck_speed_limit);
 
 /**
- * Show LFSCK layout verification stats from the most recent LFSCK run.
+ * lfsck_layout_seq_show() - Show LFSCK layout verification stats from the most
+ *                           recent LFSCK run.
+ * @m: seq_file handle
+ * @data: unused for single entry
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
-static int ofd_lfsck_layout_seq_show(struct seq_file *m, void *data)
+static int lfsck_layout_seq_show(struct seq_file *m, void *data)
 {
 	struct obd_device *obd = m->private;
 	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+
+	if (IS_ERR_OR_NULL(ofd))
+		return -ENODEV;
 
 	return lfsck_dump(m, ofd->ofd_osd, LFSCK_TYPE_LAYOUT);
 }
 
-LPROC_SEQ_FOPS_RO(ofd_lfsck_layout);
+LDEBUGFS_SEQ_FOPS_RO(lfsck_layout);
 
 /**
- * Show if LFSCK performed parent FID verification.
+ * lfsck_verify_pfid_seq_show() - Show if LFSCK performed parent FID
+ *                                verification.
+ * @m: seq_file handle
+ * @data: unused for single entry
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
-static int ofd_lfsck_verify_pfid_seq_show(struct seq_file *m, void *data)
+static int lfsck_verify_pfid_seq_show(struct seq_file *m, void *data)
 {
 	struct obd_device *obd = m->private;
 	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
+
+	if (IS_ERR_OR_NULL(ofd))
+		return -ENODEV;
 
 	seq_printf(m, "switch: %s\ndetected: %llu\nrepaired: %llu\n",
 		   ofd->ofd_lfsck_verify_pfid ? "on" : "off",
@@ -740,30 +885,34 @@ static int ofd_lfsck_verify_pfid_seq_show(struct seq_file *m, void *data)
 }
 
 /**
- * Set the LFSCK behavior to verify parent FID correctness.
+ * lfsck_verify_pfid_seq_write() - Set the LFSCK behavior to verify parent FID
+ *                                 correctness.
+ * @file: proc file
+ * @buffer: string which represents behavior
+ *          1: verify parent FID
+ *          0: don't verify parent FID
+ * @count: @buffer length
+ * @off: unused for single entry
  *
  * If flag ofd_lfsck_verify_pfid is set then LFSCK does parent FID
  * verification during read/write operations.
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents behavior
- *			1: verify parent FID
- *			0: don't verify parent FID
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %@count on success
+ * * %negative number on error
  */
 static ssize_t
-ofd_lfsck_verify_pfid_seq_write(struct file *file, const char __user *buffer,
-				size_t count, loff_t *off)
+lfsck_verify_pfid_seq_write(struct file *file, const char __user *buffer,
+			    size_t count, loff_t *off)
 {
 	struct seq_file *m = file->private_data;
 	struct obd_device *obd = m->private;
 	struct ofd_device *ofd = ofd_dev(obd->obd_lu_dev);
 	bool val;
 	int rc;
+
+	if (IS_ERR_OR_NULL(ofd))
+		return -ENODEV;
 
 	rc = kstrtobool_from_user(buffer, count, &val);
 	if (rc)
@@ -778,7 +927,7 @@ ofd_lfsck_verify_pfid_seq_write(struct file *file, const char __user *buffer,
 	return count;
 }
 
-LPROC_SEQ_FOPS(ofd_lfsck_verify_pfid);
+LDEBUGFS_SEQ_FOPS(lfsck_verify_pfid);
 
 static ssize_t access_log_mask_show(struct kobject *kobj,
 			struct attribute *attr, char *buf)
@@ -879,23 +1028,24 @@ static ssize_t access_log_size_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(access_log_size);
 
-static int ofd_site_stats_seq_show(struct seq_file *m, void *data)
+static int site_stats_seq_show(struct seq_file *m, void *data)
 {
 	struct obd_device *obd = m->private;
 
 	return lu_site_stats_seq_print(obd->obd_lu_dev->ld_site, m);
 }
 
-LPROC_SEQ_FOPS_RO(ofd_site_stats);
+LDEBUGFS_SEQ_FOPS_RO(site_stats);
 
 /**
- * Show if the OFD enforces T10PI checksum.
+ * checksum_t10pi_enforce_show() - Show if the OFD enforces T10PI checksum.
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buf: buffer where the output string will be written [out]
  *
- * \param[in] m		seq_file handle
- * \param[in] data	unused for single entry
- *
- * \retval		0 on success
- * \retval		negative value on error
+ * Return:
+ * * %0 on success
+ * * %negative value on error
  */
 static ssize_t checksum_t10pi_enforce_show(struct kobject *kobj,
 					   struct attribute *attr,
@@ -909,7 +1059,14 @@ static ssize_t checksum_t10pi_enforce_show(struct kobject *kobj,
 }
 
 /**
- * Force specific T10PI checksum modes to be enabled
+ * checksum_t10pi_enforce_store() - Force specific T10PI checksum modes to be
+ *                                  enabled
+ * @kobj: Kernel object (OFD device)
+ * @attr: Pointer to struct attribute
+ * @buffer: string which represents mode
+ *          1: set T10PI checksums enforced
+ *          0: unset T10PI checksums enforced
+ * @count: @buffer length
  *
  * If T10PI *is* supported in hardware, allow only the supported T10PI type
  * to be used. If T10PI is *not* supported by the OSD, setting the enforce
@@ -919,15 +1076,9 @@ static ssize_t checksum_t10pi_enforce_show(struct kobject *kobj,
  * The final determination of which algorithm to be used depends whether
  * the client supports T10PI or not, and is handled at client connect time.
  *
- * \param[in] file	proc file
- * \param[in] buffer	string which represents mode
- *			1: set T10PI checksums enforced
- *			0: unset T10PI checksums enforced
- * \param[in] count	\a buffer length
- * \param[in] off	unused for single entry
- *
- * \retval		\a count on success
- * \retval		negative number on error
+ * Return:
+ * * %count on success
+ * * %negative number on error
  */
 static ssize_t checksum_t10pi_enforce_store(struct kobject *kobj,
 					    struct attribute *attr,
@@ -950,13 +1101,13 @@ static ssize_t checksum_t10pi_enforce_store(struct kobject *kobj,
 }
 LUSTRE_RW_ATTR(checksum_t10pi_enforce);
 
-LPROC_SEQ_FOPS_RO_TYPE(ofd, recovery_status);
 LUSTRE_RW_ATTR(recovery_time_hard);
 LUSTRE_RW_ATTR(recovery_time_soft);
 LUSTRE_RW_ATTR(ir_factor);
 
-LPROC_SEQ_FOPS_WR_ONLY(ofd, evict_client);
-LPROC_SEQ_FOPS_RW_TYPE(ofd, checksum_dump);
+LUSTRE_WO_ATTR(evict_client);
+LUSTRE_ATTR(checksum_dump, 0644, dt_checksum_dump_show, dt_checksum_dump_store);
+LUSTRE_ATTR(checksum_type, 0444, dt_checksum_type_show, NULL);
 LUSTRE_RW_ATTR(job_cleanup_interval);
 
 LUSTRE_RO_ATTR(tot_dirty);
@@ -969,33 +1120,22 @@ LUSTRE_RO_ATTR(num_exports);
 LUSTRE_RW_ATTR(grant_check_threshold);
 LUSTRE_RO_ATTR(eviction_count);
 
-struct lprocfs_vars lprocfs_ofd_obd_vars[] = {
-	{ .name =	"last_id",
-	  .fops =	&ofd_last_id_fops		},
-	{ .name =	"recovery_status",
-	  .fops =	&ofd_recovery_status_fops	},
-	{ .name =	"evict_client",
-	  .fops =	&ofd_evict_client_fops		},
-	{ .name =	"brw_size",
-	  .fops =	&ofd_brw_size_fops		},
-	{ .name =	"checksum_dump",
-	  .fops =	&ofd_checksum_dump_fops		},
-	{ .name =	"lfsck_layout",
-	  .fops =	&ofd_lfsck_layout_fops		},
-	{ .name	=	"lfsck_verify_pfid",
-	  .fops	=	&ofd_lfsck_verify_pfid_fops	},
-	{ .name =	"site_stats",
-	  .fops =	&ofd_site_stats_fops		},
-	{ .name =	"checksum_type",
-	  .fops =	&ofd_checksum_type_fops		},
-	{ NULL }
-};
-
+LDEBUGFS_SEQ_FOPS_RO_TYPE(ofd, recovery_status);
 LDEBUGFS_SEQ_FOPS_RO_TYPE(ofd, recovery_stale_clients);
 
-struct ldebugfs_vars ldebugfs_ofd_obd_vars[] = {
+static struct ldebugfs_vars ldebugfs_ofd_obd_vars[] = {
+	{ .name =	"last_id",
+	  .fops =	&last_id_fops			},
+	{ .name =	"lfsck_layout",
+	  .fops =	&lfsck_layout_fops		},
+	{ .name	=	"lfsck_verify_pfid",
+	  .fops	=	&lfsck_verify_pfid_fops	},
+	{ .name =	"recovery_status",
+	  .fops =	&ofd_recovery_status_fops	},
 	{ .name =	"recovery_stale_clients",
 	  .fops =	&ofd_recovery_stale_clients_fops},
+	{ .name =	"site_stats",
+	  .fops =	&site_stats_fops		},
 	{ NULL }
 };
 
@@ -1008,9 +1148,10 @@ static struct ldebugfs_vars ldebugfs_ofd_gss_vars[] = {
 };
 
 /**
- * Initialize OFD statistics counters
- *
- * param[in] stats	statistics counters
+ * ofd_stats_counter_init() - Initialize OFD statistics counters
+ * @stats: statistics counters
+ * @offset:
+ * @cntr_umask:
  */
 void ofd_stats_counter_init(struct lprocfs_stats *stats, unsigned int offset,
 			    enum lprocfs_counter_config cntr_umask)
@@ -1051,18 +1192,29 @@ void ofd_stats_counter_init(struct lprocfs_stats *stats, unsigned int offset,
 			     LPROCFS_TYPE_LATENCY & (~cntr_umask), "prealloc");
 }
 
-LPROC_SEQ_FOPS(lprocfs_nid_stats_clear);
+/* belongs to export directory */
+LDEBUGFS_SEQ_FOPS_RW_TYPE(ofd, nid_stats_clear);
 
 LUSTRE_OBD_UINT_PARAM_ATTR(at_min);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_max);
 LUSTRE_OBD_UINT_PARAM_ATTR(at_history);
+LUSTRE_OBD_UINT_PARAM_ATTR(ldlm_enqueue_min);
 
 static struct attribute *ofd_attrs[] = {
 	&lustre_attr_access_log_mask.attr,
 	&lustre_attr_access_log_size.attr,
 	&lustre_attr_atime_diff.attr,
+	&lustre_attr_at_history.attr,
+	&lustre_attr_at_max.attr,
+	&lustre_attr_at_min.attr,
+	&lustre_attr_brw_size.attr,
+	&lustre_attr_checksum_dump.attr,
 	&lustre_attr_checksum_t10pi_enforce.attr,
+	&lustre_attr_checksum_type.attr,
 	&lustre_attr_degraded.attr,
+	&lustre_attr_enable_resource_id_check.attr,
+	&lustre_attr_enable_resource_id_repair.attr,
+	&lustre_attr_evict_client.attr,
 	&lustre_attr_eviction_count.attr,
 	&lustre_attr_fstype.attr,
 	&lustre_attr_grant_check_threshold.attr,
@@ -1073,43 +1225,38 @@ static struct attribute *ofd_attrs[] = {
 	&lustre_attr_job_cleanup_interval.attr,
 	&lustre_attr_lfsck_speed_limit.attr,
 	&lustre_attr_no_create.attr,
-	&lustre_attr_readonly.attr,
 #if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 20, 53, 0)
 	&lustre_attr_no_precreate.attr,
 #endif
 	&lustre_attr_num_exports.attr,
 	&lustre_attr_precreate_batch.attr,
+	&lustre_attr_readonly.attr,
 	&lustre_attr_recovery_time_hard.attr,
 	&lustre_attr_recovery_time_soft.attr,
+	&lustre_attr_resource_id_repair_queue_count.attr,
 	&lustre_attr_seqs_allocated.attr,
 	&lustre_attr_tot_dirty.attr,
 	&lustre_attr_tot_granted.attr,
 	&lustre_attr_tot_pending.attr,
 	&lustre_attr_soft_sync_limit.attr,
 	&lustre_attr_sync_journal.attr,
-#if LUSTRE_VERSION_CODE < OBD_OCD_VERSION(2, 16, 53, 0)
-	&lustre_attr_sync_on_lock_cancel.attr,
-#endif
-	&lustre_attr_at_min.attr,
-	&lustre_attr_at_max.attr,
-	&lustre_attr_at_history.attr,
+	&lustre_attr_ldlm_enqueue_min.attr,
 	NULL,
 };
 
 KOBJ_ATTRIBUTE_GROUPS(ofd); /* creates ofd_groups from ofd_attrs */
 
 /**
- * Initialize all needed procfs entries for OFD device.
+ * ofd_tunables_init() - Initialize all needed procfs entries for OFD device.
+ * @ofd: OFD device
  *
- * \param[in] ofd	OFD device
- *
- * \retval		0 if successful
- * \retval		negative value on error
+ * Return:
+ * * %0 if successful
+ * * %negative value on error
  */
 int ofd_tunables_init(struct ofd_device *ofd)
 {
 	struct obd_device *obd = ofd_obd(ofd);
-	struct proc_dir_entry *entry;
 	int rc = 0;
 
 	ENTRY;
@@ -1117,14 +1264,13 @@ int ofd_tunables_init(struct ofd_device *ofd)
 	 * to /proc incrementally as the ofd is setup
 	 */
 	obd->obd_ktype.default_groups = KOBJ_ATTR_GROUPS(ofd);
-	obd->obd_vars = lprocfs_ofd_obd_vars;
+	obd->obd_debugfs_vars = ldebugfs_ofd_obd_vars;
 	rc = lprocfs_obd_setup(obd, false);
 	if (rc) {
 		CERROR("%s: lprocfs_obd_setup failed: %d.\n",
 		       obd->obd_name, rc);
 		RETURN(rc);
 	}
-	ldebugfs_add_vars(obd->obd_debugfs_entry, ldebugfs_ofd_obd_vars, obd);
 
 	rc = tgt_tunables_init(&ofd->ofd_lut);
 	if (rc) {
@@ -1142,27 +1288,19 @@ int ofd_tunables_init(struct ofd_device *ofd)
 
 	obd->obd_debugfs_gss_dir = debugfs_create_dir("gss",
 						      obd->obd_debugfs_entry);
-	if (obd->obd_debugfs_gss_dir)
-		ldebugfs_add_vars(obd->obd_debugfs_gss_dir,
-				  ldebugfs_ofd_gss_vars, obd);
+	if (IS_ERR(obd->obd_debugfs_gss_dir))
+		obd->obd_debugfs_gss_dir = NULL;
 
-	entry = lprocfs_register("exports", obd->obd_proc_entry, NULL, NULL);
-	if (IS_ERR(entry)) {
-		rc = PTR_ERR(entry);
-		CERROR("%s: error %d setting up lprocfs for %s\n",
-		       obd->obd_name, rc, "exports");
-		GOTO(obd_free_stats, rc);
-	}
-	obd->obd_proc_exports_entry = entry;
+	ldebugfs_add_vars(obd->obd_debugfs_gss_dir,
+			  ldebugfs_ofd_gss_vars, obd);
 
-	entry = lprocfs_add_simple(obd->obd_proc_exports_entry, "clear",
-				   obd, &lprocfs_nid_stats_clear_fops);
-	if (IS_ERR(entry)) {
-		rc = PTR_ERR(entry);
-		CERROR("%s: add proc entry 'clear' failed: %d.\n",
-		       obd->obd_name, rc);
-		GOTO(obd_free_stats, rc);
-	}
+	obd->obd_debugfs_exports = debugfs_create_dir("exports",
+						      obd->obd_debugfs_entry);
+	if (IS_ERR(obd->obd_debugfs_exports))
+		obd->obd_debugfs_exports = NULL;
+
+	debugfs_create_file("clear", 0644, obd->obd_debugfs_exports,
+			    obd, &ofd_nid_stats_clear_fops);
 
 	ofd_stats_counter_init(obd->obd_stats, 0, LPROCFS_CNTR_HISTOGRAM);
 

@@ -17,6 +17,7 @@
 # include <stdlib.h> /* abs() */
 # include <inttypes.h> /* PRIu64 */
 # include <ctype.h> /* isascii() */
+# include <errno.h>
 # define __USE_GNU      1
 # define __USE_XOPEN2K8  1
 #else
@@ -47,10 +48,9 @@ struct lgssd_ioctl_param {
 	__u64 send_token_size;
 	char __user *send_token;
 	__u64 reply_buf_size;
-	char __user *reply_buf;
 	/* out */
-	__s64 status;
-	__u64 reply_length;
+	char __user *reply_buf;
+	__s64 __user *status;
 };
 
 #define GSS_SOCKET_PATH	"/tmp/svcgssd.socket"
@@ -101,6 +101,8 @@ struct rsc_downcall_data {
 	__u32		scd_uid;
 	__u32		scd_gid;
 	char		scd_mechname[8];
+	/* nodemap name, LUSTRE_NODEMAP_NAME_LENGTH = 16 */
+	char		scd_nmname[24];
 	__s64		scd_offset;
 	__u32		scd_len;
 	__u32		scd_padding;
@@ -263,25 +265,40 @@ static const char base64url_table[] =
  * and Filename Safe Alphabet" specified by RFC 4648.  '='-padding isn't used,
  * as it's unneeded and not required by the RFC.
  * Pad with a trailing space.
+ *
+ * \param dst (in/out) pointer to the destination buffer pointer. Memory space
+ * must be allocated by the caller. On success, the pointer is positioned after
+ * the trailing space.
+ * \param dstlen (in/out) buffer size at @dst; updated to remaining length on
+ * success
+ * \param src the binary data to encode
+ * \param srclen the length of @src in bytes
+ *
+ * \retval 0 on success
+ * \retval -EINVAL if @dstlen is negative on entry
+ * \retval -ENOBUFS if @dstlen is too small
  */
-static inline void gss_base64url_encode(char **dst, int *dstlen,
-					const __u8 *src, int srclen)
+static inline int gss_base64url_encode(char **dst, int *dstlen,
+				       const __u8 *src, int srclen)
 {
 	char *cp = *dst;
 	int len = *dstlen;
 	__u32 ac = 0;
 	int bits = 0;
+	int rc = 0;
 	int i;
 
 	if (len < 0)
-		return;
+		return -EINVAL;
+	if (len == 0)
+		return 0;
 
-	if (!srclen)
-		return gss_string_write(dst, dstlen, "");
+	if (!srclen) {
+		gss_string_write(dst, dstlen, "");
+		return 0;
+	}
 
 	for (i = 0; i < srclen; i++) {
-		if (!len)
-			break;
 		ac = (ac << 8) | src[i];
 		bits += 8;
 		do {
@@ -289,6 +306,8 @@ static inline void gss_base64url_encode(char **dst, int *dstlen,
 			*cp++ = base64url_table[(ac >> bits) & 0x3f];
 			len--;
 		} while (bits >= 6 && len > 0);
+		if (!len)
+			break;
 	}
 	if (i < srclen) {
 		len = -1;
@@ -310,6 +329,9 @@ static inline void gss_base64url_encode(char **dst, int *dstlen,
 out:
 	*dst = cp;
 	*dstlen = len;
+	if (len == -1)
+		rc = -ENOBUFS;
+	return rc;
 }
 
 /*

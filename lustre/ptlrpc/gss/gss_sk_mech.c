@@ -1,24 +1,5 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (C) 2013, 2015, Trustees of Indiana University
  *
@@ -661,14 +642,12 @@ static __u32 sk_encrypt_bulk(struct crypto_sync_skcipher *tfm, __u8 *iv,
 		desc->bd_enc_vec[i].bv_len = ctxt.length;
 
 		skcipher_request_set_crypt(req, &ptxt, &ctxt, ptxt.length, iv);
-		rc = crypto_skcipher_encrypt_iv(req, &ctxt, &ptxt, ptxt.length);
+		rc = crypto_skcipher_encrypt(req);
 		if (rc) {
 			CERROR("failed to encrypt page: %d\n", rc);
-			skcipher_request_zero(req);
 			return rc;
 		}
 	}
-	skcipher_request_zero(req);
 
 	if (adj_nob)
 		desc->bd_nob = nob;
@@ -710,7 +689,6 @@ static __u32 sk_decrypt_bulk(struct crypto_sync_skcipher *tfm, __u8 *iv,
 		if (ciov->bv_offset % blocksize != 0 ||
 		    ciov->bv_len % blocksize != 0) {
 			CERROR("Invalid bulk descriptor vector\n");
-			skcipher_request_zero(req);
 			return GSS_S_DEFECTIVE_TOKEN;
 		}
 
@@ -734,7 +712,6 @@ static __u32 sk_decrypt_bulk(struct crypto_sync_skcipher *tfm, __u8 *iv,
 			if (ciov->bv_len + cnob > desc->bd_nob_transferred ||
 			    piov->bv_len > ciov->bv_len) {
 				CERROR("Invalid decrypted length\n");
-				skcipher_request_zero(req);
 				return GSS_S_FAILURE;
 			}
 		}
@@ -754,10 +731,9 @@ static __u32 sk_decrypt_bulk(struct crypto_sync_skcipher *tfm, __u8 *iv,
 			sg_assign_page(&ptxt, piov->bv_page);
 
 		skcipher_request_set_crypt(req, &ctxt, &ptxt, ptxt.length, iv);
-		rc = crypto_skcipher_decrypt_iv(req, &ptxt, &ctxt, ptxt.length);
+		rc = crypto_skcipher_decrypt(req);
 		if (rc) {
 			CERROR("Decryption failed for page: %d\n", rc);
-			skcipher_request_zero(req);
 			return GSS_S_FAILURE;
 		}
 
@@ -772,7 +748,6 @@ static __u32 sk_decrypt_bulk(struct crypto_sync_skcipher *tfm, __u8 *iv,
 		cnob += ciov->bv_len;
 		pnob += piov->bv_len;
 	}
-	skcipher_request_zero(req);
 
 	/* if needed, clear up the rest unused iovs */
 	if (adj_nob)

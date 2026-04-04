@@ -16,7 +16,6 @@
 
 #define DEBUG_SUBSYSTEM S_OSD
 
-#include <libcfs/libcfs.h>
 #include <obd_support.h>
 #include <lustre_net.h>
 #include <obd.h>
@@ -141,6 +140,9 @@ static struct dt_it *osd_index_it_init(const struct lu_env *env,
 
 	it->ozi_obj   = obj;
 	it->ozi_reset = 1;
+#ifdef ZAP_MAXNAMELEN_NEW
+	it->ozi_za.za_name_len = MAXNAMELEN;
+#endif
 	lu_object_get(lo);
 
 	RETURN((struct dt_it *)it);
@@ -1323,7 +1325,11 @@ static int osd_dir_it_next(const struct lu_env *env, struct dt_it *di)
 
 	ENTRY;
 	/* temp. storage should be enough for any key supported by ZFS */
+#ifdef ZAP_MAXNAMELEN_NEW
+	LASSERT(za->za_name_len <= sizeof(it->ozi_name));
+#else
 	BUILD_BUG_ON(sizeof(za->za_name) > sizeof(it->ozi_name));
+#endif
 
 	/*
 	 * the first ->next() moves the cursor to .
@@ -1410,7 +1416,7 @@ osd_dirent_update(const struct lu_env *env, struct osd_device *dev,
 		RETURN(-ENOMEM);
 
 	dmu_tx_hold_zap(tx, zap, TRUE, NULL);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (!rc)
 		rc = -zap_update(dev->od_os, zap, key, 8, sizeof(*zde) / 8,
 				 (const void *)zde, tx);
@@ -1440,7 +1446,7 @@ static int osd_update_entry_for_agent(const struct lu_env *env,
 
 	dmu_tx_hold_sa_create(tx, osd_find_dnsize(osd, OSD_BASE_EA_IN_BONUS));
 	dmu_tx_hold_zap(tx, zap, FALSE, NULL);
-	rc = -dmu_tx_assign(tx, TXG_WAIT);
+	rc = -dmu_tx_assign(tx, DMU_TX_WAIT);
 	if (rc) {
 		dmu_tx_abort(tx);
 		GOTO(out, rc);

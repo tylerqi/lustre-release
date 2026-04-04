@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1
+// SPDX-License-Identifier: LGPL-2.1+
 
 /*
  * Copyright (c) 2014, 2017, Intel Corporation.
@@ -29,7 +29,8 @@
 #include <float.h>
 #include <limits.h>
 #include <ctype.h>
-#include "libcfs/util/list.h"
+#include <lnetconfig/liblnetconfig.h>
+#include <libcfs/util/list.h>
 #include <cyaml.h>
 
 #define INDENT		4
@@ -405,10 +406,12 @@ static int assign_type_value(struct cYAML *obj, const char *value)
 
 	if (strcmp(value, "null") == 0)
 		obj->cy_type = CYAML_TYPE_NULL;
-	else if (strcmp(value, "false") == 0) {
+	else if (strcmp(value, "False") == 0 ||
+		 strcmp(value, "false") == 0) {
 		obj->cy_type = CYAML_TYPE_FALSE;
 		obj->cy_valueint = 0;
-	} else if (strcmp(value, "true") == 0) {
+	} else if (strcmp(value, "True") == 0 ||
+		   strcmp(value, "true") == 0) {
 		obj->cy_type = CYAML_TYPE_TRUE;
 		obj->cy_valueint = 1;
 	} else if (*value == '-' || (*value >= '0' && *value <= '9')) {

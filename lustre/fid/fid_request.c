@@ -208,7 +208,7 @@ static int seq_client_alloc_seq(const struct lu_env *env,
 	if (lu_seq_range_is_exhausted(&seq->lcs_space)) {
 		rc = seq_client_alloc_meta(env, seq);
 		if (rc) {
-			if (rc != -EINPROGRESS)
+			if (rc != -EINPROGRESS && rc != -EAGAIN)
 				CERROR("%s: Cannot allocate new meta-sequence: rc = %d\n",
 				       seq->lcs_name, rc);
 			RETURN(rc);
@@ -231,14 +231,14 @@ static int seq_client_alloc_seq(const struct lu_env *env,
 }
 
 /**
- * Allocate the whole non-used seq to the caller.
+ * seq_client_get_seq() - Allocate the whole non-used seq to the caller
+ * @env: pointer to the thread context
+ * @seq: pointer to the client sequence manager
+ * @seqnr: to hold the new allocated sequence
  *
- * \param[in] env	pointer to the thread context
- * \param[in,out] seq	pointer to the client sequence manager
- * \param[out] seqnr	to hold the new allocated sequence
- *
- * \retval		0 for new sequence allocated.
- * \retval		Negative error number on failure.
+ * Return:
+ * * %0: Success (for new sequence allocated)
+ * * %-ERRNO: On Failure
  */
 int seq_client_get_seq(const struct lu_env *env,
 		       struct lu_client_seq *seq, u64 *seqnr)
@@ -275,16 +275,17 @@ int seq_client_get_seq(const struct lu_env *env,
 EXPORT_SYMBOL(seq_client_get_seq);
 
 /**
- * Allocate new fid on passed client @seq and save it to @fid.
+ * seq_client_alloc_fid() - Allocate new FID on passed client @seq and save
+ * it to @fid.
+ * @env: pointer to the thread context
+ * @seq: pointer to the client sequence manager
+ * @fid: to hold the new allocated FID
  *
- * \param[in] env	pointer to the thread context
- * \param[in,out] seq	pointer to the client sequence manager
- * \param[out] fid	to hold the new allocated fid
- *
- * \retval		1 for notify the caller that sequence switch
- *			is performed to allow it to setup FLD for it.
- * \retval		0 for new FID allocated in current sequence.
- * \retval		Negative error number on failure.
+ * Return:
+ * * %1: notify the caller that sequence switch is performed to allow it to
+ * setup FLD for it.
+ * * %0: new FID allocated in current sequence.
+ * * %negative: On failure
  */
 int seq_client_alloc_fid(const struct lu_env *env,
 			 struct lu_client_seq *seq, struct lu_fid *fid)
@@ -310,7 +311,7 @@ int seq_client_alloc_fid(const struct lu_env *env,
 
 		rc = seq_client_alloc_seq(env, seq, &seqnr);
 		if (rc) {
-			if (rc != -EINPROGRESS)
+			if (rc != -EINPROGRESS && rc != -EAGAIN)
 				CERROR("%s: Can't allocate new sequence: rc = %d\n",
 				       seq->lcs_name, rc);
 		} else {
@@ -478,7 +479,7 @@ static int __init fid_init(void)
 	rc = libcfs_setup();
 	if (rc)
 		return rc;
-#ifdef HAVE_SERVER_SUPPORT
+#ifdef CONFIG_LUSTRE_FS_SERVER
 	rc = fid_server_mod_init();
 
 	if (rc)
@@ -493,7 +494,7 @@ static int __init fid_init(void)
 
 static void __exit fid_exit(void)
 {
-# ifdef HAVE_SERVER_SUPPORT
+# ifdef CONFIG_LUSTRE_FS_SERVER
 	fid_server_mod_exit();
 # endif
 	debugfs_remove_recursive(seq_debugfs_dir);
@@ -504,5 +505,5 @@ MODULE_DESCRIPTION("Lustre File IDentifier");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(fid_init);
+late_initcall_sync(fid_init);
 module_exit(fid_exit);

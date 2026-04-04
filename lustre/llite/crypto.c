@@ -1,27 +1,9 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2019, 2020, Whamcloud.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
  */
@@ -83,7 +65,6 @@ static int ll_set_context(struct inode *inode, const void *ctx, size_t len,
 			  void *fs_data)
 {
 	struct ptlrpc_request *req = NULL;
-	struct ll_sb_info *sbi;
 	int rc;
 
 	if (inode == NULL) {
@@ -104,13 +85,13 @@ static int ll_set_context(struct inode *inode, const void *ctx, size_t len,
 	if (is_root_inode(inode))
 		return -EPERM;
 
-	sbi = ll_i2sbi(inode);
 	/* Send setxattr request to lower layers directly instead of going
 	 * through the VFS, as there is no xattr handler for "encryption.".
 	 */
-	rc = md_setxattr(sbi->ll_md_exp, ll_inode2fid(inode),
-			 OBD_MD_FLXATTR, xattr_for_enc(inode),
-			 ctx, len, XATTR_CREATE, ll_i2suppgid(inode), &req);
+	rc = md_setxattr(ll_i2mdexp(inode), ll_inode2fid(inode), OBD_MD_FLXATTR,
+			 xattr_for_enc(inode), ctx, len, XATTR_CREATE,
+			 ll_i2suppgid(inode), ll_i2projid(inode), &req);
+
 	if (rc)
 		return rc;
 	ptlrpc_req_put(req);
@@ -128,6 +109,10 @@ static int ll_set_context(struct inode *inode, const void *ctx, size_t len,
  * are doing, by using the specific flag O_CIPHERTEXT.
  * This flag is only compatible with O_DIRECT IOs, to make sure ciphertext
  * data is wiped from page cache once IOs are finished.
+ *
+ * Return:
+ * * %0 - On success
+ * * %-ERRNO: On Failure
  */
 int ll_file_open_encrypt(struct inode *inode, struct file *filp)
 {
@@ -144,11 +129,6 @@ int ll_file_open_encrypt(struct inode *inode, struct file *filp)
 		rc = 0;
 
 	return rc;
-}
-
-void llcrypt_free_ctx(void *encctx, __u32 size)
-{
-	OBD_FREE(encctx, size);
 }
 
 #ifdef HAVE_FSCRYPT_DUMMY_CONTEXT_ENABLED
@@ -297,6 +277,10 @@ out_free:
  * llcrypt_match_name(), but Lustre server side is not aware of encryption.
  * FID and name hash can then easily be extracted and put into the
  * requests sent to servers.
+ *
+ *  Return:
+ * * %0: Success (filename prepared correctly for the lookup operation)
+ * * %-ERRNO: Failure
  */
 int ll_prepare_lookup(struct inode *dir, struct dentry *de,
 		      struct llcrypt_name *fname, struct lu_fid *fid)
@@ -395,6 +379,10 @@ int ll_prepare_lookup(struct inode *dir, struct dentry *de,
  * present to users the encoded struct ll_digest_filename, instead of a digested
  * name. FID and name hash can then easily be extracted and put into the
  * requests sent to servers.
+ *
+ *  Return:
+ * * %0: Success
+ * * %-ERRNO: On Failure
  */
 int ll_setup_filename(struct inode *dir, const struct qstr *iname,
 		      int lookup, struct llcrypt_name *fname,
@@ -471,6 +459,10 @@ int ll_setup_filename(struct inode *dir, const struct qstr *iname,
  * symlink target when the encryption key is not available, in a way that is
  * compatible with the overlay function ll_setup_filename(), so that further
  * readlink without the encryption key works properly.
+ *
+ *  Return:
+ * * %Valid pointer: Success
+ * * %error pointer: On Failure
  */
 const char *ll_get_symlink(struct inode *inode, const void *caddr,
 			   unsigned int max_size,
@@ -481,7 +473,7 @@ const char *ll_get_symlink(struct inode *inode, const void *caddr,
 	struct lu_fid fid;
 	int rc;
 
-	rc = llcrypt_get_encryption_info(inode);
+	rc = llcrypt_prepare_readdir(inode);
 	if (rc)
 		return ERR_PTR(rc);
 
@@ -531,6 +523,10 @@ const char *ll_get_symlink(struct inode *inode, const void *caddr,
  * present to users the encoded struct ll_digest_filename, instead of a digested
  * name. FID and name hash can then easily be extracted and put into the
  * requests sent to servers.
+ *
+ *  Return:
+ * * %0: Success
+ * * %-ERRNO: On Failure
  */
 int ll_fname_disk_to_usr(struct inode *inode,
 			 u32 hash, u32 minor_hash,
@@ -571,7 +567,7 @@ int ll_fname_disk_to_usr(struct inode *inode,
 			 * enable further lookup requests.
 			 */
 			if (!fid)
-				return -EINVAL;
+				GOTO(out_buf, rc = -EINVAL);
 			digest.ldf_fid = *fid;
 			memcpy(digest.ldf_excerpt,
 			       LLCRYPT_EXTRACT_DIGEST(lltr.name, lltr.len),
@@ -591,10 +587,11 @@ int ll_fname_disk_to_usr(struct inode *inode,
 
 	rc = llcrypt_fname_disk_to_usr(inode, hash, minor_hash, &lltr, oname);
 
-	kfree(buf);
 	oname->name = oname->name - digested;
 	oname->len = oname->len + digested;
 
+out_buf:
+	kfree(buf);
 	return rc;
 }
 
@@ -635,7 +632,7 @@ int llcrypt_d_revalidate(struct dentry *dentry, unsigned int flags)
 
 	dir = dget_parent(dentry);
 	err = llcrypt_prepare_readdir(d_inode(dir));
-	valid = !llcrypt_has_encryption_key(d_inode(dir));
+	valid = !ll_has_encryption_key(d_inode(dir));
 	dput(dir);
 
 	if (err < 0)
@@ -671,10 +668,6 @@ int ll_set_encflags(struct inode *inode, void *encctx, __u32 encctxlen,
 int ll_file_open_encrypt(struct inode *inode, struct file *filp)
 {
 	return llcrypt_file_open(inode, filp);
-}
-
-void llcrypt_free_ctx(void *encctx, __u32 size)
-{
 }
 
 bool ll_sb_has_test_dummy_encryption(struct super_block *sb)

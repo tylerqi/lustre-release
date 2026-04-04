@@ -1,34 +1,14 @@
-/*
- * GPL HEADER START
- *
- * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 only,
- * as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License version 2 for more details (a copy is included
- * in the LICENSE file that accompanied this code).
- *
- * You should have received a copy of the GNU General Public License
- * version 2 along with this program; If not, see
- * http://www.gnu.org/licenses/gpl-2.0.html
- *
- * GPL HEADER END
- */
+// SPDX-License-Identifier: GPL-2.0
+
 /*
  * Copyright (c) 2009, 2010, Oracle and/or its affiliates. All rights reserved.
  * Use is subject to license terms.
  *
  * Copyright (c) 2012, 2017, Intel Corporation.
  */
+
 /*
  * This file is part of Lustre, http://www.lustre.org/
- *
- * lustre/ofd/ofd_dev.c
  *
  * This file contains OSD API methods for OBD Filter Device (OFD),
  * request handlers and supplemental functions to set OFD up and clean it up.
@@ -37,6 +17,7 @@
  * Author: Mike Pershin <mike.pershin@intel.com>
  * Author: Johann Lombardi <johann.lombardi@intel.com>
  */
+
 /*
  * The OBD Filter Device (OFD) module belongs to the Object Storage
  * Server stack and connects the RPC oriented Unified Target (TGT)
@@ -76,6 +57,8 @@
 #include <lustre_quota.h>
 #include <lustre_nodemap.h>
 #include <lustre_log.h>
+#include <llog_swab.h>
+#include <lustre_swab.h>
 #include <linux/falloc.h>
 
 #include "ofd_internal.h"
@@ -779,7 +762,7 @@ int ofd_fid_init(const struct lu_env *env, struct ofd_device *ofd)
 		GOTO(out_name, rc = -ENOMEM);
 
 	rc = seq_server_init(env, ss->ss_server_seq, ofd->ofd_osd, obd_name,
-			     LUSTRE_SEQ_SERVER, ss);
+			     LUSTRE_SEQ_SERVER, ss, false);
 	if (rc) {
 		CERROR("%s: seq server init error: rc = %d\n", obd_name, rc);
 		GOTO(out_server, rc);
@@ -1009,6 +992,82 @@ static int lock_zero_regions(const struct lu_env *env,
 	RETURN(rc);
 }
 
+/**
+ * ofd_fid2path() - load parent FID.
+ * @info: Per-thread common data shared by ost level handlers.
+ * @fp:   User-provided struct for arguments and to store MDT-FID information.
+ *
+ * Part of the OST layer implementation of lfs fid2path.
+ *
+ * Return: 0 Lookup successful,
+ *         negative errno if there was a problem
+ */
+static int ofd_fid2path(struct ofd_thread_info *info,
+			struct getinfo_fid2path *fp)
+{
+	struct ofd_device *ofd = ofd_exp(info->fti_exp);
+	struct ofd_object *fo = NULL;
+	int rc;
+
+	ENTRY;
+
+	if (!fid_is_sane(&fp->gf_fid))
+		RETURN(-EINVAL);
+
+	if (!fid_is_namespace_visible(&fp->gf_fid)) {
+		CDEBUG(D_IOCTL,
+		       "%s: "DFID" is invalid, f_seq should be >= %#llx, or f_oid != 0, or f_ver == 0\n",
+		       ofd_name(ofd), PFID(&fp->gf_fid),
+		       (__u64)FID_SEQ_NORMAL);
+		RETURN(-EINVAL);
+	}
+
+	fo = ofd_object_find(info->fti_env, ofd, &fp->gf_fid);
+	if (IS_ERR_OR_NULL(fo)) {
+		rc = IS_ERR(fo) ? PTR_ERR(fo) : -ENOENT;
+		CDEBUG(D_IOCTL, "%s: cannot find "DFID": rc=%d\n",
+			ofd_name(ofd), PFID(&fp->gf_fid), rc);
+		RETURN(rc);
+	}
+	if (!ofd_object_exists(fo))
+		GOTO(out, rc = -ENOENT);
+
+	rc = ofd_object_ff_load(info->fti_env, fo, false);
+	if (rc) {
+		CDEBUG(D_IOCTL, "%s: ff_load failed for "DFID": rc=%d\n",
+			ofd_name(ofd), PFID(&fp->gf_fid), rc);
+		GOTO(out, rc);
+	}
+
+	fp->gf_fid = fo->ofo_ff.ff_parent;
+	fp->gf_fid.f_ver = 0;
+
+out:
+	if (fo)
+		ofd_object_put(info->fti_env, fo);
+
+	RETURN(rc);
+}
+
+static int ofd_rpc_fid2path(struct tgt_session_info *tsi,
+			    struct ofd_thread_info *info,
+			    void *key, int keylen,
+			    void *val, int vallen)
+{
+	struct getinfo_fid2path *fpout, *fpin;
+	int rc = 0;
+
+	fpin = key + round_up(sizeof(KEY_FID2PATH), 8);
+	fpout = val;
+
+	if (req_capsule_req_need_swab(tsi->tsi_pill))
+		lustre_swab_fid2path(fpin);
+
+	memcpy(fpout, fpin, sizeof(*fpin));
+
+	rc = ofd_fid2path(info, fpout);
+	RETURN(rc);
+}
 
 /**
  * OFD request handler for OST_GET_INFO RPC.
@@ -1017,6 +1076,7 @@ static int lock_zero_regions(const struct lu_env *env,
  * - KEY_LAST_ID (obsolete)
  * - KEY_FIEMAP
  * - KEY_LAST_FID
+ * - KEY_FID2PATH
  *
  * This function reads needed data from storage and fills reply with it.
  *
@@ -1145,6 +1205,35 @@ static int ofd_get_info_hdl(struct tgt_session_info *tsi)
 		       PFID(fid));
 out_put:
 		ofd_seq_put(tsi->tsi_env, oseq);
+	} else if (KEY_IS(KEY_FID2PATH)) {
+		__u32 *vallen;
+		void *valout;
+
+		req_capsule_extend(tsi->tsi_pill, &RQF_MDS_FID2PATH);
+		vallen = req_capsule_client_get(tsi->tsi_pill,
+						&RMF_GETINFO_VALLEN);
+		if (!vallen) {
+			CDEBUG(D_IOCTL,
+			       "%s: cannot get RMF_GETINFO_VALLEN buffer\n",
+			       tgt_name(tsi->tsi_tgt));
+			RETURN(err_serious(-EPROTO));
+		}
+
+		req_capsule_set_size(tsi->tsi_pill, &RMF_GETINFO_VAL,
+				     RCL_SERVER, *vallen);
+		rc = req_capsule_server_pack(tsi->tsi_pill);
+		if (rc)
+			RETURN(err_serious(rc));
+
+		valout = req_capsule_server_get(tsi->tsi_pill,
+						&RMF_GETINFO_VAL);
+		if (!valout) {
+			CDEBUG(D_IOCTL,
+			       "%s: cannot get get-info RPC out buffer\n",
+			       tgt_name(tsi->tsi_tgt));
+			RETURN(-ENOMEM);
+		}
+		rc = ofd_rpc_fid2path(tsi, fti, key, keylen, valout, *vallen);
 	} else {
 		CERROR("%s: not supported key %s\n", tgt_name(tsi->tsi_tgt),
 		       (char *)key);
@@ -1169,16 +1258,17 @@ out_put:
  */
 static int ofd_getattr_hdl(struct tgt_session_info *tsi)
 {
-	struct ofd_thread_info	*fti = tsi2ofd_info(tsi);
-	struct ofd_device	*ofd = ofd_exp(tsi->tsi_exp);
-	struct ost_body		*repbody;
-	struct lustre_handle	 lh = { 0 };
-	struct ofd_object	*fo;
-	__u64			 flags = 0;
-	enum ldlm_mode		 lock_mode = LCK_PR;
-	ktime_t			 kstart = ktime_get();
-	bool			 srvlock;
-	int			 rc;
+	struct ofd_thread_info *fti = tsi2ofd_info(tsi);
+	struct ofd_device *ofd = ofd_exp(tsi->tsi_exp);
+	struct ost_body *repbody;
+	struct lustre_handle lh = { 0 };
+	struct ofd_object *fo;
+	__u64 flags = 0;
+	enum ldlm_mode lock_mode = LCK_PR;
+	ktime_t kstart = ktime_get();
+	bool srvlock;
+	int rc;
+
 	ENTRY;
 
 	LASSERT(tsi->tsi_ost_body != NULL);
@@ -1211,7 +1301,10 @@ static int ofd_getattr_hdl(struct tgt_session_info *tsi)
 
 	rc = ofd_attr_get(tsi->tsi_env, fo, &fti->fti_attr);
 	if (rc == 0) {
-		__u64	 curr_version;
+		__u64 curr_version;
+
+		/* Queue repair of UID/GID/PROJID if not set */
+		ofd_repair_resource_ids(tsi->tsi_env, fo, &repbody->oa, false);
 
 		obdo_from_la(&repbody->oa, &fti->fti_attr,
 			     OFD_VALID_FLAGS | LA_UID | LA_GID | LA_PROJID);
@@ -1229,7 +1322,8 @@ static int ofd_getattr_hdl(struct tgt_session_info *tsi)
 			repbody->oa.o_layout_version =
 			     fo->ofo_ff.ff_layout_version + fo->ofo_ff.ff_range;
 
-			CDEBUG(D_INODE, DFID": get layout version: %u\n",
+			CDEBUG(D_INODE, "%s:"DFID": get layout version: %#x\n",
+			       tsi->tsi_tgt->lut_obd->obd_name,
 			       PFID(&tsi->tsi_fid),
 			       repbody->oa.o_layout_version);
 		}
@@ -1970,10 +2064,11 @@ static int ofd_fallocate_hdl(struct tgt_session_info *tsi)
 
 	mode = oa->o_falloc_mode;
 	/*
-	 * mode == 0 (which is standard prealloc) and PUNCH is supported
+	 * mode == 0 (which is standard prealloc) and PUNCH/ZERO are supported
 	 * Rest of mode options are not supported yet.
 	 */
-	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE))
+	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE |
+		     FALLOC_FL_ZERO_RANGE))
 		RETURN(-EOPNOTSUPP);
 
 	/* PUNCH_HOLE mode should always be accompanied with KEEP_SIZE flag
@@ -1981,7 +2076,7 @@ static int ofd_fallocate_hdl(struct tgt_session_info *tsi)
 	 * warning.
 	 */
 	if (mode & FALLOC_FL_PUNCH_HOLE && !(mode & FALLOC_FL_KEEP_SIZE)) {
-		CWARN("%s: PUNCH mode misses KEEP_SIZE flag, setting it\n",
+		CDEBUG(D_INFO, "%s: PUNCH mode misses KEEP_SIZE flag, setting it\n",
 		      tsi->tsi_tgt->lut_obd->obd_name);
 		mode |= FALLOC_FL_KEEP_SIZE;
 	}
@@ -2122,7 +2217,8 @@ static int ofd_punch_hdl(struct tgt_session_info *tsi)
 		GOTO(out, rc = PTR_ERR(fo));
 
 	la_from_obdo(&info->fti_attr, oa,
-		     OBD_MD_FLMTIME | OBD_MD_FLATIME | OBD_MD_FLCTIME);
+		     OBD_MD_FLMTIME | OBD_MD_FLATIME | OBD_MD_FLCTIME |
+			     OBD_MD_FLUID | OBD_MD_FLGID | OBD_MD_FLPROJID);
 	info->fti_attr.la_size = start;
 	info->fti_attr.la_valid |= LA_SIZE;
 
@@ -2295,7 +2391,8 @@ static int ofd_ladvise_hdl(struct tgt_session_info *tsi)
 	LASSERT(fo != NULL);
 	dob = ofd_object_child(fo);
 
-	if (ptlrpc_connection_is_local(exp->exp_connection))
+	if (exp->exp_connection &&
+	    LNetIsPeerLocal(&exp->exp_connection->c_peer.nid))
 		dbt |= DT_BUFS_TYPE_LOCAL;
 
 	for (i = 0; i < num_advise; i++, ladvise++) {
@@ -2309,7 +2406,7 @@ static int ofd_ladvise_hdl(struct tgt_session_info *tsi)
 		/* Handle different advice types */
 		switch (ladvise->lla_advice) {
 		default:
-			rc = -ENOTSUPP;
+			rc = -EOPNOTSUPP;
 			break;
 		case LU_LADVISE_WILLREAD:
 			if (tbc == NULL)
@@ -2381,7 +2478,6 @@ static int ofd_quotactl(struct tgt_session_info *tsi)
 	repoqc = req_capsule_server_get(tsi->tsi_pill, &RMF_OBD_QUOTACTL);
 	if (repoqc == NULL)
 		RETURN(err_serious(-ENOMEM));
-	*repoqc = *oqctl;
 
 	if (oqctl->qc_cmd == LUSTRE_Q_ITEROQUOTA) {
 		buffer = req_capsule_server_get(tsi->tsi_pill,
@@ -2394,33 +2490,36 @@ static int ofd_quotactl(struct tgt_session_info *tsi)
 	if (IS_ERR(nodemap))
 		RETURN(PTR_ERR(nodemap));
 
-	id = repoqc->qc_id;
+	id = oqctl->qc_id;
 	if (oqctl->qc_type == USRQUOTA)
 		id = nodemap_map_id(nodemap, NODEMAP_UID,
-				    NODEMAP_CLIENT_TO_FS,
-				    repoqc->qc_id);
+				    NODEMAP_CLIENT_TO_FS, id);
 	else if (oqctl->qc_type == GRPQUOTA)
 		id = nodemap_map_id(nodemap, NODEMAP_GID,
-				    NODEMAP_CLIENT_TO_FS,
-				    repoqc->qc_id);
+				    NODEMAP_CLIENT_TO_FS, id);
 	else if (oqctl->qc_type == PRJQUOTA)
 		id = nodemap_map_id(nodemap, NODEMAP_PROJID,
-				    NODEMAP_CLIENT_TO_FS,
-				    repoqc->qc_id);
+				    NODEMAP_CLIENT_TO_FS, id);
 
+	if (oqctl->qc_cmd == LUSTRE_Q_ITEROQUOTA)
+		rc = lquota_iter_change_qid(nodemap, oqctl);
 	nodemap_putref(nodemap);
+	if (rc)
+		RETURN(rc);
 
-	if (repoqc->qc_id != id)
-		swap(repoqc->qc_id, id);
+	if (oqctl->qc_id != id)
+		swap(oqctl->qc_id, id);
 
-	rc = lquotactl_slv(tsi->tsi_env, tsi->tsi_tgt->lut_bottom, repoqc,
-			   buffer, buffer == NULL ? 0 : LQUOTA_ITER_BUFLEN);
+	rc = lquotactl_slv(tsi->tsi_env, tsi->tsi_tgt->lut_bottom, nodemap,
+			   oqctl, buffer);
 
 	ofd_counter_incr(tsi->tsi_exp, LPROC_OFD_STATS_QUOTACTL,
 			 tsi->tsi_jobid, ktime_us_delta(ktime_get(), kstart));
 
-	if (repoqc->qc_id != id)
-		swap(repoqc->qc_id, id);
+	if (oqctl->qc_id != id)
+		swap(oqctl->qc_id, id);
+
+	QCTL_COPY_NO_PNAME(repoqc, oqctl);
 
 	RETURN(rc);
 }
@@ -2964,13 +3063,13 @@ static int ofd_init0(const struct lu_env *env, struct ofd_device *m,
 	ENTRY;
 
 	obd = class_name2obd(dev);
-	if (obd == NULL) {
+	if (!obd) {
 		CERROR("Cannot find obd with name %s\n", dev);
 		RETURN(-ENODEV);
 	}
 
 	rc = lu_env_refill((struct lu_env *)env);
-	if (rc != 0)
+	if (rc)
 		RETURN(rc);
 
 	obt = obd_obt_init(obd);
@@ -2995,22 +3094,31 @@ static int ofd_init0(const struct lu_env *env, struct ofd_device *m,
 	/* set this lu_device to obd, because error handling need it */
 	obd->obd_lu_dev = &m->ofd_dt_dev.dd_lu_dev;
 
+	m->ofd_enable_resource_id_repair = 1;
+	m->ofd_id_repair_queue_count =
+		OFD_ID_REPAIR_QUEUE_COUNT_DEFAULT;
+
+	INIT_LIST_HEAD(&m->ofd_id_repair_list);
+	spin_lock_init(&m->ofd_id_repair_lock);
+	init_waitqueue_head(&m->ofd_id_repair_waitq);
+	atomic_set(&m->ofd_id_repair_queued, 0);
+
 	/* No connection accepted until configurations will finish */
 	spin_lock(&obd->obd_dev_lock);
 	obd->obd_no_conn = 1;
 	spin_unlock(&obd->obd_dev_lock);
-	obd->obd_replayable = 1;
+	set_bit(OBDF_REPLAYABLE, obd->obd_flags);
 	if (cfg->lcfg_bufcount > 4 && LUSTRE_CFG_BUFLEN(cfg, 4) > 0) {
 		char *str = lustre_cfg_string(cfg, 4);
 
 		if (strchr(str, 'n')) {
 			CWARN("%s: recovery disabled\n", obd->obd_name);
-			obd->obd_replayable = 0;
+			clear_bit(OBDF_REPLAYABLE, obd->obd_flags);
 		}
 	}
 
 	info = ofd_info_init(env, NULL);
-	if (info == NULL)
+	if (!info)
 		RETURN(-EFAULT);
 
 	rc = ofd_stack_init(env, m, cfg, lmd_flags);
@@ -3075,7 +3183,7 @@ static int ofd_init0(const struct lu_env *env, struct ofd_device *m,
 	fid.f_ver = 0;
 	rc = local_oid_storage_init(env, m->ofd_osd, &fid,
 				    &m->ofd_los);
-	if (rc != 0)
+	if (rc)
 		GOTO(err_fini_fs, rc);
 
 	nodemap_config = nm_config_file_register_tgt(env, m->ofd_osd,
@@ -3089,13 +3197,19 @@ static int ofd_init0(const struct lu_env *env, struct ofd_device *m,
 	}
 
 	rc = ofd_start_inconsistency_verification_thread(m);
-	if (rc != 0)
+	if (rc)
 		GOTO(err_fini_nm, rc);
+
+	rc = ofd_id_repair_start_thread(m);
+	if (rc)
+		GOTO(err_stop_inconsistency, rc);
 
 	tgt_adapt_sptlrpc_conf(&m->ofd_lut);
 
 	RETURN(0);
 
+err_stop_inconsistency:
+	ofd_stop_inconsistency_verification_thread(m);
 err_fini_nm:
 	nm_config_file_deregister_tgt(env, obt->obt_nodemap_config_file);
 	obt->obt_nodemap_config_file = NULL;
@@ -3145,6 +3259,7 @@ static void ofd_fini(const struct lu_env *env, struct ofd_device *m)
 
 	ofd_procfs_fini(m);
 	tgt_fini(env, &m->ofd_lut);
+	ofd_id_repair_stop_thread(m);
 	ofd_stop_inconsistency_verification_thread(m);
 	lfsck_degister(env, m->ofd_osd);
 	ofd_fs_cleanup(env, m);
@@ -3183,6 +3298,7 @@ static struct lu_device *ofd_device_fini(const struct lu_env *env,
 {
 	ENTRY;
 	ofd_fini(env, ofd_dev(d));
+	target_cleanup_recovery(d->ld_obd);
 	RETURN(NULL);
 }
 
@@ -3285,9 +3401,13 @@ static int __init ofd_init(void)
 	if (rc)
 		return rc;
 
-	rc = ofd_access_log_module_init();
+	rc = oss_mod_init();
 	if (rc)
 		goto out_caches;
+
+	rc = ofd_access_log_module_init();
+	if (rc)
+		goto out_oss_fini;
 
 	rc = class_register_type(&ofd_obd_ops, NULL, true,
 				 LUSTRE_OST_NAME, &ofd_device_type);
@@ -3298,6 +3418,8 @@ static int __init ofd_init(void)
 
 out_ofd_access_log:
 	ofd_access_log_module_exit();
+out_oss_fini:
+	oss_mod_exit();
 out_caches:
 	lu_kmem_fini(ofd_caches);
 
@@ -3314,6 +3436,7 @@ static void __exit ofd_exit(void)
 {
 	class_unregister_type(LUSTRE_OST_NAME);
 	ofd_access_log_module_exit();
+	oss_mod_exit();
 	lu_kmem_fini(ofd_caches);
 }
 
@@ -3322,5 +3445,5 @@ MODULE_DESCRIPTION("Lustre Object Filtering Device");
 MODULE_VERSION(LUSTRE_VERSION_STRING);
 MODULE_LICENSE("GPL");
 
-module_init(ofd_init);
+late_initcall_sync(ofd_init);
 module_exit(ofd_exit);

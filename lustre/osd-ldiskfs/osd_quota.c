@@ -79,15 +79,14 @@ int osd_acct_obj_lookup(struct osd_thread_info *info, struct osd_device *osd,
 			le32_to_cpu(LDISKFS_SB(sb)->s_es->s_grp_quota_inum);
 		break;
 	case PRJQUOTA:
-#ifdef HAVE_PROJECT_QUOTA
 		if (ldiskfs_has_feature_project(sb)) {
 			__le32 prj_quota;
 
 			prj_quota = LDISKFS_SB(sb)->s_es->s_prj_quota_inum;
 			id->oii_ino = le32_to_cpu(prj_quota);
-		} else
-#endif
+		} else {
 			RETURN(-ENOENT);
+		}
 		break;
 	}
 
@@ -117,11 +116,7 @@ static int osd_acct_index_lookup(const struct lu_env *env,
 				 const struct dt_key *dtkey)
 {
 	struct osd_thread_info *info = osd_oti_get(env);
-#if defined(HAVE_DQUOT_QC_DQBLK)
 	struct qc_dqblk *dqblk = &info->oti_qdq;
-#else
-	struct fs_disk_quota *dqblk = &info->oti_fdq;
-#endif
 	struct super_block *sb = osd_sb(osd_obj2dev(osd_dt_obj(dtobj)));
 	struct lquota_acct_rec *rec = (struct lquota_acct_rec *)dtrec;
 	__u64 id = *((__u64 *)dtkey);
@@ -137,13 +132,10 @@ static int osd_acct_index_lookup(const struct lu_env *env,
 	rc = sb->s_qcop->get_dqblk(sb, qid, dqblk);
 	if (rc)
 		RETURN(rc);
-#if defined(HAVE_DQUOT_QC_DQBLK)
+
 	rec->bspace = dqblk->d_space;
 	rec->ispace = dqblk->d_ino_count;
-#else
-	rec->bspace = dqblk->d_bcount;
-	rec->ispace = dqblk->d_icount;
-#endif
+
 	RETURN(+1);
 }
 
@@ -546,8 +538,8 @@ int osd_declare_qid(const struct lu_env *env, struct osd_thandle *oh,
 		inode = obj->oo_inode;
 		ino = inode ? inode->i_ino : 0;
 	}
-	CDEBUG(D_QUOTA, "fid="DFID" ino=%llu type=%u, id=%llu\n",
-	       PFID(&fid), ino, qi->lqi_type, qi->lqi_id.qid_uid);
+	CDEBUG(D_QUOTA, "fid="DFID" %p ino=%llu type=%u, id=%llu\n",
+	       PFID(&fid), inode, ino, qi->lqi_type, qi->lqi_id.qid_uid);
 
 	LASSERT(oh != NULL);
 	LASSERTF(oh->ot_id_cnt <= OSD_MAX_UGID_CNT, "count=%d\n",
@@ -580,8 +572,11 @@ int osd_declare_qid(const struct lu_env *env, struct osd_thandle *oh,
 			RETURN(rc);
 		}
 
-		if (qi->lqi_id.qid_uid == 0) {
-			/* root ID should be always present in the quota file */
+		if (qi->lqi_id.qid_uid == 0 && qi->lqi_space > 0) {
+			/* root ID should be always present in the quota file,
+			 * also only "target" uid (where we add space) is
+			 * guaranteed, the source one can change after the
+			 * declaration */
 			crd = 1;
 		} else {
 			/* can't rely on the current state as it can change
@@ -642,6 +637,7 @@ int osd_declare_inode_qid(const struct lu_env *env, qid_t uid, qid_t gid,
 	struct lquota_id_info *qi = &info->oti_qi;
 	int rcu, rcg, rcp = 0; /* user & group & project rc */
 	struct thandle *th = &oh->ot_super;
+	enum osd_quota_local_flags tmp_flags;
 	bool force = !!(osd_qid_declare_flags & OSD_QID_FORCE) ||
 			th->th_ignore_quota;
 	ENTRY;
@@ -679,24 +675,34 @@ int osd_declare_inode_qid(const struct lu_env *env, qid_t uid, qid_t gid,
 		/* as before, ignore EDQUOT & EINPROGRESS for root */
 		rcg = 0;
 
-#ifdef HAVE_PROJECT_QUOTA
 	if (rcg && (rcg != -EDQUOT || local_flags == NULL))
 		RETURN(rcg);
 
 	/* and now project quota */
 	qi->lqi_id.qid_projid = projid;
+	qi->lqi_ignore_root_proj_quota = th->th_ignore_root_proj_quota;
 	qi->lqi_type = PRJQUOTA;
-	rcp = osd_declare_qid(env, oh, qi, obj, true, local_flags);
 
-	if (local_flags && *local_flags & QUOTA_FL_ROOT_PRJQUOTA)
-		force = th->th_ignore_quota;
+	tmp_flags = 0;
+	if (local_flags)
+		tmp_flags = *local_flags;
+	rcp = osd_declare_qid(env, oh, qi, obj, true, &tmp_flags);
+	if (tmp_flags & QUOTA_FL_ROOT_PRJQUOTA &&
+	    !(osd_qid_declare_flags & OSD_QID_IGNORE_ROOT_PRJ))
+		/* Currently, th_ignore_quota is only set for inode quota
+		 * in mdd_trans_create if the user has CAP_SYS_RESOURCE,
+		 * then it should be ignored if root_prj_enable is set.
+		 */
+		force = 0;
+	if (local_flags)
+		*local_flags = tmp_flags;
+
 	if (force && (rcp == -EDQUOT || rcp == -EINPROGRESS)) {
 		CDEBUG(D_QUOTA, "forced to ignore quota flags = %#x\n",
 		       local_flags ? *local_flags : -1);
 		/* as before, ignore EDQUOT & EINPROGRESS for root */
 		rcp = 0;
 	}
-#endif
 
 	RETURN(rcu ? rcu : (rcg ? rcg : rcp));
 }

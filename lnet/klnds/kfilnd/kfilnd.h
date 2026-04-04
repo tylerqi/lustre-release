@@ -50,9 +50,10 @@
 
 #define DEBUG_SUBSYSTEM S_LND
 
-#include <libcfs/libcfs.h>
-#include <libcfs/linux/linux-net.h>
+#include <linux/libcfs/libcfs.h>
+#include <lustre_compat/net/linux-net.h>
 #include <lnet/lib-lnet.h>
+#include <lnet/lnet_rdma.h>
 #include "kfi_endpoint.h"
 #include "kfi_errno.h"
 #include "kfi_rma.h"
@@ -98,6 +99,9 @@
 
 #define KFILND_MY_PROCID 49152
 
+/* default kfilnd timeout in seconds */
+#define KFILND_TIMEOUT_DEFAULT 125
+
 /* 256 Rx contexts max */
 #define KFILND_FAB_RX_CTX_BITS 8
 
@@ -123,10 +127,14 @@ enum kfilnd_ni_lnd_tunables_attr {
 	LNET_NET_KFILND_TUNABLES_ATTR_PROV_MINOR,
 	LNET_NET_KFILND_TUNABLES_ATTR_AUTH_KEY,
 	LNET_NET_KFILND_TUNABLES_ATTR_TRAFFIC_CLASS,
+	LNET_NET_KFILND_TUNABLES_ATTR_TIMEOUT,
+	LNET_NET_KFILND_TUNABLES_ATTR_TRAFFIC_CLASS_NUM,
 	__LNET_NET_KFILND_TUNABLES_ATTR_MAX_PLUS_ONE,
 };
 
 #define LNET_NET_KFILND_TUNABLES_ATTR_MAX (__LNET_NET_KFILND_TUNABLES_ATTR_MAX_PLUS_ONE - 1)
+
+extern struct lnet_ioctl_config_kfilnd_tunables kfi_default_tunables;
 
 extern struct dentry *kfilnd_debug_dir;
 extern const struct file_operations kfilnd_initiator_state_stats_file_ops;
@@ -134,9 +142,11 @@ extern const struct file_operations kfilnd_target_state_stats_file_ops;
 extern const struct file_operations kfilnd_target_stats_file_ops;
 extern const struct file_operations kfilnd_initiator_stats_file_ops;
 extern const struct file_operations kfilnd_reset_stats_file_ops;
+extern const struct file_operations kfilnd_mempool_stats_file_ops;
 
 extern struct workqueue_struct *kfilnd_wq;
 
+extern int kfi_timeout;
 extern unsigned int cksum;
 extern unsigned int tx_scale_factor;
 extern unsigned int rx_cq_scale_factor;
@@ -148,8 +158,14 @@ extern unsigned int wq_high_priority;
 extern unsigned int wq_cpu_intensive;
 extern unsigned int wq_max_active;
 
-int kfilnd_tunables_setup(struct lnet_ni *ni);
+int kfilnd_tunables_setup(struct lnet_lnd_tunables *lnd_tunables, bool set,
+			  struct lnet_ioctl_config_lnd_cmn_tunables *net_tunables);
 int kfilnd_tunables_init(void);
+int kfilnd_get_tn_reserve_min(void);
+int kfilnd_get_msg_reserve_min(void);
+int kfilnd_get_peer_credits(void);
+int kfilnd_tn_get_mempool_stats(int *tn_min, int *tn_curr,
+				int *msg_min, int *msg_curr);
 
 struct kfilnd_transaction;
 struct kfilnd_ep;
@@ -254,6 +270,11 @@ static inline bool kfilnd_peer_deleted(struct kfilnd_peer *kp)
 	return atomic_read(&kp->kp_remove_peer) > 0;
 }
 
+static inline int kfilnd_timeout(void)
+{
+	return kfi_timeout ?: lnet_get_lnd_timeout();
+}
+
 /* Values for kp_hello_state. Valid transitions:
  * NONE -> INIT
  * INIT -> NONE (only when fail to allocate kfilnd_tn for hello req)
@@ -303,11 +324,11 @@ static inline bool kfilnd_peer_needs_hello(struct kfilnd_peer *kp,
 			return true;
 		else if (proactive_handshake &&
 			 ktime_before(kp->kp_last_alive +
-				      lnet_get_lnd_timeout() * 2,
+				      kfilnd_timeout() * 2,
 				      ktime_get_seconds()))
 			return true;
 	} else if (hello_state == KP_HELLO_SENDING &&
-		   ktime_before(kp->kp_hello_ts + lnet_get_lnd_timeout(),
+		   ktime_before(kp->kp_hello_ts + kfilnd_timeout(),
 				ktime_get_seconds())) {
 		/* Sent hello but never received reply */
 		CDEBUG(D_NET,
@@ -745,6 +766,10 @@ struct kfilnd_transaction {
 
 	bool			is_initiator;	/* Initiated LNet transfer. */
 
+	bool			tn_early_rx; /* Indicates RX arrived before peer
+					      * handshake
+					      */
+
 	/* Transaction send message and target address. */
 	kfi_addr_t		tn_target_addr;
 	struct kfilnd_peer	*tn_kp;
@@ -757,8 +782,20 @@ struct kfilnd_transaction {
 	/* LNet buffer used to register a memory region or perform a RMA
 	 * operation.
 	 */
+#ifdef HAVE_KFI_SGL
+	/* Set to true if @tn_sgt is mapped */
+	bool			tn_sgt_mapped;
+	struct sg_table		tn_sgt;
+	/* The number of segments originally allocated */
+	unsigned int		tn_sgt_alloc_nents;
+	enum dma_data_direction	tn_dmadir;
+#else
 	struct bio_vec		tn_kiov[LNET_MAX_IOV];
 	unsigned int		tn_num_iovec;
+#endif
+
+	/* Force RDMA */
+	bool			tn_gpu;
 
 	/* LNet transaction payload byte count. */
 	unsigned int		tn_nob;

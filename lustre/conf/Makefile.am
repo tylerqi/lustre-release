@@ -1,24 +1,4 @@
-#
-# GPL HEADER START
-#
-# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License version 2 only,
-# as published by the Free Software Foundation.
-#
-# This program is distributed in the hope that it will be useful, but
-# WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-# General Public License version 2 for more details (a copy is included
-# in the LICENSE file that accompanied this code).
-#
-# You should have received a copy of the GNU General Public License
-# version 2 along with this program; If not, see
-# http://www.gnu.org/licenses/gpl-2.0.html
-#
-# GPL HEADER END
-#
+# SPDX-License-Identifier: GPL-2.0-only
 
 #
 # Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
@@ -35,13 +15,21 @@ SUBDIRS = resource
 DIST_SUBDIRS = resource
 
 EXTRA_DIST = lustre.xml 99-lustre.rules lustre ldev.conf ko2iblnd.conf \
-             lsvcgss lnet_routes.conf lnet.conf lgssc.conf \
-             lnet-sysctl.conf 99-lustre-server.rules
+             lsvcgss lnet_routes.conf lnet.conf lgssc.conf dkms-lustre \
+             lnet-sysctl.conf 99-lustre-server.rules mount.client.params \
+             projid
 
 sysconf_DATA = lnet.conf
+sysconfigdir = $(sysconfdir)/sysconfig
+sysconfig_DATA = dkms-lustre
 
 if UTILS
 sysconf_DATA += lnet_routes.conf
+lustredir = $(sysconfdir)/lustre
+lustre_DATA = mount.client.params
+
+projiddir = $(sysconfdir)
+projid_DATA = projid
 endif
 
 firewallddir = ${prefix}/lib/firewalld/services
@@ -55,8 +43,7 @@ if ZFS_ENABLED
 sysconf_DATA += ldev.conf
 endif
 if RHEL
-sysconfigdir = $(sysconfdir)/sysconfig
-sysconfig_DATA = lustre
+sysconfig_DATA += lustre
 if GSS_KEYRING
 sysconfig_DATA += lsvcgss
 endif

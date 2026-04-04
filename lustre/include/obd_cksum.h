@@ -13,9 +13,12 @@
 
 #ifndef __OBD_CKSUM
 #define __OBD_CKSUM
-#include <libcfs/libcfs.h>
+
+#include <linux/libcfs/libcfs_debug.h>
+#include <linux/libcfs/libcfs_private.h>
 #include <lnet/lnet_crypto.h>
 #include <uapi/linux/lustre/lustre_idl.h>
+#include <lustre_compat.h>
 
 int obd_t10_cksum_speed(const char *obd_name,
 			enum cksum_types cksum_type);
@@ -116,16 +119,16 @@ enum cksum_types obd_cksum_type_select(const char *obd_name,
 }
 
 /* Checksum algorithm names. Must be defined in the same order as the
- * OBD_CKSUM_* flags. */
-#define DECLARE_CKSUM_NAME const char *const cksum_name[] = {"crc32", "adler", \
-	"crc32c", "reserved", "t10ip512", "t10ip4K", "t10crc512", "t10crc4K"}
+ * OBD_CKSUM_* flags.
+ */
+extern const char *const cksum_name[];
 
 typedef __be16 (obd_dif_csum_fn) (void *, unsigned int);
 
 __be16 obd_dif_crc_fn(void *data, unsigned int len);
 __be16 obd_dif_ip_fn(void *data, unsigned int len);
-int obd_page_dif_generate_buffer(const char *obd_name, struct page *page,
-				 __u32 offset, __u32 length,
+int obd_page_dif_generate_buffer(const char *obd_name, struct folio *folio,
+				 __s32 pgno, __u32 offset, __u32 length,
 				 __be16 *guard_start, int guard_number,
 				 int *used_number, int sector_size,
 				 obd_dif_csum_fn *fn);
